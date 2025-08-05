@@ -27,7 +27,7 @@ import (
 
 	"github.com/containerd/ttrpc"
 
-	"github.com/containerd/nerdbox/internal/ttrpcutil"
+	"github.com/dmcgowan/nerdbox/internal/ttrpcutil"
 )
 
 func resolvePath(path string) (string, error) {

@@ -16,7 +16,7 @@ file {
   syntax: "proto3"
 }
 file {
-  name: "github.com/containerd/nerdbox/api/services/system/v1/info.proto"
+  name: "github.com/dmcgowan/nerdbox/api/services/system/v1/info.proto"
   package: "containerd.vminitd.services.system.v1"
   dependency: "google/protobuf/empty.proto"
   message_type {
@@ -45,7 +45,7 @@ file {
     }
   }
   options {
-    go_package: "github.com/containerd/nerdbox/api/services/system/v1;system"
+    go_package: "github.com/dmcgowan/nerdbox/api/services/system/v1;system"
   }
   syntax: "proto3"
 }

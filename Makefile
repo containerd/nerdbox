@@ -63,7 +63,7 @@ build/crun:
 	@echo "$(WHALE) $@"
 	wget -o build/crun https://github.com/containers/crun/releases/download/1.23.1/crun-1.23.1-linux-amd64-disable-systemd
 
-build/init.img: build/vminitd build/crun
+build/run_vminitd-initrd: build/vminitd build/crun
 	mkdir -p build/init/sbin build/init/proc build/init/sys build/init/tmp build/init/run
 	cp build/vminitd build/init/init
 	cp build/crun build/init/sbin/crun

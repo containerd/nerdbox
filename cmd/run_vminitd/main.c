@@ -38,13 +38,13 @@ static void print_help(char *const name)
             "        -n    --nested              Enabled nested virtualization\n"
             "\n"
 #if defined(__x86_64__)
-            "KERNEL:    path to the kernel image in ELF format\n"
-            "INITRAMFS: path to the initramfs image in CPIO format\n",
+            "%s-kernel:    path to the kernel image in ELF format\n"
+            "%s-initrd:    path to the initramfs image in CPIO format\n",
 #else
-            "KERNEL:    path to the kernel image in RAW format\n"
-            "INITRAMFS: path to the initramfs image in CPIO format\n",
+            "%s-kernel:    path to the kernel image in RAW format\n"
+            "%s-initrd:    path to the initramfs image in CPIO format\n",
 #endif
-            name);
+            name, name, name);
 }
 
 static const struct option long_options[] = {
@@ -76,9 +76,7 @@ bool parse_cmdline(int argc, char *const argv[], struct cmdline *cmdline)
     *cmdline = (struct cmdline){
         .show_help = false,
         .data_disk = NULL,
-        .kernel_path = NULL,
         .kernel_cmdline = NULL,
-        .initrd_path = NULL,
         .listen_path = NULL,
         .nested = false,
     };
@@ -113,6 +111,7 @@ bool parse_cmdline(int argc, char *const argv[], struct cmdline *cmdline)
         }
     }
 
+    /*
     if (optind <= argc - 1)
     {
         cmdline->kernel_path = argv[optind++];
@@ -134,8 +133,9 @@ bool parse_cmdline(int argc, char *const argv[], struct cmdline *cmdline)
         fprintf(stderr, "KERNEL is set to %s\n", cmdline->kernel_path);
         fprintf(stderr, "Missing INITRAMFS argument\n");
     }
+    */
 
-    return false;
+    return true;
 }
 
 int main(int argc, char *const argv[])
@@ -143,7 +143,10 @@ int main(int argc, char *const argv[])
     int ctx_id;
     int err;
     pthread_t thread;
+    char kernel_path[255];
+    char initrd_path[255];
     struct cmdline cmdline;
+
 
     if (!parse_cmdline(argc, argv, &cmdline))
     {
@@ -158,8 +161,17 @@ int main(int argc, char *const argv[])
         return 0;
     }
 
-    fprintf(stderr, "initrd: %s\n", cmdline.initrd_path);
-    fprintf(stderr, "kernel_path: %s\n", cmdline.kernel_path);
+
+    // Size must allow "-kernel" at end
+    if (sizeof(argv[0]) > 247) {
+        printf("executable path is too long");
+        return -1;
+    }
+    strcat(strcpy(kernel_path, argv[0]), "-kernel");
+    strcat(strcpy(initrd_path, argv[0]), "-initrd");
+
+    fprintf(stderr, "initrd: %s\n", initrd_path);
+    fprintf(stderr, "kernel_path: %s\n", kernel_path);
     fprintf(stderr, "kernel_cmdline: %s\n", cmdline.kernel_cmdline);
     fflush(stderr);
 
@@ -209,8 +221,8 @@ int main(int argc, char *const argv[])
     fprintf(stderr, "setting kernel\n");
     fflush(stderr);
 
-    if (err = krun_set_kernel(ctx_id, cmdline.kernel_path, KERNEL_FORMAT,
-                              cmdline.initrd_path, cmdline.kernel_cmdline))
+    if (err = krun_set_kernel(ctx_id, kernel_path, KERNEL_FORMAT,
+                              initrd_path, cmdline.kernel_cmdline))
     {
         errno = -err;
         perror("Error configuring kernel");

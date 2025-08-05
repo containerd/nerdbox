@@ -43,14 +43,6 @@ func (s *service) startVM(ctx context.Context, root string) error {
 	if err != nil {
 		log.Fatal("Failed to find run_vminitd in PATH:", err)
 	}
-	vmlinux, err := lookupFile("vmlinux")
-	if err != nil {
-		log.Fatal("Failed to find vmlinux in PATH:", err)
-	}
-	initrd, err := lookupFile("init.img")
-	if err != nil {
-		log.Fatal("Failed to find init.img in PATH:", err)
-	}
 
 	f := filepath.Join(root, "run_vminitd.sock")
 	if _, err := os.Stat(f); err == nil {
@@ -64,8 +56,6 @@ func (s *service) startVM(ctx context.Context, root string) error {
 
 	args := []string{
 		"-l", f,
-		vmlinux,
-		initrd,
 	}
 
 	cmd := exec.CommandContext(ctx, ep, args...)

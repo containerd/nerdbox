@@ -53,14 +53,6 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		log.Fatalf("Failed to resolve run_vminitd path: %v", err)
 	}
-	vmlinuxPath, err = resolvePath("../build/vmlinux")
-	if err != nil {
-		log.Fatalf("Failed to resolve vmlinux path: %v", err)
-	}
-	initImgPath, err = resolvePath("../build/init.img")
-	if err != nil {
-		log.Fatalf("Failed to resolve init.img path: %v", err)
-	}
 
 	r := m.Run()
 

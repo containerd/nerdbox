@@ -67,7 +67,8 @@ build/run_vminitd-initrd: build/vminitd build/crun
 	mkdir -p build/init/sbin build/init/proc build/init/sys build/init/tmp build/init/run
 	cp build/vminitd build/init/init
 	cp build/crun build/init/sbin/crun
-	(cd build/init && find . -print0 | cpio --null -H newc -o ) | gzip -9 > build/init.img
+	chmod +x build/init/sbin/crun
+	(cd build/init && find . -print0 | cpio --null -H newc -o ) | gzip -9 > build/run_vminitd-initrd
 
 generate: protos
 	@echo "$(WHALE) $@"

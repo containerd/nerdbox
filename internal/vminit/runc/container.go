@@ -82,7 +82,7 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 	config := &process.CreateConfig{
 		ID:               r.ID,
 		Bundle:           r.Bundle,
-		Runtime:          opts.BinaryName,
+		Runtime:          "/sbin/crun",
 		Rootfs:           pmounts,
 		Terminal:         r.Terminal,
 		Stdin:            r.Stdin,
@@ -94,10 +94,6 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 	}
 
 	if err := WriteOptions(r.Bundle, opts); err != nil {
-		return nil, err
-	}
-	// For historical reason, we write opts.BinaryName as well as the entire opts
-	if err := WriteRuntime(r.Bundle, opts.BinaryName); err != nil {
 		return nil, err
 	}
 
@@ -186,23 +182,9 @@ func WriteOptions(path string, opts *options.Options) error {
 	return os.WriteFile(filepath.Join(path, optionsFilename), data, 0600)
 }
 
-// ReadRuntime reads the runtime information from the path
-func ReadRuntime(path string) (string, error) {
-	data, err := os.ReadFile(filepath.Join(path, "runtime"))
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
-}
-
-// WriteRuntime writes the runtime information into the path
-func WriteRuntime(path, runtime string) error {
-	return os.WriteFile(filepath.Join(path, "runtime"), []byte(runtime), 0600)
-}
-
 func newInit(ctx context.Context, path, workDir, namespace string, platform stdio.Platform,
 	r *process.CreateConfig, options *options.Options, rootfs string) (*process.Init, error) {
-	runtime := process.NewRunc(options.Root, path, namespace, options.BinaryName, options.SystemdCgroup)
+	runtime := process.NewRunc(options.Root, path, namespace, "/sbin/crun", options.SystemdCgroup)
 	p := process.New(r.ID, runtime, stdio.Stdio{
 		Stdin:    r.Stdin,
 		Stdout:   r.Stdout,

@@ -353,24 +353,3 @@ func (m manager) Info(ctx context.Context, optionsR io.Reader) (*types.RuntimeIn
 	*/
 	return info, nil
 }
-
-func setupMntNs() error {
-	err := unix.Unshare(unix.CLONE_NEWNS)
-	if err != nil {
-		return err
-	}
-
-	err = unix.Mount("", "/", "", unix.MS_REC|unix.MS_SLAVE, "")
-	if err != nil {
-		err = fmt.Errorf("failed to mount with slave: %v", err)
-		return err
-	}
-
-	err = unix.Mount("", "/", "", unix.MS_REC|unix.MS_SHARED, "")
-	if err != nil {
-		err = fmt.Errorf("failed to mount with shared: %v", err)
-		return err
-	}
-
-	return nil
-}

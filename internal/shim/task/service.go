@@ -19,6 +19,7 @@ package task
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sync"
 
 	eventstypes "github.com/containerd/containerd/api/events"
@@ -216,6 +217,20 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		return nil, errgrpc.ToGRPC(fmt.Errorf("checkpoints not supported: %w", errdefs.ErrNotImplemented))
 	}
 
+	// Get ID?
+
+	vr := &taskAPI.CreateTaskRequest{
+		ID:     r.ID,
+		Bundle: "/root", // TODO: This needs to change to support multiple containers
+	}
+	/*
+		Rootfs           []*types.Mount `protobuf:"bytes,3,rep,name=rootfs,proto3" json:"rootfs,omitempty"`
+		Terminal         bool           `protobuf:"varint,4,opt,name=terminal,proto3" json:"terminal,omitempty"`
+		Stdin            string         `protobuf:"bytes,5,opt,name=stdin,proto3" json:"stdin,omitempty"`
+		Stdout           string         `protobuf:"bytes,6,opt,name=stdout,proto3" json:"stdout,omitempty"`
+		Stderr           string         `protobuf:"bytes,7,opt,name=stderr,proto3" json:"stderr,omitempty"`
+		Options          *anypb.Any     `protobuf:"bytes,10,opt,name=options,proto3" json:"options,omitempty"`
+	*/
 	/*
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -233,15 +248,24 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		s.containers[r.ID] = container
 	*/
 
+	// Handle mounts
+	m, mountBundle, err := setupMounts(r.Rootfs, filepath.Join(r.Bundle, "rootfs"))
+	if err != nil {
+		return nil, errgrpc.ToGRPC(err)
+	}
+	vr.Rootfs = m
+
 	// TODO: Consider delaying VM start to task start, this could allow
 	// the VM to be started with the resources from all container creates
-	s.startVM(ctx, r.Bundle)
+	if err := s.startVM(ctx, r.Bundle, mountBundle); err != nil {
+		return nil, errgrpc.ToGRPC(err)
+	}
 
 	tc := taskAPI.NewTTRPCTaskClient(s.vm.client)
 	// TODO: This wouldn't actually work, but lets see response
-	resp, err := tc.Create(ctx, r)
+	resp, err := tc.Create(ctx, vr)
 	if err != nil {
-		return resp, err
+		return nil, errgrpc.ToGRPC(err)
 	}
 
 	s.send(&eventstypes.TaskCreate{

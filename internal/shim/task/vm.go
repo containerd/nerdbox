@@ -19,19 +19,23 @@ package task
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
+	"syscall"
 	"time"
 
+	"github.com/containerd/fifo"
 	"github.com/containerd/ttrpc"
 
 	"github.com/dmcgowan/nerdbox/internal/ttrpcutil"
 )
 
-func (s *service) startVM(ctx context.Context, root string) error {
+func (s *service) startVM(ctx context.Context, root string, mountBundle bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.vm != nil {
@@ -54,17 +58,31 @@ func (s *service) startVM(ctx context.Context, root string) error {
 		log.Fatal(err)
 	}
 
+	cf := "./run_vminitd.fifo"
+	lr, err := fifo.OpenFifo(ctx, cf, os.O_RDONLY|os.O_CREATE|syscall.O_NONBLOCK, 0644)
+	if err != nil {
+		log.Fatal(err)
+	}
+	// TODO: Close this on shutdown?
+
 	args := []string{
 		"-l", f,
+		"-c", cf,
+	}
+	go io.Copy(os.Stderr, lr)
+	if mountBundle {
+		args = append(args, "-v", fmt.Sprintf("root=%s", root))
 	}
 
 	cmd := exec.CommandContext(ctx, ep, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
+	goruntime.LockOSThread()
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start VM: %w", err)
 	}
+	goruntime.UnlockOSThread()
 
 	errC := make(chan error)
 	go func() {
@@ -90,7 +108,15 @@ func (s *service) startVM(ctx context.Context, root string) error {
 	var conn net.Conn
 	d := 2 * time.Millisecond
 	for {
-		time.Sleep(time.Millisecond)
+		select {
+		case err := <-errC:
+			if err != nil {
+				return fmt.Errorf("failure running vm: %w", err)
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Millisecond):
+		}
 		if _, err := os.Stat(f); err == nil {
 			conn, err = net.Dial("unix", f)
 			if err != nil {

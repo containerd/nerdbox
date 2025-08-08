@@ -18,87 +18,31 @@ package main
 
 import (
 	"context"
-	"io"
 	"log"
 	"os"
-	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 
-	"github.com/containerd/fifo"
+	"github.com/dmcgowan/nerdbox/internal/vm/runvm"
 )
 
 func main() {
 	ctx := context.Background()
 
-	ep, err := exec.LookPath("run_vminitd")
-	if err != nil {
-		log.Fatal("Failed to find run_vminitd in PATH:", err)
-	}
+	vm := runvm.NewVMInstance()
 
 	// TODO: Make the socket configurable
-	f := "./run_vminitd.sock"
-	if _, err := os.Stat(f); err == nil {
-		if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
-			log.Fatal("Failed to remove old socket file:", err)
-		}
-		log.Println("Removed old socket file:", f)
-	} else if !os.IsNotExist(err) {
-		log.Fatal(err)
+	if err := vm.Start(ctx, "./run_vminitd.sock", ""); err != nil {
+		log.Fatal("Failed to start VM instance:", err)
 	}
-
-	cf := "./run_vminitd.fifo"
-	lr, err := fifo.OpenFifo(ctx, cf, os.O_RDONLY|os.O_CREATE|syscall.O_NONBLOCK, 0644)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	args := []string{
-		"-l", f,
-		"-c", cf,
-	}
-	go io.Copy(os.Stderr, lr)
-
-	cmd := exec.CommandContext(ctx, ep, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 
 	sigC := make(chan os.Signal, 1)
 	signal.Notify(sigC, syscall.SIGINT, syscall.SIGTERM)
 
-	errC := make(chan error)
-	go func() {
-		defer close(errC)
-		if err := cmd.Run(); err != nil {
-			errC <- err
-		}
-	}()
+	<-sigC
 
-	select {
-	case err := <-errC:
-		if err != nil {
-			log.Fatal("Failed to start vm:", err)
-		}
-	case <-sigC:
-		if err := cmd.Cancel(); err != nil {
-			log.Fatal("Failed to shutdown context:", err)
-		}
-	}
 	log.Println("VM shutdown initiated")
-}
-
-func lookupFile(file string) (string, error) {
-	path := os.Getenv("PATH")
-	for _, dir := range filepath.SplitList(path) {
-		if dir == "" {
-			// Unix shell semantics: path element "" means "."
-			dir = "."
-		}
-		path := filepath.Join(dir, file)
-		if _, err := os.Stat(path); err == nil {
-			return path, nil
-		}
+	if err := vm.Shutdown(ctx); err != nil {
+		log.Fatal("Failed to shutdown context:", err)
 	}
-	return "", os.ErrNotExist
 }

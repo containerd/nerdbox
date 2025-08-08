@@ -18,32 +18,26 @@ package main
 
 import (
 	"context"
+	"io"
 	"log"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
+
+	"github.com/containerd/fifo"
 )
 
 func main() {
 	ctx := context.Background()
 
-	// TODO: Make all of these configurable
-
 	ep, err := exec.LookPath("run_vminitd")
 	if err != nil {
 		log.Fatal("Failed to find run_vminitd in PATH:", err)
 	}
-	vmlinux, err := lookupFile("vmlinux")
-	if err != nil {
-		log.Fatal("Failed to find vmlinux in PATH:", err)
-	}
-	initrd, err := lookupFile("init.img")
-	if err != nil {
-		log.Fatal("Failed to find init.img in PATH:", err)
-	}
 
+	// TODO: Make the socket configurable
 	f := "./run_vminitd.sock"
 	if _, err := os.Stat(f); err == nil {
 		if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
@@ -54,11 +48,17 @@ func main() {
 		log.Fatal(err)
 	}
 
+	cf := "./run_vminitd.fifo"
+	lr, err := fifo.OpenFifo(ctx, cf, os.O_RDONLY|os.O_CREATE|syscall.O_NONBLOCK, 0644)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	args := []string{
 		"-l", f,
-		vmlinux,
-		initrd,
+		"-c", cf,
 	}
+	go io.Copy(os.Stderr, lr)
 
 	cmd := exec.CommandContext(ctx, ep, args...)
 	cmd.Stdout = os.Stdout

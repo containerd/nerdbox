@@ -55,7 +55,11 @@ func TestMain(m *testing.M) {
 }
 
 func startVM(t *testing.T) *ttrpc.Client {
-	vm := runvm.NewVMInstance()
+	vm, err := runvm.NewVMInstance()
+	if err != nil {
+		t.Fatal("Failed to create VM instance:", err)
+	}
+
 	f := filepath.Join(t.TempDir(), "run_vminitd.sock")
 
 	if err := vm.Start(t.Context(), f, ""); err != nil {

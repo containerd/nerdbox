@@ -29,7 +29,10 @@ import (
 func main() {
 	ctx := context.Background()
 
-	vm := runvm.NewVMInstance()
+	vm, err := runvm.NewVMInstance()
+	if err != nil {
+		log.Fatal("Failed to create VM instance:", err)
+	}
 
 	// TODO: Make the socket configurable
 	if err := vm.Start(ctx, "./run_vminitd.sock", ""); err != nil {

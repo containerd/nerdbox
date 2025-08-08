@@ -38,12 +38,21 @@ import (
 	"github.com/dmcgowan/nerdbox/internal/vm"
 )
 
-func NewVMInstance() vm.Instance {
-	return &vmInstance{}
+func NewVMInstance() (vm.Instance, error) {
+	// TODO: Get these from a configuration
+	ep, err := exec.LookPath("run_vminitd")
+	if err != nil {
+		return nil, fmt.Errorf("failed to find run_vminitd in PATH: %w", err)
+	}
+
+	return &vmInstance{
+		binary: ep,
+	}, nil
 }
 
 type vmInstance struct {
-	mu sync.Mutex
+	mu     sync.Mutex
+	binary string
 
 	shutdownCallbacks []func(context.Context) error // Callbacks for shutdown
 
@@ -57,12 +66,6 @@ func (v *vmInstance) Start(ctx context.Context, socketPath, rootMount string) er
 	defer v.mu.Unlock()
 	if v.pid > 0 {
 		return fmt.Errorf("VM instance already started with PID %d", v.pid)
-	}
-
-	// TODO: Get these from a configuration
-	ep, err := exec.LookPath("run_vminitd")
-	if err != nil {
-		log.Fatal("Failed to find run_vminitd in PATH:", err)
 	}
 
 	if _, err := os.Stat(socketPath); err == nil {
@@ -90,7 +93,7 @@ func (v *vmInstance) Start(ctx context.Context, socketPath, rootMount string) er
 		args = append(args, "-v", fmt.Sprintf("root=%s", rootMount))
 	}
 
-	cmd := exec.CommandContext(ctx, ep, args...)
+	cmd := exec.CommandContext(ctx, v.binary, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 

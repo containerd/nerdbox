@@ -43,8 +43,6 @@ func resolvePath(path string) (string, error) {
 
 var (
 	runVminitdPath string
-	vmlinuxPath    string
-	initImgPath    string
 )
 
 func TestMain(m *testing.M) {
@@ -64,8 +62,6 @@ func startVM(t *testing.T) *ttrpc.Client {
 
 	args := []string{
 		"-l", f,
-		vmlinuxPath,
-		initImgPath,
 	}
 
 	t1 := time.Now()

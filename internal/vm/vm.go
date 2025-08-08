@@ -1,5 +1,3 @@
-//go:build !linux
-
 /*
    Copyright The containerd Authors.
 
@@ -16,10 +14,16 @@
    limitations under the License.
 */
 
-package task
+package vm
 
-import "github.com/containerd/containerd/api/types"
+import (
+	"context"
 
-func setupMounts(m []*types.Mount, root string) ([]*types.Mount, string, error) {
-	return m, "", nil
+	"github.com/containerd/ttrpc"
+)
+
+type Instance interface {
+	Start(ctx context.Context, socketPath string, mountPath string) error
+	Client() *ttrpc.Client
+	Shutdown(context.Context) error
 }

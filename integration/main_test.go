@@ -18,16 +18,13 @@ package integration
 
 import (
 	"log"
-	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/containerd/ttrpc"
 
-	"github.com/dmcgowan/nerdbox/internal/ttrpcutil"
+	"github.com/dmcgowan/nerdbox/internal/vm/runvm"
 )
 
 func resolvePath(path string) (string, error) {
@@ -58,50 +55,16 @@ func TestMain(m *testing.M) {
 }
 
 func startVM(t *testing.T) *ttrpc.Client {
+	vm := runvm.NewVMInstance()
 	f := filepath.Join(t.TempDir(), "run_vminitd.sock")
 
-	args := []string{
-		"-l", f,
+	if err := vm.Start(t.Context(), f, ""); err != nil {
+		t.Fatal("Failed to start VM instance:", err)
 	}
-
-	t1 := time.Now()
-	cmd := exec.CommandContext(t.Context(), runVminitdPath, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("Failed to start run_vminitd: %v", err)
-	}
-	t.Log("Started run_vminitd with pid", cmd.Process.Pid)
 
 	t.Cleanup(func() {
-		cmd.Cancel()
+		vm.Shutdown(t.Context())
 	})
 
-	var conn net.Conn
-	d := 2 * time.Millisecond
-	for {
-		time.Sleep(time.Millisecond)
-		if _, err := os.Stat(f); err == nil {
-			conn, err = net.Dial("unix", f)
-			if err != nil {
-				t.Fatalf("Failed to connect to TTRPC server: %v", err)
-			}
-			t2 := time.Now()
-			if err := ttrpcutil.PingTTRPC(conn, d); err != nil {
-				t.Logf("Failed to ping TTRPC server (%s): %v", err, time.Since(t2))
-				conn.Close()
-				d = d + time.Millisecond
-				continue
-			}
-			t.Log("Successfully pinged TTRPC server at", f, "after", time.Since(t2))
-
-			t.Cleanup(func() {
-				conn.Close()
-			})
-			break
-		}
-	}
-	t.Log("Connected to TTRPC server at", f, "after", time.Since(t1))
-
-	return ttrpc.NewClient(conn)
+	return vm.Client()
 }

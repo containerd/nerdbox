@@ -34,6 +34,8 @@ import (
 	"github.com/containerd/errdefs/pkg/errgrpc"
 	"github.com/containerd/log"
 	"github.com/containerd/ttrpc"
+
+	"github.com/dmcgowan/nerdbox/internal/vm"
 )
 
 var (
@@ -85,7 +87,7 @@ type vmProcess struct {
 // service is the shim implementation of a remote shim over GRPC
 type service struct {
 	mu sync.Mutex
-	vm *vmProcess
+	vm vm.Instance
 
 	context  context.Context
 	events   chan interface{}
@@ -206,7 +208,7 @@ type containerProcess struct {
 */
 
 func (s *service) taskClient() taskAPI.TTRPCTaskService {
-	return taskAPI.NewTTRPCTaskClient(s.vm.client)
+	return taskAPI.NewTTRPCTaskClient(s.vm.Client())
 }
 
 // Create a new initial process and container with the underlying OCI runtime
@@ -249,7 +251,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	*/
 
 	// Handle mounts
-	m, mountBundle, err := setupMounts(r.Rootfs, filepath.Join(r.Bundle, "rootfs"))
+	m, mountPath, err := setupMounts(r.Rootfs, filepath.Join(r.Bundle, "rootfs"))
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
@@ -257,11 +259,13 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 
 	// TODO: Consider delaying VM start to task start, this could allow
 	// the VM to be started with the resources from all container creates
-	if err := s.startVM(ctx, r.Bundle, mountBundle); err != nil {
+
+	if err := s.startVM(ctx, filepath.Join(r.Bundle, "run_vminitd.sock"), mountPath); err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
+	s.shutdown.RegisterCallback(s.vm.Shutdown)
 
-	tc := taskAPI.NewTTRPCTaskClient(s.vm.client)
+	tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
 	// TODO: This wouldn't actually work, but lets see response
 	resp, err := tc.Create(ctx, vr)
 	if err != nil {

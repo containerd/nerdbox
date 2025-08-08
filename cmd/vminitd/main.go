@@ -20,6 +20,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -34,6 +35,7 @@ import (
 	"github.com/containerd/plugin/registry"
 	"github.com/containerd/ttrpc"
 	"github.com/mdlayher/vsock"
+	"golang.org/x/sys/unix"
 
 	_ "github.com/containerd/containerd/v2/plugins/events"
 
@@ -59,6 +61,14 @@ func main() {
 	flag.CommandLine.Parse(args)
 	flag.Parse()
 
+	c, err := os.OpenFile("/dev/console", os.O_WRONLY, 0644)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to open /dev/console: %v\n", err)
+		os.Exit(1)
+	}
+	defer c.Close()
+	log.L.Logger.SetOutput(c)
+
 	if *dev || *debug {
 		log.SetLevel("debug")
 	}
@@ -67,12 +77,11 @@ func main() {
 
 	log.G(ctx).WithField("args", args).WithField("env", os.Environ()).Debug("starting vminitd")
 
-	var err error
 	defer func() {
 		if err != nil {
 			log.G(ctx).WithError(err).Error("exiting with error")
-			//} else if p := recover(); p != nil {
-			//	log.G(ctx).WithField("panic", p).Error("recovered from panic")
+		} else if p := recover(); p != nil {
+			log.G(ctx).WithField("panic", p).Error("recovered from panic")
 		} else {
 			log.G(ctx).Debug("exiting cleanly")
 		}
@@ -134,6 +143,11 @@ func systemInit() error {
 	if err := systemMounts(); err != nil {
 		return err
 	}
+
+	if err := unix.Mknod(os.DevNull, uint32(fs.ModeDevice|fs.ModeCharDevice|0666), int(unix.Mkdev(1, 3))); err != nil {
+		return err
+	}
+
 	return setupCgroupControl()
 }
 

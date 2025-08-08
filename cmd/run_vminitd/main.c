@@ -32,8 +32,10 @@ static void print_help(char *const name)
             "Usage: %s [OPTIONS] KERNEL INITRAMFS\n"
             "OPTIONS: \n"
             "        -l    --listen-path         Socket file to connect to\n"
-            "        -c    --kernel-cmdline      Kernel command line\n"
+            "        -c    --console-path        Path to the console file for output\n"
+            "        -k    --kernel-cmdline      Kernel command line\n"
             "        -d    --data-disk           Path to a data disk in raw format\n"
+            "        -v    --virtio-fs-path      Path to a directory to send via virtiofs (tag=path)\n"
             "        -h    --help                Show help\n"
             "        -n    --nested              Enabled nested virtualization\n"
             "\n"
@@ -49,8 +51,10 @@ static void print_help(char *const name)
 
 static const struct option long_options[] = {
     {"listen-path", required_argument, NULL, 'l'},
-    {"kernel-cmdline", required_argument, NULL, 'c'},
+    {"kernel-cmdline", required_argument, NULL, 'k'},
     {"data-disk", required_argument, NULL, 'd'},
+    {"virtio-fs", required_argument, NULL, 'v'},
+    {"console-path", required_argument, NULL, 'c'},
     {"initrd-path", required_argument, NULL, 'i'},
     {"nested", no_argument, NULL, 'n'},
     {"help", no_argument, NULL, 'h'},
@@ -60,6 +64,9 @@ struct cmdline
 {
     bool show_help;
     char const *data_disk;
+    char const *virtio_fs_tag;
+    char const *virtio_fs_path;
+    char const *console_path;
     char const *passt_socket_path;
     char const *kernel_path;
     char const *kernel_cmdline;
@@ -84,18 +91,33 @@ bool parse_cmdline(int argc, char *const argv[], struct cmdline *cmdline)
     int option_index = 0;
     int c;
     // the '+' in optstring is a GNU extension that disables permutating argv
-    while ((c = getopt_long(argc, argv, "+hl:c:d:n", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "+hl:k:c:d:v:n", long_options, &option_index)) != -1)
     {
         switch (c)
         {
         case 'l':
             cmdline->listen_path = optarg;
             break;
-        case 'c':
+        case 'k':
             cmdline->kernel_cmdline = optarg;
             break;
         case 'd':
             cmdline->data_disk = optarg;
+            break;
+        case 'c':
+            cmdline->console_path = optarg;
+            break;
+        case 'v':
+            for (char *p = optarg; *p != '\0'; p++)
+            {
+                if (*p == '=')
+                {
+                    *p = '\0';
+                    cmdline->virtio_fs_path = p + 1;
+                    break;
+                }
+            }
+            cmdline->virtio_fs_tag = optarg;
             break;
         case 'h':
             cmdline->show_help = true;
@@ -111,30 +133,6 @@ bool parse_cmdline(int argc, char *const argv[], struct cmdline *cmdline)
         }
     }
 
-    /*
-    if (optind <= argc - 1)
-    {
-        cmdline->kernel_path = argv[optind++];
-    }
-
-    if (optind == argc)
-    {
-        fprintf(stderr, "Missing KERNEL argument\n");
-    }
-
-    if (optind <= argc - 1)
-    {
-        cmdline->initrd_path = argv[optind];
-        return true;
-    }
-
-    if (optind == argc)
-    {
-        fprintf(stderr, "KERNEL is set to %s\n", cmdline->kernel_path);
-        fprintf(stderr, "Missing INITRAMFS argument\n");
-    }
-    */
-
     return true;
 }
 
@@ -146,7 +144,6 @@ int main(int argc, char *const argv[])
     char kernel_path[255];
     char initrd_path[255];
     struct cmdline cmdline;
-
 
     if (!parse_cmdline(argc, argv, &cmdline))
     {
@@ -173,7 +170,6 @@ int main(int argc, char *const argv[])
     fprintf(stderr, "initrd: %s\n", initrd_path);
     fprintf(stderr, "kernel_path: %s\n", kernel_path);
     fprintf(stderr, "kernel_cmdline: %s\n", cmdline.kernel_cmdline);
-    fflush(stderr);
 
     // Set the log level to "off".
     err = krun_set_log_level(0);
@@ -193,7 +189,6 @@ int main(int argc, char *const argv[])
         return -1;
     }
 
-
     // Configure the number of vCPUs (2) and the amount of RAM (1024 MiB).
     if (err = krun_set_vm_config(ctx_id, 2, 2048))
     {
@@ -203,10 +198,8 @@ int main(int argc, char *const argv[])
     }
 
     fprintf(stderr, "config created\n");
-    fflush(stderr);
 
     fprintf(stderr, "boot disk created\n");
-    fflush(stderr);
 
     if (cmdline.data_disk)
     {
@@ -219,7 +212,6 @@ int main(int argc, char *const argv[])
     }
 
     fprintf(stderr, "setting kernel\n");
-    fflush(stderr);
 
     if (err = krun_set_kernel(ctx_id, kernel_path, KERNEL_FORMAT,
                               initrd_path, cmdline.kernel_cmdline))
@@ -230,7 +222,6 @@ int main(int argc, char *const argv[])
     }
 
     fprintf(stderr, "kernel set\n");
-    fflush(stderr);
 
     const char *const init_args[] =
     {
@@ -255,12 +246,10 @@ int main(int argc, char *const argv[])
     }   
 
     fprintf(stderr, "exec set\n");
-    fflush(stderr);
 
     if (cmdline.listen_path)
     {
         fprintf(stderr, "listen_path: %s\n", cmdline.listen_path);
-        fflush(stderr);
         if (err = krun_add_vsock_port2(ctx_id, 1025, cmdline.listen_path, true))
         {
             errno = -err;
@@ -269,6 +258,28 @@ int main(int argc, char *const argv[])
         }
     }
 
+    if (cmdline.console_path)
+    {
+        fprintf(stderr, "console_path: %s\n", cmdline.console_path);
+        if (err = krun_set_console_output(ctx_id, cmdline.console_path))
+        {
+            errno = -err;
+            perror("Error configuring console");
+            return -1;
+        }
+    }
+
+    if (cmdline.virtio_fs_path && cmdline.virtio_fs_tag)
+    {
+        fprintf(stderr, "virtio_fs_tag: %s\n", cmdline.virtio_fs_tag);
+        fprintf(stderr, "virtio_fs_path: %s\n", cmdline.virtio_fs_path);
+        if (err = krun_add_virtiofs(ctx_id, cmdline.virtio_fs_tag, cmdline.virtio_fs_path))
+        {
+            errno = -err;
+            perror("Error configuring virtiofs");
+            return -1;
+        }
+    }
 
     fprintf(stderr, "nested=%d\n", cmdline.nested);
     if (err = krun_set_nested_virt(ctx_id, cmdline.nested))
@@ -277,6 +288,8 @@ int main(int argc, char *const argv[])
         perror("Error configuring nested virtualization");
         return -1;
     }
+
+    fflush(stderr);
 
     // Start and enter the microVM. Unless there is some error while creating the microVM
     // this function never returns.

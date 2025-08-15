@@ -16,6 +16,50 @@ file {
   syntax: "proto3"
 }
 file {
+  name: "github.com/dmcgowan/nerdbox/api/services/bundle/v1/bundle.proto"
+  package: "containerd.vminitd.services.bundle.v1"
+  dependency: "google/protobuf/empty.proto"
+  message_type {
+    name: "CreateRequest"
+    field {
+      name: "id"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "id"
+    }
+    field {
+      name: "config"
+      number: 2
+      label: LABEL_OPTIONAL
+      type: TYPE_BYTES
+      json_name: "config"
+    }
+  }
+  message_type {
+    name: "CreateResponse"
+    field {
+      name: "bundle"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "bundle"
+    }
+  }
+  service {
+    name: "Bundle"
+    method {
+      name: "Create"
+      input_type: ".containerd.vminitd.services.bundle.v1.CreateRequest"
+      output_type: ".containerd.vminitd.services.bundle.v1.CreateResponse"
+    }
+  }
+  options {
+    go_package: "github.com/dmcgowan/nerdbox/api/services/bundle/v1;bundle"
+  }
+  syntax: "proto3"
+}
+file {
   name: "github.com/dmcgowan/nerdbox/api/services/system/v1/info.proto"
   package: "containerd.vminitd.services.system.v1"
   dependency: "google/protobuf/empty.proto"

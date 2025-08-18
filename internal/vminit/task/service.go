@@ -230,7 +230,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 
 	container, err := runc.NewContainer(ctx, s.platform, r)
 	if err != nil {
-		return nil, err
+		return nil, errgrpc.ToGRPC(err)
 	}
 
 	s.containers[r.ID] = container

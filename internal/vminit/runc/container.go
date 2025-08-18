@@ -126,10 +126,10 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 		rootfs,
 	)
 	if err != nil {
-		return nil, errgrpc.ToGRPC(err)
+		return nil, err
 	}
 	if err := p.Create(ctx, config); err != nil {
-		return nil, errgrpc.ToGRPC(err)
+		return nil, err
 	}
 	container := &Container{
 		ID:              r.ID,

@@ -42,6 +42,8 @@ import (
 	"github.com/dmcgowan/nerdbox/internal/vminit/process"
 )
 
+const runtimePath = "/sbin/crun"
+
 // NewContainer returns a new runc container
 func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTaskRequest) (_ *Container, retErr error) {
 	opts := &options.Options{}
@@ -76,7 +78,7 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 	config := &process.CreateConfig{
 		ID:               r.ID,
 		Bundle:           r.Bundle,
-		Runtime:          "/sbin/crun",
+		Runtime:          runtimePath,
 		Rootfs:           pmounts,
 		Terminal:         r.Terminal,
 		Stdin:            r.Stdin,

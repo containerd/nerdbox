@@ -85,6 +85,7 @@ func NewRunc(root, path, runtime string, systemd bool) *runc.Runc {
 	}
 	return &runc.Runc{
 		Command:       runtime,
+		Debug:         true,
 		Log:           filepath.Join(path, "log.json"),
 		LogFormat:     runc.JSON,
 		PdeathSignal:  unix.SIGKILL,
@@ -131,9 +132,7 @@ func (p *Init) Create(ctx context.Context, r *CreateConfig) (retError error) {
 			}
 		}()
 	}
-	if r.Checkpoint != "" {
-		return p.createCheckpointedState(r, pidFile)
-	}
+
 	opts := &runc.CreateOpts{
 		PidFile:      pidFile.Path(),
 		NoPivot:      p.NoPivotRoot,
@@ -147,6 +146,7 @@ func (p *Init) Create(ctx context.Context, r *CreateConfig) (retError error) {
 	}
 
 	if err := p.runtime.Create(ctx, r.ID, r.Bundle, opts); err != nil {
+		dumpLog(ctx, p.runtime.Log)
 		return p.runtimeError(err, "OCI runtime create failed")
 	}
 	if r.Stdin != "" {
@@ -189,28 +189,14 @@ func (p *Init) openStdin(path string) error {
 	return nil
 }
 
-func (p *Init) createCheckpointedState(r *CreateConfig, pidFile *pidFile) error {
-	opts := &runc.RestoreOpts{
-		CheckpointOpts: runc.CheckpointOpts{
-			ImagePath:  r.Checkpoint,
-			WorkDir:    p.CriuWorkPath,
-			ParentPath: r.ParentCheckpoint,
-		},
-		PidFile:     pidFile.Path(),
-		NoPivot:     p.NoPivotRoot,
-		Detach:      true,
-		NoSubreaper: true,
+func dumpLog(ctx context.Context, logFile string) {
+	f, err := os.Open(logFile)
+	if err != nil {
+		log.G(ctx).WithError(err).WithField("f", logFile).Warn("failed to open log file")
+		return
 	}
-
-	if p.io != nil {
-		opts.IO = p.io.IO()
-	}
-
-	p.initState = &createdCheckpointState{
-		p:    p,
-		opts: opts,
-	}
-	return nil
+	defer f.Close()
+	io.Copy(os.Stderr, f)
 }
 
 // Wait for the process to exit

@@ -18,17 +18,20 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io/fs"
 	"net"
 	"os"
-	"path/filepath"
+	"os/signal"
+	"runtime"
 	"time"
 
-	"github.com/containerd/containerd/pkg/shutdown"
 	"github.com/containerd/containerd/v2/core/mount"
-	"github.com/containerd/containerd/v2/plugins"
+	"github.com/containerd/containerd/v2/pkg/shutdown"
+	"github.com/containerd/containerd/v2/pkg/sys/reaper"
+	cplugins "github.com/containerd/containerd/v2/plugins"
 	"github.com/containerd/log"
 	"github.com/containerd/otelttrpc"
 	"github.com/containerd/plugin"
@@ -37,8 +40,12 @@ import (
 	"github.com/mdlayher/vsock"
 	"golang.org/x/sys/unix"
 
+	"github.com/dmcgowan/nerdbox/internal/systools"
+	"github.com/dmcgowan/nerdbox/plugins"
+
 	_ "github.com/containerd/containerd/v2/plugins/events"
 
+	_ "github.com/dmcgowan/nerdbox/plugins/services/bundle"
 	_ "github.com/dmcgowan/nerdbox/plugins/services/system"
 	_ "github.com/dmcgowan/nerdbox/plugins/vminit/task"
 )
@@ -61,13 +68,16 @@ func main() {
 	flag.CommandLine.Parse(args)
 	flag.Parse()
 
-	c, err := os.OpenFile("/dev/console", os.O_WRONLY, 0644)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to open /dev/console: %v\n", err)
-		os.Exit(1)
-	}
-	defer c.Close()
-	log.L.Logger.SetOutput(c)
+	/*
+		c, err := os.OpenFile("/dev/console", os.O_WRONLY, 0644)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to open /dev/console: %v\n", err)
+			os.Exit(1)
+		}
+		defer c.Close()
+		log.L.Logger.SetOutput(c)
+	*/
+	var err error
 
 	if *dev || *debug {
 		log.SetLevel("debug")
@@ -102,32 +112,10 @@ func main() {
 	}
 
 	if *debug {
-		filepath.Walk("/", func(path string, info os.FileInfo, err error) error {
-			if path == "/proc" || path == "/sys" {
-				path = fmt.Sprintf("%s (skipping)", path)
-				err = filepath.SkipDir
-			}
-
-			if info != nil {
-				log.G(ctx).WithFields(
-					log.Fields{
-						"mode": info.Mode(),
-						"size": info.Size(),
-					}).Debug(path)
-			}
-
-			return err
-		})
-
-		b, err := os.ReadFile("/proc/cmdline")
-		if err != nil {
-			return
-		}
-		log.G(ctx).WithField("cmdline", string(b)).Debug("kernel command line")
+		systools.DumpInfo(ctx)
 	}
 
 	ctx, config.Shutdown = shutdown.WithShutdown(ctx)
-	defer config.Shutdown.Shutdown()
 
 	service, err := New(ctx, config)
 	if err != nil {
@@ -136,7 +124,43 @@ func main() {
 
 	log.G(ctx).WithField("t", time.Since(t1)).Debug("initialized vminitd")
 
-	err = service.Run(ctx)
+	runtime.GOMAXPROCS(2)
+
+	serviceErr := make(chan error, 1)
+	go func() {
+		serviceErr <- service.Run(ctx)
+	}()
+
+	s := make(chan os.Signal, 16)
+	signal.Notify(s, unix.SIGKILL, unix.SIGINT, unix.SIGTERM, unix.SIGHUP, unix.SIGQUIT, unix.SIGCHLD)
+	for {
+		select {
+		case <-config.Shutdown.Done():
+			if err := config.Shutdown.Err(); err != nil && !errors.Is(err, shutdown.ErrShutdown) {
+				log.G(ctx).WithError(err).Error("shutdown error")
+			}
+			return
+		case err := <-serviceErr:
+			log.G(ctx).WithError(err).Error("service exited")
+			return
+		case sig := <-s:
+			switch sig {
+			case unix.SIGCHLD:
+				if err := reaper.Reap(); err != nil {
+					log.G(ctx).WithError(err).Error("failed to reap child process")
+				} else {
+					log.G(ctx).Debug("reaped child process")
+				}
+			case unix.SIGKILL, unix.SIGINT, unix.SIGTERM, unix.SIGQUIT:
+				config.Shutdown.Shutdown()
+				log.G(ctx).WithField("signal", sig).Info("received shutdown signal")
+			default:
+				log.G(ctx).WithField("signal", sig).Debug("received unhandled signal")
+			}
+		}
+
+	}
+
 }
 
 func systemInit() error {
@@ -208,8 +232,10 @@ type ServiceConfig struct {
 func New(ctx context.Context, config ServiceConfig) (Runnable, error) {
 	var (
 		initializedPlugins = plugin.NewPluginSet()
-		pluginProperties   = map[string]string{}
-		disabledPlugins    = map[string]struct{}{}
+		pluginProperties   = map[string]string{
+			plugins.PropertyBundleDir: "/run/bundles",
+		}
+		disabledPlugins = map[string]struct{}{}
 		// TODO: service config?
 	)
 
@@ -223,9 +249,10 @@ func New(ctx context.Context, config ServiceConfig) (Runnable, error) {
 	if err != nil {
 		return nil, err
 	}
+	config.Shutdown.RegisterCallback(ts.Shutdown)
 
 	registry.Register(&plugin.Registration{
-		Type: plugins.InternalPlugin,
+		Type: cplugins.InternalPlugin,
 		ID:   "shutdown",
 		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
 			return config.Shutdown, nil
@@ -282,8 +309,7 @@ func New(ctx context.Context, config ServiceConfig) (Runnable, error) {
 }
 
 func (s *service) Run(ctx context.Context) error {
-	s.server.Serve(ctx, s.l)
-	return nil
+	return s.server.Serve(ctx, s.l)
 }
 
 func newTTRPCServer() (*ttrpc.Server, error) {

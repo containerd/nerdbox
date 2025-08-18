@@ -19,31 +19,32 @@ package plugin
 import (
 	"github.com/containerd/containerd/v2/core/events"
 	"github.com/containerd/containerd/v2/pkg/shutdown"
-	"github.com/containerd/containerd/v2/plugins"
+	cplugins "github.com/containerd/containerd/v2/plugins"
 	"github.com/containerd/plugin"
 	"github.com/containerd/plugin/registry"
 
+	"github.com/dmcgowan/nerdbox/plugins"
 	"github.com/dmcgowan/nerdbox/internal/vminit/task"
 )
 
 func init() {
 	registry.Register(&plugin.Registration{
-		Type: plugins.TTRPCPlugin,
+		Type: cplugins.TTRPCPlugin,
 		ID:   "task",
 		Requires: []plugin.Type{
-			plugins.EventPlugin,
-			plugins.InternalPlugin,
+			cplugins.EventPlugin,
+			cplugins.InternalPlugin,
 		},
 		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
-			pp, err := ic.GetSingle(plugins.EventPlugin)
+			pp, err := ic.GetSingle(cplugins.EventPlugin)
 			if err != nil {
 				return nil, err
 			}
-			ss, err := ic.GetByID(plugins.InternalPlugin, "shutdown")
+			ss, err := ic.GetByID(cplugins.InternalPlugin, "shutdown")
 			if err != nil {
 				return nil, err
 			}
-			return task.NewTaskService(ic.Context, pp.(events.Publisher), ss.(shutdown.Service))
+			return task.NewTaskService(ic.Context, ic.Properties[plugins.PropertyBundleDir], pp.(events.Publisher), ss.(shutdown.Service))
 		},
 	})
 

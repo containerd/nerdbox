@@ -61,7 +61,7 @@ var (
 )
 
 // NewTaskService creates a new instance of a task service
-func NewTaskService(ctx context.Context, publisher events.Publisher, sd shutdown.Service) (taskAPI.TTRPCTaskService, error) {
+func NewTaskService(ctx context.Context, bundle string, publisher events.Publisher, sd shutdown.Service) (taskAPI.TTRPCTaskService, error) {
 	if cgroups.Mode() != cgroups.Unified {
 		return nil, fmt.Errorf("only unified cgroups mode is supported: %w", errdefs.ErrNotImplemented)
 	}

@@ -23,3 +23,8 @@ const (
 	// TTRPCPlugin implements a ttrpc service
 	TTRPCPlugin plugin.Type = "io.containerd.ttrpc.v1"
 )
+
+const (
+	// PropertyBundleDir sets the bundle directory property for containers
+	PropertyBundleDir = "nerdbox.bundle"
+)

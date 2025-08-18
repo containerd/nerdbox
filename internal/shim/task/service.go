@@ -19,6 +19,7 @@ package task
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 
@@ -35,6 +36,7 @@ import (
 	"github.com/containerd/log"
 	"github.com/containerd/ttrpc"
 
+	bundleAPI "github.com/dmcgowan/nerdbox/api/services/bundle/v1"
 	"github.com/dmcgowan/nerdbox/internal/vm"
 )
 
@@ -209,7 +211,14 @@ type containerProcess struct {
 
 // Create a new initial process and container with the underlying OCI runtime
 func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *taskAPI.CreateTaskResponse, err error) {
-	log.G(ctx).WithFields(log.Fields{"id": r.ID, "bundle": r.Bundle, "rootfs": r.Rootfs}).Info("creating container task")
+	log.G(ctx).WithFields(log.Fields{
+		"id":     r.ID,
+		"bundle": r.Bundle,
+		"rootfs": r.Rootfs,
+		"stdin":  r.Stdin,
+		"stdout": r.Stdout,
+		"stderr": r.Stderr,
+	}).Info("creating container task")
 
 	if r.Checkpoint != "" || r.ParentCheckpoint != "" {
 		return nil, errgrpc.ToGRPC(fmt.Errorf("checkpoints not supported: %w", errdefs.ErrNotImplemented))
@@ -256,6 +265,19 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		return nil, errgrpc.ToGRPC(err)
 	}
 	s.shutdown.RegisterCallback(s.vm.Shutdown)
+
+	cb, err := os.ReadFile(filepath.Join(r.Bundle, "config.json"))
+	if err != nil {
+		return nil, errgrpc.ToGRPCf(err, "failed to read config file")
+	}
+
+	br, err := bundleAPI.NewTTRPCBundleClient(s.vm.Client()).Create(ctx, &bundleAPI.CreateRequest{
+		ID:     r.ID,
+		Config: cb,
+	})
+	if err != nil {
+		return nil, err
+	}
 
 	vr := &taskAPI.CreateTaskRequest{
 		ID:      r.ID,

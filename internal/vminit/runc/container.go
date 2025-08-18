@@ -100,15 +100,18 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 			Options: pm.Options,
 		})
 	}
-	defer func() {
-		if retErr != nil {
-			if err := mount.UnmountMounts(mounts, rootfs, 0); err != nil {
-				log.G(ctx).WithError(err).Warn("failed to cleanup rootfs mount")
-			}
+
+	if len(mounts) != 0 && (len(mounts) != 1 || mounts[0].Type != "bind" || mounts[0].Source != rootfs) {
+		if err := mount.All(mounts, rootfs); err != nil {
+			return nil, fmt.Errorf("failed to mount rootfs component: %w", err)
 		}
-	}()
-	if err := mount.All(mounts, rootfs); err != nil {
-		return nil, fmt.Errorf("failed to mount rootfs component: %w", err)
+		defer func() {
+			if retErr != nil {
+				if err := mount.UnmountMounts(mounts, rootfs, 0); err != nil {
+					log.G(ctx).WithError(err).Warn("failed to cleanup rootfs mount")
+				}
+			}
+		}()
 	}
 
 	p, err := newInit(

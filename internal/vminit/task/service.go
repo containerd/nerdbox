@@ -32,7 +32,6 @@ import (
 	"github.com/containerd/containerd/api/types/runc/options"
 	"github.com/containerd/containerd/api/types/task"
 	"github.com/containerd/containerd/v2/core/events"
-	"github.com/containerd/containerd/v2/core/mount"
 	"github.com/containerd/containerd/v2/core/runtime"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/containerd/v2/pkg/oom"
@@ -227,15 +226,6 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	s.lifecycleMu.Unlock()
 	defer cleanup()
 
-	// TODO: This should be provided or mounted
-	if len(r.Rootfs) == 1 && r.Rootfs[0].Type == "bind" && r.Rootfs[0].Source == "/root/rootfs" {
-		m := mount.Mount{
-			Type:   "virtiofs",
-			Source: "root",
-		}
-		if err := m.Mount("/root"); err != nil {
-			return nil, errgrpc.ToGRPC(err)
-		}
 	}
 
 	container, err := runc.NewContainer(ctx, s.platform, r)

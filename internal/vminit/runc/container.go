@@ -33,7 +33,6 @@ import (
 	"github.com/containerd/containerd/api/runtime/task/v3"
 	"github.com/containerd/containerd/api/types/runc/options"
 	"github.com/containerd/containerd/v2/core/mount"
-	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/containerd/v2/pkg/stdio"
 	"github.com/containerd/errdefs"
 	"github.com/containerd/errdefs/pkg/errgrpc"
@@ -45,11 +44,6 @@ import (
 
 // NewContainer returns a new runc container
 func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTaskRequest) (_ *Container, retErr error) {
-	ns, err := namespaces.NamespaceRequired(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("create namespace: %w", err)
-	}
-
 	opts := &options.Options{}
 	if r.Options.GetValue() != nil {
 		v, err := typeurl.UnmarshalAny(r.Options)
@@ -121,7 +115,6 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 		ctx,
 		r.Bundle,
 		filepath.Join(r.Bundle, "work"),
-		ns,
 		platform,
 		config,
 		opts,
@@ -182,9 +175,10 @@ func WriteOptions(path string, opts *options.Options) error {
 	return os.WriteFile(filepath.Join(path, optionsFilename), data, 0600)
 }
 
-func newInit(ctx context.Context, path, workDir, namespace string, platform stdio.Platform,
+func newInit(ctx context.Context, path, workDir string, platform stdio.Platform,
 	r *process.CreateConfig, options *options.Options, rootfs string) (*process.Init, error) {
-	runtime := process.NewRunc(options.Root, path, namespace, "/sbin/crun", options.SystemdCgroup)
+	runtime := process.NewRunc(options.Root, path, runtimePath, options.SystemdCgroup)
+
 	p := process.New(r.ID, runtime, stdio.Stdio{
 		Stdin:    r.Stdin,
 		Stdout:   r.Stdout,

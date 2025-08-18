@@ -79,7 +79,7 @@ type Init struct {
 }
 
 // NewRunc returns a new runc instance for a process
-func NewRunc(root, path, namespace, runtime string, systemd bool) *runc.Runc {
+func NewRunc(root, path, runtime string, systemd bool) *runc.Runc {
 	if root == "" {
 		root = RuncRoot
 	}
@@ -88,7 +88,7 @@ func NewRunc(root, path, namespace, runtime string, systemd bool) *runc.Runc {
 		Log:           filepath.Join(path, "log.json"),
 		LogFormat:     runc.JSON,
 		PdeathSignal:  unix.SIGKILL,
-		Root:          filepath.Join(root, namespace),
+		Root:          root,
 		SystemdCgroup: systemd,
 	}
 }

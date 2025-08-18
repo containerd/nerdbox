@@ -16,6 +16,7 @@ require (
 	github.com/containerd/plugin v1.0.0
 	github.com/containerd/ttrpc v1.2.7
 	github.com/containerd/typeurl/v2 v2.2.3
+	github.com/ebitengine/purego v0.8.4
 	github.com/mdlayher/vsock v1.2.1
 	github.com/moby/sys/userns v0.1.0
 	github.com/opencontainers/runtime-spec v1.2.1

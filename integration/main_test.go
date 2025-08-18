@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	"github.com/dmcgowan/nerdbox/internal/vm"
+	"github.com/dmcgowan/nerdbox/internal/vm/libkrun"
 	"github.com/dmcgowan/nerdbox/internal/vm/runvm"
 )
 
@@ -51,14 +52,12 @@ func runWithVM(t *testing.T, runTest func(*testing.T, vm.Instance)) {
 			name:   "run_vminitd",
 			create: runvm.NewVMInstance,
 		},
-		/*
-			{
-				name: "libkrun",
-				create: func() (vm.Instance, error) {
-					return libkrun.NewVMInstance(libkrun.DebugLevel)
-				},
+		{
+			name: "libkrun",
+			create: func() (vm.Instance, error) {
+				return libkrun.NewVMInstance(libkrun.DebugLevel)
 			},
-		*/
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			vm, err := tc.create()

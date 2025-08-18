@@ -207,10 +207,6 @@ type containerProcess struct {
 	}
 */
 
-func (s *service) taskClient() taskAPI.TTRPCTaskService {
-	return taskAPI.NewTTRPCTaskClient(s.vm.Client())
-}
-
 // Create a new initial process and container with the underlying OCI runtime
 func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *taskAPI.CreateTaskResponse, err error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID, "bundle": r.Bundle, "rootfs": r.Rootfs}).Info("creating container task")
@@ -219,12 +215,6 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		return nil, errgrpc.ToGRPC(fmt.Errorf("checkpoints not supported: %w", errdefs.ErrNotImplemented))
 	}
 
-	// Get ID?
-
-	vr := &taskAPI.CreateTaskRequest{
-		ID:     r.ID,
-		Bundle: "/root", // TODO: This needs to change to support multiple containers
-	}
 	/*
 		Rootfs           []*types.Mount `protobuf:"bytes,3,rep,name=rootfs,proto3" json:"rootfs,omitempty"`
 		Terminal         bool           `protobuf:"varint,4,opt,name=terminal,proto3" json:"terminal,omitempty"`
@@ -251,19 +241,28 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	*/
 
 	// Handle mounts
-	m, mountPath, err := setupMounts(r.Rootfs, filepath.Join(r.Bundle, "rootfs"))
+	m, err := setupMounts(r.ID, r.Rootfs, filepath.Join(r.Bundle, "rootfs"))
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
-	vr.Rootfs = m
 
 	// TODO: Consider delaying VM start to task start, this could allow
 	// the VM to be started with the resources from all container creates
 
-	if err := s.startVM(ctx, filepath.Join(r.Bundle, "run_vminitd.sock"), mountPath); err != nil {
+	mounts := map[string]string{
+		fmt.Sprintf("rootfs-%s", r.ID): filepath.Join(r.Bundle, "rootfs"),
+	}
+	if err := s.startVM(ctx, filepath.Join(r.Bundle, "run_vminitd.sock"), mounts); err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
 	s.shutdown.RegisterCallback(s.vm.Shutdown)
+
+	vr := &taskAPI.CreateTaskRequest{
+		ID:      r.ID,
+		Bundle:  br.Bundle,
+		Rootfs:  m,
+		Options: r.Options,
+	}
 
 	tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
 	// TODO: This wouldn't actually work, but lets see response

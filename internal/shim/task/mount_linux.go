@@ -17,11 +17,13 @@
 package task
 
 import (
+	"fmt"
+
 	"github.com/containerd/containerd/api/types"
 	"github.com/containerd/containerd/v2/core/mount"
 )
 
-func setupMounts(m []*types.Mount, root string) ([]*types.Mount, string, error) {
+func setupMounts(id string, m []*types.Mount, root string) ([]*types.Mount, error) {
 	if len(m) == 1 && (m[0].Type == "overlay" || m[0].Type == "bind") {
 		mnt := mount.Mount{
 			Type:    m[0].Type,
@@ -29,19 +31,16 @@ func setupMounts(m []*types.Mount, root string) ([]*types.Mount, string, error) 
 			Options: m[0].Options,
 		}
 		if err := mnt.Mount(root); err != nil {
-			return nil, "", err
+			return nil, err
 		}
-		/*
-			return []*types.Mount{&types.Mount{
-				Type:   "bind",
-				Source: "/root/rootfs",
-				// TODO: Translate the options
-				//Options: m[0].Options,
-			}}, true, nil
-		*/
-		return []*types.Mount{}, root, nil
+		return []*types.Mount{&types.Mount{
+			Type:   "virtiofs",
+			Source: fmt.Sprintf("rootfs-%s", id),
+			// TODO: Translate the options
+			//Options: m[0].Options,
+		}}, nil
 	}
 	// TODO: Handle other mount types and devices
 
-	return m, "", nil
+	return m, nil
 }

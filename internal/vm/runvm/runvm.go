@@ -31,6 +31,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/containerd/errdefs"
 	"github.com/containerd/fifo"
 	"github.com/containerd/ttrpc"
 
@@ -61,7 +62,7 @@ type vmInstance struct {
 	client *ttrpc.Client
 }
 
-func (v *vmInstance) Start(ctx context.Context, socketPath, rootMount string) error {
+func (v *vmInstance) Start(ctx context.Context, socketPath string, mounts map[string]string) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.pid > 0 {
@@ -87,10 +88,15 @@ func (v *vmInstance) Start(ctx context.Context, socketPath, rootMount string) er
 	args := []string{
 		"-l", socketPath,
 		"-c", cf,
+		"-k", "console=hvc0",
 	}
 	go io.Copy(os.Stderr, lr)
-	if rootMount != "" {
-		args = append(args, "-v", fmt.Sprintf("root=%s", rootMount))
+
+	if len(mounts) > 1 {
+		return fmt.Errorf("multiple mounts are not yet supported: %w", errdefs.ErrNotImplemented)
+	}
+	for tag, p := range mounts {
+		args = append(args, "-v", fmt.Sprintf("%s=%s", tag, p))
 	}
 
 	cmd := exec.CommandContext(ctx, v.binary, args...)

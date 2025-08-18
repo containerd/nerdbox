@@ -35,7 +35,7 @@ func main() {
 	}
 
 	// TODO: Make the socket configurable
-	if err := vm.Start(ctx, "./run_vminitd.sock", ""); err != nil {
+	if err := vm.Start(ctx, "./run_vminitd.sock", nil); err != nil {
 		log.Fatal("Failed to start VM instance:", err)
 	}
 

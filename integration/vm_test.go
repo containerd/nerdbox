@@ -20,19 +20,22 @@ import (
 	"testing"
 
 	systemapi "github.com/dmcgowan/nerdbox/api/services/system/v1"
+	"github.com/dmcgowan/nerdbox/internal/vm"
 )
 
 func TestSystemInfo(t *testing.T) {
-	client := startVM(t)
+	runWithVM(t, func(t *testing.T, i vm.Instance) {
+		client := i.Client()
 
-	ss := systemapi.NewTTRPCSystemClient(client)
+		ss := systemapi.NewTTRPCSystemClient(client)
 
-	resp, err := ss.Info(t.Context(), nil)
-	if err != nil {
-		t.Fatal("failed to get system info:", err)
-	}
-	if resp.Version != "dev" {
-		t.Fatalf("unexpected version: %s, expected: dev", resp.Version)
-	}
-	t.Log("Kernel Version:", resp.KernelVersion)
+		resp, err := ss.Info(t.Context(), nil)
+		if err != nil {
+			t.Fatal("failed to get system info:", err)
+		}
+		if resp.Version != "dev" {
+			t.Fatalf("unexpected version: %s, expected: dev", resp.Version)
+		}
+		t.Log("Kernel Version:", resp.KernelVersion)
+	})
 }

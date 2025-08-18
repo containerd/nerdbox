@@ -22,7 +22,7 @@ import (
 	"github.com/dmcgowan/nerdbox/internal/vm/runvm"
 )
 
-func (s *service) startVM(ctx context.Context, socketPath string, mountPath string) (err error) {
+func (s *service) startVM(ctx context.Context, socketPath string, mounts map[string]string) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.vm != nil {
@@ -33,5 +33,5 @@ func (s *service) startVM(ctx context.Context, socketPath string, mountPath stri
 	if err != nil {
 		return err
 	}
-	return s.vm.Start(ctx, socketPath, mountPath)
+	return s.vm.Start(ctx, socketPath, mounts)
 }

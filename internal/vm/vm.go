@@ -23,7 +23,7 @@ import (
 )
 
 type Instance interface {
-	Start(ctx context.Context, socketPath string, mountPath string) error
+	Start(ctx context.Context, socketPath string, mountPath map[string]string) error
 	Client() *ttrpc.Client
 	Shutdown(context.Context) error
 }

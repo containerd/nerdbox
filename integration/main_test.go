@@ -22,31 +22,19 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/containerd/ttrpc"
-
+	"github.com/dmcgowan/nerdbox/internal/vm"
 	"github.com/dmcgowan/nerdbox/internal/vm/runvm"
-)
-
-func resolvePath(path string) (string, error) {
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return "", err
-	}
-	if _, err := os.Stat(absPath); err != nil {
-		return "", err
-	}
-	return absPath, nil
-}
-
-var (
-	runVminitdPath string
 )
 
 func TestMain(m *testing.M) {
 	var err error
-	runVminitdPath, err = resolvePath("../build/run_vminitd")
+
+	absPath, err := filepath.Abs("../build")
 	if err != nil {
-		log.Fatalf("Failed to resolve run_vminitd path: %v", err)
+		log.Fatalf("Failed to resolve build path: %v", err)
+	}
+	if err := os.Setenv("PATH", absPath+":"+os.Getenv("PATH")); err != nil {
+		log.Fatalf("Failed to set PATH environment variable: %v", err)
 	}
 
 	r := m.Run()
@@ -54,21 +42,40 @@ func TestMain(m *testing.M) {
 	os.Exit(r)
 }
 
-func startVM(t *testing.T) *ttrpc.Client {
-	vm, err := runvm.NewVMInstance()
-	if err != nil {
-		t.Fatal("Failed to create VM instance:", err)
+func runWithVM(t *testing.T, runTest func(*testing.T, vm.Instance)) {
+	for _, tc := range []struct {
+		name   string
+		create func() (vm.Instance, error)
+	}{
+		{
+			name:   "run_vminitd",
+			create: runvm.NewVMInstance,
+		},
+		/*
+			{
+				name: "libkrun",
+				create: func() (vm.Instance, error) {
+					return libkrun.NewVMInstance(libkrun.DebugLevel)
+				},
+			},
+		*/
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vm, err := tc.create()
+			if err != nil {
+				t.Fatal("Failed to create VM instance:", err)
+			}
+
+			f := filepath.Join(t.TempDir(), "vminitd.sock")
+			if err := vm.Start(t.Context(), f, nil); err != nil {
+				t.Fatal("Failed to start VM instance:", err)
+			}
+
+			t.Cleanup(func() {
+				vm.Shutdown(t.Context())
+			})
+
+			runTest(t, vm)
+		})
 	}
-
-	f := filepath.Join(t.TempDir(), "run_vminitd.sock")
-
-	if err := vm.Start(t.Context(), f, ""); err != nil {
-		t.Fatal("Failed to start VM instance:", err)
-	}
-
-	t.Cleanup(func() {
-		vm.Shutdown(t.Context())
-	})
-
-	return vm.Client()
 }

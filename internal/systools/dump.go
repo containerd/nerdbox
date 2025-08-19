@@ -17,8 +17,11 @@
 package systools
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -61,4 +64,33 @@ func DumpInfo(ctx context.Context) {
 		log.G(ctx).WithField("command", "crun --version").Debug(strings.ReplaceAll(string(b), "\n", ", "))
 	}
 	DumpPids(ctx)
+}
+
+func DumpFile(ctx context.Context, name string) {
+	e := log.G(ctx)
+	if e.Logger.IsLevelEnabled(log.DebugLevel) {
+		f, err := os.Open(name)
+		if err == nil {
+			defer f.Close()
+			log.G(ctx).WithField("f", name).Debug("dumping file to stderr")
+			if strings.HasSuffix(name, ".json") {
+				var b bytes.Buffer
+				v := map[string]any{}
+				io.Copy(&b, f)
+				if err := json.Unmarshal(b.Bytes(), &v); err != nil {
+					os.Stderr.Write(b.Bytes())
+					fmt.Fprintln(os.Stderr)
+					return
+				}
+				enc := json.NewEncoder(os.Stderr)
+				enc.SetIndent("", "  ")
+				enc.Encode(v)
+			} else {
+				io.Copy(os.Stderr, f)
+				fmt.Fprintln(os.Stderr)
+			}
+		} else {
+			log.G(ctx).WithError(err).WithField("f", name).Warn("failed to open file to dump")
+		}
+	}
 }

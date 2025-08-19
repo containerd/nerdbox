@@ -22,6 +22,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/containerd/cgroups/v3"
@@ -50,6 +51,7 @@ import (
 	"github.com/containerd/typeurl/v2"
 	"github.com/moby/sys/userns"
 
+	"github.com/dmcgowan/nerdbox/internal/systools"
 	"github.com/dmcgowan/nerdbox/internal/vminit/process"
 	"github.com/dmcgowan/nerdbox/internal/vminit/runc"
 )
@@ -219,19 +221,22 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	log.G(ctx).WithField("request", r).Infof("Create")
+	ctx = log.WithLogger(ctx, log.G(ctx).WithField("id", r.ID))
+
+	log.G(ctx).WithField("bundle", r.Bundle).Infof("Create task")
 
 	s.lifecycleMu.Lock()
 	handleStarted, cleanup := s.preStart(nil)
 	s.lifecycleMu.Unlock()
 	defer cleanup()
 
-	}
+	systools.DumpFile(ctx, filepath.Join(r.Bundle, "config.json"))
 
 	container, err := runc.NewContainer(ctx, s.platform, r)
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
+	log.G(ctx).Infof("new container %s", container.ID)
 
 	s.containers[r.ID] = container
 

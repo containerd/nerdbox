@@ -39,6 +39,8 @@ import (
 	"github.com/containerd/log"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"golang.org/x/sys/unix"
+
+	"github.com/dmcgowan/nerdbox/internal/systools"
 )
 
 // Init represents an initial process for a container
@@ -145,10 +147,11 @@ func (p *Init) Create(ctx context.Context, r *CreateConfig) (retError error) {
 		opts.ConsoleSocket = socket
 	}
 
-	if err := p.runtime.Create(ctx, r.ID, r.Bundle, opts); err != nil {
-		dumpLog(ctx, p.runtime.Log)
+	if err := p.runtime.Create(context.WithoutCancel(ctx), r.ID, r.Bundle, opts); err != nil {
+		systools.DumpFile(ctx, p.runtime.Log)
 		return p.runtimeError(err, "OCI runtime create failed")
 	}
+
 	if r.Stdin != "" {
 		if err := p.openStdin(r.Stdin); err != nil {
 			return err
@@ -187,16 +190,6 @@ func (p *Init) openStdin(path string) error {
 	p.stdin = sc
 	p.closers = append(p.closers, sc)
 	return nil
-}
-
-func dumpLog(ctx context.Context, logFile string) {
-	f, err := os.Open(logFile)
-	if err != nil {
-		log.G(ctx).WithError(err).WithField("f", logFile).Warn("failed to open log file")
-		return
-	}
-	defer f.Close()
-	io.Copy(os.Stderr, f)
 }
 
 // Wait for the process to exit

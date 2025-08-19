@@ -243,6 +243,10 @@ func New(ctx context.Context, config ServiceConfig) (Runnable, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to listen on vsock port %d with context id %d: %w", config.VSockPort, config.VSockContextID, err)
 	}
+	config.Shutdown.RegisterCallback(func(ctx context.Context) error {
+		return l.Close()
+	})
+
 	ts, err := ttrpc.NewServer(
 		ttrpc.WithUnaryServerInterceptor(otelttrpc.UnaryServerInterceptor()),
 	)

@@ -45,6 +45,7 @@ func PingTTRPC(rw net.Conn, d time.Duration) error {
 	if err != nil {
 		return err
 	}
+	rw.SetReadDeadline(time.Time{}) // Clear the deadline
 	length := binary.BigEndian.Uint32(p[:4])
 	sid := binary.BigEndian.Uint32(p[4:8])
 	if sid != 0 {

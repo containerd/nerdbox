@@ -19,7 +19,7 @@ package task
 import (
 	"context"
 
-	"github.com/dmcgowan/nerdbox/internal/vm/runvm"
+	"github.com/dmcgowan/nerdbox/internal/vm/libkrun"
 )
 
 func (s *service) startVM(ctx context.Context, socketPath string, mounts map[string]string) (err error) {
@@ -29,7 +29,7 @@ func (s *service) startVM(ctx context.Context, socketPath string, mounts map[str
 		return nil
 	}
 
-	s.vm, err = runvm.NewVMInstance()
+	s.vm, err = libkrun.NewVMInstance(libkrun.DebugLevel)
 	if err != nil {
 		return err
 	}

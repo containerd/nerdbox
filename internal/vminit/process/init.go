@@ -136,8 +136,10 @@ func (p *Init) Create(ctx context.Context, r *CreateConfig) (retError error) {
 	}
 
 	opts := &runc.CreateOpts{
-		PidFile:      pidFile.Path(),
-		NoPivot:      p.NoPivotRoot,
+		PidFile: pidFile.Path(),
+		// Pivot root is returning invalid argument
+		// Could otherwise use p.NoPivotRoot
+		NoPivot:      true,
 		NoNewKeyring: p.NoNewKeyring,
 	}
 	if p.io != nil {

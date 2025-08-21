@@ -133,82 +133,6 @@ type containerProcess struct {
 	Process   process.Process
 }
 
-/*
-// preStart prepares for starting a container process and handling its exit.
-// The container being started should be passed in as c when starting the container
-// init process for an already-created container. c should be nil when creating a
-// container or when starting an exec.
-//
-// The returned handleStarted closure records that the process has started so
-// that its exit can be handled efficiently. If the process has already exited,
-// it handles the exit immediately.
-// handleStarted should be called after the event announcing the start of the
-// process has been published. Note that s.lifecycleMu must not be held when
-// calling handleStarted.
-//
-// The returned cleanup closure releases resources used to handle early exits.
-// It must be called before the caller of preStart returns, otherwise severe
-// memory leaks will occur.
-
-	func (s *service) preStart(c *runc.Container) (handleStarted func(*runc.Container, process.Process), cleanup func()) {
-		exits := make(map[int][]runcC.Exit)
-		s.exitSubscribers[&exits] = struct{}{}
-
-		if c != nil {
-			// Remove container init process from s.running so it will once again be
-			// treated as an early exit if it exits before handleStarted is called.
-			pid := c.Pid()
-			var newRunning []containerProcess
-			for _, cp := range s.running[pid] {
-				if cp.Container != c {
-					newRunning = append(newRunning, cp)
-				}
-			}
-			if len(newRunning) > 0 {
-				s.running[pid] = newRunning
-			} else {
-				delete(s.running, pid)
-			}
-		}
-
-		handleStarted = func(c *runc.Container, p process.Process) {
-			var pid int
-			if p != nil {
-				pid = p.Pid()
-			}
-
-			s.lifecycleMu.Lock()
-
-			ees, exited := exits[pid]
-			delete(s.exitSubscribers, &exits)
-			exits = nil
-			if pid == 0 || exited {
-				s.lifecycleMu.Unlock()
-				for _, ee := range ees {
-					s.handleProcessExit(ee, c, p)
-				}
-			} else {
-				// Process start was successful, add to `s.running`.
-				s.running[pid] = append(s.running[pid], containerProcess{
-					Container: c,
-					Process:   p,
-				})
-				s.lifecycleMu.Unlock()
-			}
-		}
-
-		cleanup = func() {
-			if exits != nil {
-				s.lifecycleMu.Lock()
-				defer s.lifecycleMu.Unlock()
-				delete(s.exitSubscribers, &exits)
-			}
-		}
-
-		return handleStarted, cleanup
-	}
-*/
-
 // Create a new initial process and container with the underlying OCI runtime
 func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *taskAPI.CreateTaskResponse, err error) {
 	log.G(ctx).WithFields(log.Fields{
@@ -223,31 +147,6 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	if r.Checkpoint != "" || r.ParentCheckpoint != "" {
 		return nil, errgrpc.ToGRPC(fmt.Errorf("checkpoints not supported: %w", errdefs.ErrNotImplemented))
 	}
-
-	/*
-		Rootfs           []*types.Mount `protobuf:"bytes,3,rep,name=rootfs,proto3" json:"rootfs,omitempty"`
-		Terminal         bool           `protobuf:"varint,4,opt,name=terminal,proto3" json:"terminal,omitempty"`
-		Stdin            string         `protobuf:"bytes,5,opt,name=stdin,proto3" json:"stdin,omitempty"`
-		Stdout           string         `protobuf:"bytes,6,opt,name=stdout,proto3" json:"stdout,omitempty"`
-		Stderr           string         `protobuf:"bytes,7,opt,name=stderr,proto3" json:"stderr,omitempty"`
-		Options          *anypb.Any     `protobuf:"bytes,10,opt,name=options,proto3" json:"options,omitempty"`
-	*/
-	/*
-		s.mu.Lock()
-		defer s.mu.Unlock()
-
-		s.lifecycleMu.Lock()
-		handleStarted, cleanup := s.preStart(nil)
-		s.lifecycleMu.Unlock()
-		defer cleanup()
-
-		container, err := runc.NewContainer(ctx, s.platform, r)
-		if err != nil {
-			return nil, err
-		}
-
-		s.containers[r.ID] = container
-	*/
 
 	// Handle mounts
 	m, err := setupMounts(r.ID, r.Rootfs, filepath.Join(r.Bundle, "rootfs"))
@@ -280,19 +179,29 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	}
 
 	vr := &taskAPI.CreateTaskRequest{
-		ID:      r.ID,
-		Bundle:  br.Bundle,
-		Rootfs:  m,
+		ID:     r.ID,
+		Bundle: br.Bundle,
+		Rootfs: m,
+		// TODO: Add terminal and stdio
+		// Terminal: r.Terminal,
+		// Stdin:   r.Stdin,
+		// Stdout:  r.Stdout,
+		// Stderr:  r.Stderr,
 		Options: r.Options,
 	}
 
 	tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
-	// TODO: This wouldn't actually work, but lets see response
 	resp, err := tc.Create(ctx, vr)
 	if err != nil {
+		log.G(ctx).WithError(err).Error("failed to create task")
 		return nil, errgrpc.ToGRPC(err)
+	} else {
+		log.G(ctx).Debug("no failure creating task")
 	}
 
+	// TODO: Keep track of container until successfully removed
+
+	// TODO: Forward events rather than generate here?
 	s.send(&eventstypes.TaskCreate{
 		ContainerID: r.ID,
 		Bundle:      r.Bundle,
@@ -320,312 +229,88 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 // Start a process
 func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.StartResponse, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID, "exec": r.ExecID}).Info("starting container task")
-
-	/*
-		container, err := s.getContainer(r.ID)
-		if err != nil {
-			return nil, err
-		}
-
-		var cinit *runc.Container
-		s.lifecycleMu.Lock()
-		if r.ExecID == "" {
-			cinit = container
-		} else {
-			if _, initExited := s.containerInitExit[container]; initExited {
-				s.lifecycleMu.Unlock()
-				return nil, errgrpc.ToGRPCf(errdefs.ErrFailedPrecondition, "container %s init process is not running", container.ID)
-			}
-			s.runningExecs[container]++
-		}
-		handleStarted, cleanup := s.preStart(cinit)
-		s.lifecycleMu.Unlock()
-		defer cleanup()
-
-		p, err := container.Start(ctx, r)
-		if err != nil {
-			// If we failed to even start the process, s.runningExecs
-			// won't get decremented in s.handleProcessExit. We still need
-			// to update it.
-			if r.ExecID != "" {
-				s.lifecycleMu.Lock()
-				s.runningExecs[container]--
-				if ch, ok := s.execCountSubscribers[container]; ok {
-					ch <- s.runningExecs[container]
-				}
-				s.lifecycleMu.Unlock()
-			}
-			handleStarted(container, p)
-			return nil, errgrpc.ToGRPC(err)
-		}
-
-		switch r.ExecID {
-		case "":
-			switch cg := container.Cgroup().(type) {
-			case cgroup1.Cgroup:
-				if err := s.ep.Add(container.ID, cg); err != nil {
-					log.G(ctx).WithError(err).Error("add cg to OOM monitor")
-				}
-			case *cgroupsv2.Manager:
-				allControllers, err := cg.RootControllers()
-				if err != nil {
-					log.G(ctx).WithError(err).Error("failed to get root controllers")
-				} else {
-					if err := cg.ToggleControllers(allControllers, cgroupsv2.Enable); err != nil {
-						if userns.RunningInUserNS() {
-							log.G(ctx).WithError(err).Debugf("failed to enable controllers (%v)", allControllers)
-						} else {
-							log.G(ctx).WithError(err).Errorf("failed to enable controllers (%v)", allControllers)
-						}
-					}
-				}
-				if err := s.ep.Add(container.ID, cg); err != nil {
-					log.G(ctx).WithError(err).Error("add cg to OOM monitor")
-				}
-			}
-
-			s.send(&eventstypes.TaskStart{
-				ContainerID: container.ID,
-				Pid:         uint32(p.Pid()),
-			})
-		default:
-			s.send(&eventstypes.TaskExecStarted{
-				ContainerID: container.ID,
-				ExecID:      r.ExecID,
-				Pid:         uint32(p.Pid()),
-			})
-		}
-		handleStarted(container, p)
-	*/
-	return &taskAPI.StartResponse{
-		//Pid: uint32(p.Pid()),
-	}, nil
+	tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
+	return tc.Start(ctx, r)
 }
 
 // Delete the initial process and container
 func (s *service) Delete(ctx context.Context, r *taskAPI.DeleteRequest) (*taskAPI.DeleteResponse, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID, "exec": r.ExecID}).Info("deleting container")
-	/*
-		container, err := s.getContainer(r.ID)
-		if err != nil {
-			return nil, err
-		}
-		p, err := container.Delete(ctx, r)
-		if err != nil {
-			return nil, errgrpc.ToGRPC(err)
-		}
-		// if we deleted an init task, send the task delete event
-		if r.ExecID == "" {
-			s.mu.Lock()
-			delete(s.containers, r.ID)
-			s.mu.Unlock()
-			s.send(&eventstypes.TaskDelete{
-				ContainerID: container.ID,
-				Pid:         uint32(p.Pid()),
-				ExitStatus:  uint32(p.ExitStatus()),
-				ExitedAt:    protobuf.ToTimestamp(p.ExitedAt()),
-			})
-			s.lifecycleMu.Lock()
-			delete(s.containerInitExit, container)
-			s.lifecycleMu.Unlock()
-		}
-	*/
-	return &taskAPI.DeleteResponse{
-		//ExitStatus: uint32(p.ExitStatus()),
-		//ExitedAt:   protobuf.ToTimestamp(p.ExitedAt()),
-		//Pid:        uint32(p.Pid()),
-	}, nil
+	tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
+	return tc.Delete(ctx, r)
 }
 
 // Exec an additional process inside the container
 func (s *service) Exec(ctx context.Context, r *taskAPI.ExecProcessRequest) (*ptypes.Empty, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID, "exec": r.ExecID}).Info("exec container")
-	/*
-		container, err := s.getContainer(r.ID)
-		if err != nil {
-			return nil, err
-		}
-		ok, cancel := container.ReserveProcess(r.ExecID)
-		if !ok {
-			return nil, errgrpc.ToGRPCf(errdefs.ErrAlreadyExists, "id %s", r.ExecID)
-		}
-		process, err := container.Exec(ctx, r)
-		if err != nil {
-			cancel()
-			return nil, errgrpc.ToGRPC(err)
-		}
 
-		s.send(&eventstypes.TaskExecAdded{
-			ContainerID: container.ID,
-			ExecID:      process.ID(),
-		})
-	*/
-	return empty, nil
+	vr := &taskAPI.ExecProcessRequest{
+		ID:     r.ID,
+		ExecID: r.ExecID,
+		// TODO: Enable support for terminal and stdio
+		//Terminal: r.Terminal,
+		//Stdin:    r.Stdin,
+		//Stdout:   r.Stdout,
+		//Stderr:   r.Stderr,
+		Spec: r.Spec,
+	}
+	tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
+	return tc.Exec(ctx, vr)
 }
 
 // ResizePty of a process
 func (s *service) ResizePty(ctx context.Context, r *taskAPI.ResizePtyRequest) (*ptypes.Empty, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID, "exec": r.ExecID}).Info("resize pty")
-	/*
-		container, err := s.getContainer(r.ID)
-		if err != nil {
-			return nil, err
-		}
-		if err := container.ResizePty(ctx, r); err != nil {
-			return nil, errgrpc.ToGRPC(err)
-		}
-	*/
-	return empty, nil
+	tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
+	return tc.ResizePty(ctx, r)
 }
 
 // State returns runtime state information for a process
 func (s *service) State(ctx context.Context, r *taskAPI.StateRequest) (*taskAPI.StateResponse, error) {
-	log.G(ctx).WithFields(log.Fields{"id": r.ID, "exec": r.ExecID}).Info("state")
-	/*
-		container, err := s.getContainer(r.ID)
-		if err != nil {
-			return nil, err
-		}
-		p, err := container.Process(r.ExecID)
-		if err != nil {
-			return nil, errgrpc.ToGRPC(err)
-		}
-		st, err := p.Status(ctx)
-		if err != nil {
-			return nil, err
-		}
-		status := task.Status_UNKNOWN
-		switch st {
-		case "created":
-			status = task.Status_CREATED
-		case "running":
-			status = task.Status_RUNNING
-		case "stopped":
-			status = task.Status_STOPPED
-		case "paused":
-			status = task.Status_PAUSED
-		case "pausing":
-			status = task.Status_PAUSING
-		}
-		sio := p.Stdio()
-	*/
-	return &taskAPI.StateResponse{
-		//ID:         p.ID(),
-		//Bundle:     container.Bundle,
-		//Pid:        uint32(p.Pid()),
-		//Status:     status,
-		//Stdin:      sio.Stdin,
-		//Stdout:     sio.Stdout,
-		//Stderr:     sio.Stderr,
-		//Terminal:   sio.Terminal,
-		//ExitStatus: uint32(p.ExitStatus()),
-		//ExitedAt:   protobuf.ToTimestamp(p.ExitedAt()),
-	}, nil
+	tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
+	st, err := tc.State(ctx, r)
+	if err != nil {
+		log.G(ctx).WithError(err).WithFields(log.Fields{"id": r.ID, "exec": r.ExecID}).Info("state")
+		return nil, err
+	}
+	log.G(ctx).WithFields(log.Fields{"status": st.Status, "id": r.ID, "exec": r.ExecID}).Info("state")
+
+	return st, err
 }
 
 // Pause the container
 func (s *service) Pause(ctx context.Context, r *taskAPI.PauseRequest) (*ptypes.Empty, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID}).Info("pause")
-	/*
-		container, err := s.getContainer(r.ID)
-		if err != nil {
-			return nil, err
-		}
-		if err := container.Pause(ctx); err != nil {
-			return nil, errgrpc.ToGRPC(err)
-		}
-		s.send(&eventstypes.TaskPaused{
-			ContainerID: container.ID,
-		})
-	*/
-	return empty, nil
+	tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
+	return tc.Pause(ctx, r)
 }
 
 // Resume the container
 func (s *service) Resume(ctx context.Context, r *taskAPI.ResumeRequest) (*ptypes.Empty, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID}).Info("resume")
-	/*
-		container, err := s.getContainer(r.ID)
-		if err != nil {
-			return nil, err
-		}
-		if err := container.Resume(ctx); err != nil {
-			return nil, errgrpc.ToGRPC(err)
-		}
-		s.send(&eventstypes.TaskResumed{
-			ContainerID: container.ID,
-		})
-	*/
-	return empty, nil
+	tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
+	return tc.Resume(ctx, r)
 }
 
 // Kill a process with the provided signal
 func (s *service) Kill(ctx context.Context, r *taskAPI.KillRequest) (*ptypes.Empty, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID, "exec": r.ExecID}).Info("kill")
-	/*
-		container, err := s.getContainer(r.ID)
-		if err != nil {
-			return nil, err
-		}
-		if err := container.Kill(ctx, r); err != nil {
-			return nil, errgrpc.ToGRPC(err)
-		}
-	*/
-	return empty, nil
+	tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
+	return tc.Kill(ctx, r)
 }
 
 // Pids returns all pids inside the container
 func (s *service) Pids(ctx context.Context, r *taskAPI.PidsRequest) (*taskAPI.PidsResponse, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID}).Info("all pids")
-	// TODO: proxy
-	/*
-		container, err := s.getContainer(r.ID)
-		if err != nil {
-			return nil, err
-		}
-		pids, err := s.getContainerPids(ctx, container)
-		if err != nil {
-			return nil, errgrpc.ToGRPC(err)
-		}
-		var processes []*task.ProcessInfo
-		for _, pid := range pids {
-			pInfo := task.ProcessInfo{
-				Pid: pid,
-			}
-			for _, p := range container.ExecdProcesses() {
-				if p.Pid() == int(pid) {
-					d := &options.ProcessDetails{
-						ExecID: p.ID(),
-					}
-					a, err := typeurl.MarshalAnyToProto(d)
-					if err != nil {
-						return nil, fmt.Errorf("failed to marshal process %d info: %w", pid, err)
-					}
-					pInfo.Info = a
-					break
-				}
-			}
-			processes = append(processes, &pInfo)
-		}
-	*/
-	return &taskAPI.PidsResponse{
-		//Processes: processes,
-	}, nil
+	tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
+	return tc.Pids(ctx, r)
 }
 
 // CloseIO of a process
 func (s *service) CloseIO(ctx context.Context, r *taskAPI.CloseIORequest) (*ptypes.Empty, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID, "exec": r.ExecID}).Info("close io")
-	/*
-		container, err := s.getContainer(r.ID)
-		if err != nil {
-			return nil, err
-		}
-		if err := container.CloseIO(ctx, r); err != nil {
-			return nil, err
-		}
-	*/
-	return empty, nil
+	tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
+	return tc.CloseIO(ctx, r)
 }
 
 // Checkpoint the container
@@ -646,59 +331,38 @@ func (s *service) Checkpoint(ctx context.Context, r *taskAPI.CheckpointTaskReque
 // Update a running container
 func (s *service) Update(ctx context.Context, r *taskAPI.UpdateTaskRequest) (*ptypes.Empty, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID}).Info("update")
-	/*
-		container, err := s.getContainer(r.ID)
-		if err != nil {
-			return nil, err
-		}
-		if err := container.Update(ctx, r); err != nil {
-			return nil, errgrpc.ToGRPC(err)
-		}
-	*/
-	return empty, nil
+	tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
+	return tc.Update(ctx, r)
 }
 
 // Wait for a process to exit
 func (s *service) Wait(ctx context.Context, r *taskAPI.WaitRequest) (*taskAPI.WaitResponse, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID, "exec": r.ExecID}).Info("wait")
-	/*
-		container, err := s.getContainer(r.ID)
-		if err != nil {
-			return nil, err
-		}
-		p, err := container.Process(r.ExecID)
-		if err != nil {
-			return nil, errgrpc.ToGRPC(err)
-		}
-
-		if err = p.Wait(ctx); err != nil {
-			return nil, errgrpc.ToGRPC(err)
-		}
-
-	*/
-	return &taskAPI.WaitResponse{
-		//ExitStatus: uint32(p.ExitStatus()),
-		//ExitedAt:   protobuf.ToTimestamp(p.ExitedAt()),
-	}, nil
+	tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
+	return tc.Wait(ctx, r)
 }
 
 // Connect returns shim information such as the shim's pid
 func (s *service) Connect(ctx context.Context, r *taskAPI.ConnectRequest) (*taskAPI.ConnectResponse, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID}).Info("connect")
-	/*
-		var pid int
-		if container, err := s.getContainer(r.ID); err == nil {
-			pid = container.Pid()
-		}
-	*/
+	tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
+	vr, err := tc.Connect(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+
 	return &taskAPI.ConnectResponse{
-		//ShimPid: uint32(os.Getpid()),
-		//TaskPid: uint32(pid),
+		ShimPid: uint32(os.Getpid()),
+		TaskPid: vr.TaskPid,
 	}, nil
 }
 
 func (s *service) Shutdown(ctx context.Context, r *taskAPI.ShutdownRequest) (*ptypes.Empty, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID}).Info("shutdown")
+	//tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
+	//return tc.Shutdown(ctx, r)
+
+	// TODO: Keep track of running containers (or rely on sandbox interface?)
 	/*
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -718,40 +382,8 @@ func (s *service) Shutdown(ctx context.Context, r *taskAPI.ShutdownRequest) (*pt
 
 func (s *service) Stats(ctx context.Context, r *taskAPI.StatsRequest) (*taskAPI.StatsResponse, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID}).Info("stats")
-	/*
-		container, err := s.getContainer(r.ID)
-		if err != nil {
-			return nil, err
-		}
-		cgx := container.Cgroup()
-		if cgx == nil {
-			return nil, errgrpc.ToGRPCf(errdefs.ErrNotFound, "cgroup does not exist")
-		}
-		var statsx interface{}
-		switch cg := cgx.(type) {
-		case cgroup1.Cgroup:
-			stats, err := cg.Stat(cgroup1.IgnoreNotExist)
-			if err != nil {
-				return nil, err
-			}
-			statsx = stats
-		case *cgroupsv2.Manager:
-			stats, err := cg.Stat()
-			if err != nil {
-				return nil, err
-			}
-			statsx = stats
-		default:
-			return nil, errgrpc.ToGRPCf(errdefs.ErrNotImplemented, "unsupported cgroup type %T", cg)
-		}
-		data, err := typeurl.MarshalAny(statsx)
-		if err != nil {
-			return nil, err
-		}
-	*/
-	return &taskAPI.StatsResponse{
-		//Stats: typeurl.MarshalProto(data),
-	}, nil
+	tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
+	return tc.Stats(ctx, r)
 }
 
 /*

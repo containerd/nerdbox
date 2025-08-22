@@ -14,37 +14,24 @@
    limitations under the License.
 */
 
-package main
+// Package libkrun provides a plugin for creating vm using libkrun
+package libkrun
 
 import (
-	"context"
-	"log"
-	"os"
-	"os/signal"
-	"syscall"
+	"github.com/containerd/plugin"
+	"github.com/containerd/plugin/registry"
 
-	"github.com/dmcgowan/nerdbox/internal/vm/runvm"
+	"github.com/dmcgowan/nerdbox/internal/vm/libkrun"
+	"github.com/dmcgowan/nerdbox/plugins"
 )
 
-func main() {
-	ctx := context.Background()
-
-	vm, err := runvm.NewManager().NewInstance(ctx, ".")
-	if err != nil {
-		log.Fatal("Failed to create VM instance:", err)
-	}
-
-	if err := vm.Start(ctx); err != nil {
-		log.Fatal("Failed to start VM instance:", err)
-	}
-
-	sigC := make(chan os.Signal, 1)
-	signal.Notify(sigC, syscall.SIGINT, syscall.SIGTERM)
-
-	<-sigC
-
-	log.Println("VM shutdown initiated")
-	if err := vm.Shutdown(ctx); err != nil {
-		log.Fatal("Failed to shutdown context:", err)
-	}
+func init() {
+	registry.Register(&plugin.Registration{
+		Type:     plugins.VMManagerPlugin,
+		ID:       "libkrun",
+		Requires: []plugin.Type{},
+		InitFn: func(ic *plugin.InitContext) (any, error) {
+			return libkrun.NewManager(), nil
+		},
+	})
 }

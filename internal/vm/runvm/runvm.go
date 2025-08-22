@@ -39,7 +39,13 @@ import (
 	"github.com/dmcgowan/nerdbox/internal/vm"
 )
 
-func NewVMInstance() (vm.Instance, error) {
+func NewManager() vm.Manager {
+	return &vmManager{}
+}
+
+type vmManager struct{}
+
+func (vm vmManager) NewInstance(ctx context.Context, state string) (vm.Instance, error) {
 	// TODO: Get these from a configuration
 	ep, err := exec.LookPath("run_vminitd")
 	if err != nil {
@@ -48,26 +54,39 @@ func NewVMInstance() (vm.Instance, error) {
 
 	return &vmInstance{
 		binary: ep,
+		state:  state,
+		mounts: map[string]string{},
 	}, nil
 }
 
 type vmInstance struct {
 	mu     sync.Mutex
 	binary string
+	state  string
 
 	shutdownCallbacks []func(context.Context) error // Callbacks for shutdown
+	mounts            map[string]string             // Mounts to add to the VM
 
 	pid    int
 	path   string
 	client *ttrpc.Client
 }
 
-func (v *vmInstance) Start(ctx context.Context, socketPath string, mounts map[string]string) error {
+func (v *vmInstance) AddFS(ctx context.Context, tag, mountPath string, _ ...vm.MountOpt) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.mounts[tag] = mountPath
+	return nil
+}
+
+func (v *vmInstance) Start(ctx context.Context, _ ...vm.StartOpt) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.pid > 0 {
 		return fmt.Errorf("VM instance already started with PID %d", v.pid)
 	}
+
+	socketPath := filepath.Join(v.state, "run_vminitd.sock")
 
 	if _, err := os.Stat(socketPath); err == nil {
 		if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
@@ -83,6 +102,7 @@ func (v *vmInstance) Start(ctx context.Context, socketPath string, mounts map[st
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	// TODO: Close this on shutdown?
 
 	args := []string{
@@ -92,10 +112,10 @@ func (v *vmInstance) Start(ctx context.Context, socketPath string, mounts map[st
 	}
 	go io.Copy(os.Stderr, lr)
 
-	if len(mounts) > 1 {
+	if len(v.mounts) > 1 {
 		return fmt.Errorf("multiple mounts are not yet supported: %w", errdefs.ErrNotImplemented)
 	}
-	for tag, p := range mounts {
+	for tag, p := range v.mounts {
 		args = append(args, "-v", fmt.Sprintf("%s=%s", tag, p))
 	}
 
@@ -148,9 +168,17 @@ func (v *vmInstance) Start(ctx context.Context, socketPath string, mounts map[st
 			if err != nil {
 				return fmt.Errorf("failed to connect to TTRPC server: %w", err)
 			}
-			if err := ttrpcutil.PingTTRPC(conn, d); err != nil {
+			conn.SetReadDeadline(time.Now().Add(d))
+			if err := ttrpcutil.PingTTRPC(conn); err != nil {
 				conn.Close()
 				d = d + time.Millisecond
+				continue
+			}
+
+			conn.SetReadDeadline(time.Time{}) // Clear the deadline
+			// Ensure connection alive after deadline is cleared
+			if err := ttrpcutil.PingTTRPC(conn); err != nil {
+				conn.Close()
 				continue
 			}
 

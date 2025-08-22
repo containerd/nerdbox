@@ -18,20 +18,49 @@ package task
 
 import (
 	"context"
+	"fmt"
 
-	"github.com/dmcgowan/nerdbox/internal/vm/libkrun"
+	"github.com/containerd/errdefs"
+	"github.com/containerd/ttrpc"
+
+	"github.com/dmcgowan/nerdbox/internal/vm"
 )
 
-func (s *service) startVM(ctx context.Context, socketPath string, mounts map[string]string) (err error) {
+func (s *service) client() (*ttrpc.Client, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.vm != nil {
-		return nil
+	if s.vm == nil {
+		return nil, fmt.Errorf("vm not created: %w", errdefs.ErrFailedPrecondition)
 	}
+	client := s.vm.Client()
+	if client == nil {
+		return nil, fmt.Errorf("vm not running: %w", errdefs.ErrFailedPrecondition)
+	}
+	return client, nil
+}
 
-	s.vm, err = libkrun.NewVMInstance(libkrun.DebugLevel)
-	if err != nil {
-		return err
+func (s *service) vmInstance(ctx context.Context, state string) (vm.Instance, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.vm == nil {
+		var err error
+		s.vm, err = s.vmm.NewInstance(ctx, state)
+		if err != nil {
+			return nil, err
+		}
+		if s.shutdown != nil {
+			s.shutdown.RegisterCallback(s.vm.Shutdown)
+		}
 	}
-	return s.vm.Start(ctx, socketPath, mounts)
+	return s.vm, nil
+
+	/*
+		for tag, path := range mounts {
+			if err := s.vm.AddFS(ctx, tag, path); err != nil {
+				return err
+			}
+		}
+
+		return s.vm.Start(ctx)
+	*/
 }

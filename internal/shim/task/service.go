@@ -46,27 +46,13 @@ var (
 )
 
 // NewTaskService creates a new instance of a task service
-func NewTaskService(ctx context.Context, publisher shim.Publisher, sd shutdown.Service) (taskAPI.TTRPCTaskService, error) {
+func NewTaskService(ctx context.Context, vmm vm.Manager, publisher shim.Publisher, sd shutdown.Service) (taskAPI.TTRPCTaskService, error) {
 	s := &service{
-		context: ctx,
-		events:  make(chan interface{}, 128),
-		//ec:      reaper.Default.Subscribe(),
+		context:  ctx,
+		vmm:      vmm,
+		events:   make(chan interface{}, 128),
 		shutdown: sd,
-		//containers:           make(map[string]*runc.Container),
-		//running:              make(map[int][]containerProcess),
-		//runningExecs:         make(map[*runc.Container]int),
-		//execCountSubscribers: make(map[*runc.Container]chan<- int),
-		//containerInitExit:    make(map[*runc.Container]runcC.Exit),
-		//exitSubscribers:      make(map[*map[int][]runcC.Exit]struct{}),
 	}
-	/*
-		go s.processExits()
-		runcC.Monitor = reaper.Default
-		if err := s.initPlatform(); err != nil {
-			return nil, fmt.Errorf("failed to initialized platform behavior: %w", err)
-		}
-		go s.forward(ctx, publisher)
-	*/
 	sd.RegisterCallback(func(context.Context) error {
 		close(s.events)
 		return nil
@@ -89,36 +75,18 @@ type vmProcess struct {
 // service is the shim implementation of a remote shim over GRPC
 type service struct {
 	mu sync.Mutex
+
+	// vmm is the VM manager used to create the VM instance
+	// TODO: Move this and instance to separate service so
+	// that the managemnt can be shared with sandbox service
+	vmm vm.Manager
+
+	// vm is the VM instance used to run the container
 	vm vm.Instance
 
 	context  context.Context
 	events   chan interface{}
 	platform stdio.Platform
-
-	//ec       chan runcC.Exit
-	//ep       oom.Watcher
-
-	//containers map[string]*runc.Container
-
-	//lifecycleMu  sync.Mutex
-	//running      map[int][]containerProcess // pid -> running process, guarded by lifecycleMu
-	//runningExecs map[*runc.Container]int    // container -> num running execs, guarded by lifecycleMu
-	// container -> subscription to exec exits/changes to s.runningExecs[container],
-	// guarded by lifecycleMu
-	//execCountSubscribers map[*runc.Container]chan<- int
-	// container -> init exits, guarded by lifecycleMu
-	// Used to stash container init process exits, so that we can hold them
-	// until after we've made sure to publish all the container's exec exits.
-	// Also used to prevent starting new execs from being started if the
-	// container's init process (read: pid, not [process.Init]) has already been
-	// reaped by the shim.
-	// Note that this flag gets updated before the container's [process.Init.Status]
-	// is transitioned to "stopped".
-	//containerInitExit map[*runc.Container]runcC.Exit
-	// Subscriptions to exits for PIDs. Adding/deleting subscriptions and
-	// dereferencing the subscription pointers must only be done while holding
-	// lifecycleMu.
-	//exitSubscribers map[*map[int][]runcC.Exit]struct{}
 
 	shutdown shutdown.Service
 }
@@ -154,29 +122,51 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		return nil, errgrpc.ToGRPC(err)
 	}
 
-	// TODO: Consider delaying VM start to task start, this could allow
-	// the VM to be started with the resources from all container creates
-
-	mounts := map[string]string{
-		fmt.Sprintf("rootfs-%s", r.ID): filepath.Join(r.Bundle, "rootfs"),
+	vmState := filepath.Join(r.Bundle, "vm")
+	if err := os.Mkdir(vmState, 0700); err != nil {
+		return nil, errgrpc.ToGRPCf(err, "failed to create vm state directory %q", vmState)
 	}
-	if err := s.startVM(ctx, filepath.Join(r.Bundle, "run_vminitd.sock"), mounts); err != nil {
+	vmi, err := s.vmInstance(ctx, vmState)
+	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
-	s.shutdown.RegisterCallback(s.vm.Shutdown)
+
+	err = vmi.AddFS(ctx, fmt.Sprintf("rootfs-%s", r.ID), filepath.Join(r.Bundle, "rootfs"))
+	if err != nil {
+		return nil, errgrpc.ToGRPC(err)
+	}
+
+	if err := vmi.Start(ctx); err != nil {
+		return nil, errgrpc.ToGRPC(err)
+	}
 
 	cb, err := os.ReadFile(filepath.Join(r.Bundle, "config.json"))
 	if err != nil {
 		return nil, errgrpc.ToGRPCf(err, "failed to read config file")
 	}
 
-	br, err := bundleAPI.NewTTRPCBundleClient(s.vm.Client()).Create(ctx, &bundleAPI.CreateRequest{
+	vmc, err := s.client()
+	if err != nil {
+		return nil, errgrpc.ToGRPC(err)
+	}
+	bundleService := bundleAPI.NewTTRPCBundleClient(vmc)
+	br, err := bundleService.Create(ctx, &bundleAPI.CreateRequest{
 		ID:     r.ID,
 		Config: cb,
 	})
 	if err != nil {
 		return nil, err
 	}
+
+	/*
+		rio := stdio.Stdio{
+			Stdin:    r.Stdin,
+			Stdout:   r.Stdout,
+			Stderr:   r.Stderr,
+			Terminal: r.Terminal,
+		}
+	*/
+	//sio, err :=
 
 	vr := &taskAPI.CreateTaskRequest{
 		ID:     r.ID,
@@ -190,7 +180,53 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		Options: r.Options,
 	}
 
-	tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
+	/*
+		if r.Stdin != "" || r.Stdout != "" || r.Stderr != "" {
+			streamID := "stdio-" + r.ID
+			stream, err := proxy.NewStreamCreator(s.vm.Client()).Create(ctx, streamID)
+			if err != nil {
+				log.G(ctx).WithError(err).Error("failed to create stdio stream")
+				return nil, errgrpc.ToGRPC(err)
+			}
+			//s.shutdown.RegisterCallback(stream.Close)
+
+			if r.Stdout != "" {
+				vr.Stdout = fmt.Sprintf("stream://%s", streamID)
+				go func() {
+					for {
+						p, err := stream.Recv()
+						if err != nil {
+							log.G(ctx).WithError(err).Error("failed to receive stdout message")
+							return
+						}
+						var r stdiotypes.Data
+						if err := typeurl.UnmarshalTo(p, &r); err != nil {
+							log.G(ctx).WithError(err).Error("failed to unmarshal stdout message")
+							return
+						}
+						switch r.Stream {
+						case stdiotypes.Stream_STDOUT:
+							// Forward to stdout
+						case stdiotypes.Stream_STDERR:
+						default:
+						}
+
+					}
+
+					/*
+						if err := stream.Send(&taskAPI.StreamMessage{
+							Stream: taskAPI.Stream_STDOUT,
+							Data:   []byte(r.Stdout),
+						}); err != nil {
+							log.G(ctx).WithError(err).Error("failed to send stdout message")
+						}
+					* /
+				}()
+			}
+		}
+	*/
+
+	tc := taskAPI.NewTTRPCTaskClient(vmc)
 	resp, err := tc.Create(ctx, vr)
 	if err != nil {
 		log.G(ctx).WithError(err).Error("failed to create task")
@@ -229,20 +265,32 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 // Start a process
 func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.StartResponse, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID, "exec": r.ExecID}).Info("starting container task")
-	tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
+	vmc, err := s.client()
+	if err != nil {
+		return nil, errgrpc.ToGRPC(err)
+	}
+	tc := taskAPI.NewTTRPCTaskClient(vmc)
 	return tc.Start(ctx, r)
 }
 
 // Delete the initial process and container
 func (s *service) Delete(ctx context.Context, r *taskAPI.DeleteRequest) (*taskAPI.DeleteResponse, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID, "exec": r.ExecID}).Info("deleting container")
-	tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
+	vmc, err := s.client()
+	if err != nil {
+		return nil, errgrpc.ToGRPC(err)
+	}
+	tc := taskAPI.NewTTRPCTaskClient(vmc)
 	return tc.Delete(ctx, r)
 }
 
 // Exec an additional process inside the container
 func (s *service) Exec(ctx context.Context, r *taskAPI.ExecProcessRequest) (*ptypes.Empty, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID, "exec": r.ExecID}).Info("exec container")
+	vmc, err := s.client()
+	if err != nil {
+		return nil, errgrpc.ToGRPC(err)
+	}
 
 	vr := &taskAPI.ExecProcessRequest{
 		ID:     r.ID,
@@ -254,20 +302,28 @@ func (s *service) Exec(ctx context.Context, r *taskAPI.ExecProcessRequest) (*pty
 		//Stderr:   r.Stderr,
 		Spec: r.Spec,
 	}
-	tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
+	tc := taskAPI.NewTTRPCTaskClient(vmc)
 	return tc.Exec(ctx, vr)
 }
 
 // ResizePty of a process
 func (s *service) ResizePty(ctx context.Context, r *taskAPI.ResizePtyRequest) (*ptypes.Empty, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID, "exec": r.ExecID}).Info("resize pty")
-	tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
+	vmc, err := s.client()
+	if err != nil {
+		return nil, errgrpc.ToGRPC(err)
+	}
+	tc := taskAPI.NewTTRPCTaskClient(vmc)
 	return tc.ResizePty(ctx, r)
 }
 
 // State returns runtime state information for a process
 func (s *service) State(ctx context.Context, r *taskAPI.StateRequest) (*taskAPI.StateResponse, error) {
-	tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
+	vmc, err := s.client()
+	if err != nil {
+		return nil, errgrpc.ToGRPC(err)
+	}
+	tc := taskAPI.NewTTRPCTaskClient(vmc)
 	st, err := tc.State(ctx, r)
 	if err != nil {
 		log.G(ctx).WithError(err).WithFields(log.Fields{"id": r.ID, "exec": r.ExecID}).Info("state")
@@ -281,35 +337,55 @@ func (s *service) State(ctx context.Context, r *taskAPI.StateRequest) (*taskAPI.
 // Pause the container
 func (s *service) Pause(ctx context.Context, r *taskAPI.PauseRequest) (*ptypes.Empty, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID}).Info("pause")
-	tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
+	vmc, err := s.client()
+	if err != nil {
+		return nil, errgrpc.ToGRPC(err)
+	}
+	tc := taskAPI.NewTTRPCTaskClient(vmc)
 	return tc.Pause(ctx, r)
 }
 
 // Resume the container
 func (s *service) Resume(ctx context.Context, r *taskAPI.ResumeRequest) (*ptypes.Empty, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID}).Info("resume")
-	tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
+	vmc, err := s.client()
+	if err != nil {
+		return nil, errgrpc.ToGRPC(err)
+	}
+	tc := taskAPI.NewTTRPCTaskClient(vmc)
 	return tc.Resume(ctx, r)
 }
 
 // Kill a process with the provided signal
 func (s *service) Kill(ctx context.Context, r *taskAPI.KillRequest) (*ptypes.Empty, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID, "exec": r.ExecID}).Info("kill")
-	tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
+	vmc, err := s.client()
+	if err != nil {
+		return nil, errgrpc.ToGRPC(err)
+	}
+	tc := taskAPI.NewTTRPCTaskClient(vmc)
 	return tc.Kill(ctx, r)
 }
 
 // Pids returns all pids inside the container
 func (s *service) Pids(ctx context.Context, r *taskAPI.PidsRequest) (*taskAPI.PidsResponse, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID}).Info("all pids")
-	tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
+	vmc, err := s.client()
+	if err != nil {
+		return nil, errgrpc.ToGRPC(err)
+	}
+	tc := taskAPI.NewTTRPCTaskClient(vmc)
 	return tc.Pids(ctx, r)
 }
 
 // CloseIO of a process
 func (s *service) CloseIO(ctx context.Context, r *taskAPI.CloseIORequest) (*ptypes.Empty, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID, "exec": r.ExecID}).Info("close io")
-	tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
+	vmc, err := s.client()
+	if err != nil {
+		return nil, errgrpc.ToGRPC(err)
+	}
+	tc := taskAPI.NewTTRPCTaskClient(vmc)
 	return tc.CloseIO(ctx, r)
 }
 
@@ -331,21 +407,33 @@ func (s *service) Checkpoint(ctx context.Context, r *taskAPI.CheckpointTaskReque
 // Update a running container
 func (s *service) Update(ctx context.Context, r *taskAPI.UpdateTaskRequest) (*ptypes.Empty, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID}).Info("update")
-	tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
+	vmc, err := s.client()
+	if err != nil {
+		return nil, errgrpc.ToGRPC(err)
+	}
+	tc := taskAPI.NewTTRPCTaskClient(vmc)
 	return tc.Update(ctx, r)
 }
 
 // Wait for a process to exit
 func (s *service) Wait(ctx context.Context, r *taskAPI.WaitRequest) (*taskAPI.WaitResponse, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID, "exec": r.ExecID}).Info("wait")
-	tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
+	vmc, err := s.client()
+	if err != nil {
+		return nil, errgrpc.ToGRPC(err)
+	}
+	tc := taskAPI.NewTTRPCTaskClient(vmc)
 	return tc.Wait(ctx, r)
 }
 
 // Connect returns shim information such as the shim's pid
 func (s *service) Connect(ctx context.Context, r *taskAPI.ConnectRequest) (*taskAPI.ConnectResponse, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID}).Info("connect")
-	tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
+	vmc, err := s.client()
+	if err != nil {
+		return nil, errgrpc.ToGRPC(err)
+	}
+	tc := taskAPI.NewTTRPCTaskClient(vmc)
 	vr, err := tc.Connect(ctx, r)
 	if err != nil {
 		return nil, err
@@ -382,7 +470,11 @@ func (s *service) Shutdown(ctx context.Context, r *taskAPI.ShutdownRequest) (*pt
 
 func (s *service) Stats(ctx context.Context, r *taskAPI.StatsRequest) (*taskAPI.StatsResponse, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID}).Info("stats")
-	tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
+	vmc, err := s.client()
+	if err != nil {
+		return nil, errgrpc.ToGRPC(err)
+	}
+	tc := taskAPI.NewTTRPCTaskClient(vmc)
 	return tc.Stats(ctx, r)
 }
 

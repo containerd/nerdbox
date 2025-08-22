@@ -19,11 +19,13 @@ package task
 import (
 	"github.com/containerd/containerd/v2/pkg/shim"
 	"github.com/containerd/containerd/v2/pkg/shutdown"
-	"github.com/containerd/containerd/v2/plugins"
+	cplugins "github.com/containerd/containerd/v2/plugins"
 	"github.com/containerd/plugin"
 	"github.com/containerd/plugin/registry"
 
 	"github.com/dmcgowan/nerdbox/internal/shim/task"
+	"github.com/dmcgowan/nerdbox/internal/vm"
+	"github.com/dmcgowan/nerdbox/plugins"
 )
 
 func init() {
@@ -31,19 +33,25 @@ func init() {
 		Type: plugins.TTRPCPlugin,
 		ID:   "task",
 		Requires: []plugin.Type{
-			plugins.EventPlugin,
-			plugins.InternalPlugin,
+			cplugins.EventPlugin,
+			cplugins.InternalPlugin,
+			plugins.VMManagerPlugin,
 		},
 		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
-			pp, err := ic.GetByID(plugins.EventPlugin, "publisher")
+			pp, err := ic.GetByID(cplugins.EventPlugin, "publisher")
 			if err != nil {
 				return nil, err
 			}
-			ss, err := ic.GetByID(plugins.InternalPlugin, "shutdown")
+			ss, err := ic.GetByID(cplugins.InternalPlugin, "shutdown")
 			if err != nil {
 				return nil, err
 			}
-			return task.NewTaskService(ic.Context, pp.(shim.Publisher), ss.(shutdown.Service))
+			// Make this configurable or enforce a single plugin for the type
+			vmm, err := ic.GetByID(plugins.VMManagerPlugin, "libkrun")
+			if err != nil {
+				return nil, err
+			}
+			return task.NewTaskService(ic.Context, vmm.(vm.Manager), pp.(shim.Publisher), ss.(shutdown.Service))
 		},
 	})
 

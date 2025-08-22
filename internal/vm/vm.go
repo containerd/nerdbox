@@ -22,8 +22,23 @@ import (
 	"github.com/containerd/ttrpc"
 )
 
+type Manager interface {
+	NewInstance(ctx context.Context, state string) (Instance, error)
+}
+
+type startOpts struct {
+}
+
+type StartOpt func(*startOpts)
+
+type mountOpts struct {
+}
+
+type MountOpt func(*mountOpts)
+
 type Instance interface {
-	Start(ctx context.Context, socketPath string, mountPath map[string]string) error
+	AddFS(ctx context.Context, tag, mountPath string, opts ...MountOpt) error
+	Start(ctx context.Context, opts ...StartOpt) error
 	Client() *ttrpc.Client
 	Shutdown(context.Context) error
 }

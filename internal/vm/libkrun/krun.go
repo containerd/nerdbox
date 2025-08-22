@@ -30,10 +30,10 @@ const (
 	VirglrendererNoVirgl = 1 << 7
 )
 
-type LogLevel uint32
+type logLevel uint32
 
 const (
-	DebugLevel LogLevel = 1
+	debugLevel logLevel = 1
 )
 
 type vmcontext struct {

@@ -37,7 +37,13 @@ import (
 	"github.com/dmcgowan/nerdbox/internal/vm"
 )
 
-func NewVMInstance(l LogLevel) (vm.Instance, error) {
+func NewManager() vm.Manager {
+	return &vmManager{}
+}
+
+type vmManager struct{}
+
+func (*vmManager) NewInstance(ctx context.Context, state string) (vm.Instance, error) {
 	var (
 		p1         = filepath.SplitList(os.Getenv("PATH"))
 		p2         = filepath.SplitList(os.Getenv("LIBKRUN_PATH"))
@@ -91,12 +97,19 @@ func NewVMInstance(l LogLevel) (vm.Instance, error) {
 		return nil, err
 	}
 
-	ret := lib.InitLog(os.Stdout.Fd(), uint32(l), 0, 0)
+	ret := lib.InitLog(os.Stdout.Fd(), uint32(debugLevel), 0, 0)
 	if ret != 0 {
 		return nil, fmt.Errorf("krun_init_log failed: %d", ret)
 	}
 
+	vmc, err := newvmcontext(lib)
+	if err != nil {
+		return nil, err
+	}
+
 	return &vmInstance{
+		vmc:        vmc,
+		state:      state,
 		kernelPath: kernelPath,
 		initrdPath: initrdPath,
 		lib:        lib,
@@ -105,8 +118,9 @@ func NewVMInstance(l LogLevel) (vm.Instance, error) {
 }
 
 type vmInstance struct {
-	mu  sync.Mutex
-	vmc *vmcontext
+	mu    sync.Mutex
+	vmc   *vmcontext
+	state string
 
 	kernelPath string
 	initrdPath string
@@ -118,16 +132,23 @@ type vmInstance struct {
 	shutdownCallbacks []func(context.Context) error
 }
 
-func (v *vmInstance) Start(ctx context.Context, socketPath string, mounts map[string]string) (err error) {
+func (v *vmInstance) AddFS(ctx context.Context, tag, mountPath string, opts ...vm.MountOpt) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if v.vmc != nil {
-		return errors.New("VM instance already started")
+
+	// TODO: Cannot be started?
+
+	if err := v.vmc.AddVirtiofs(tag, mountPath); err != nil {
+		return fmt.Errorf("failed to add virtiofs: %w", err)
 	}
 
-	v.vmc, err = newvmcontext(v.lib)
-	if err != nil {
-		return err
+	return nil
+}
+func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.client != nil {
+		return errors.New("VM instance already started")
 	}
 
 	if err := v.vmc.SetCPUAndMemory(2, 2096); err != nil {
@@ -153,12 +174,6 @@ func (v *vmInstance) Start(ctx context.Context, socketPath string, mounts map[st
 		return fmt.Errorf("failed to set exec: %w", err)
 	}
 
-	for tag, p := range mounts {
-		if err := v.vmc.AddVirtiofs(tag, p); err != nil {
-			return fmt.Errorf("failed to add virtiofs: %w", err)
-		}
-	}
-
 	cf := "./krun.fifo"
 	lr, err := fifo.OpenFifo(ctx, cf, os.O_RDONLY|os.O_CREATE|syscall.O_NONBLOCK, 0644)
 	if err != nil {
@@ -169,6 +184,7 @@ func (v *vmInstance) Start(ctx context.Context, socketPath string, mounts map[st
 	}
 	go io.Copy(os.Stderr, lr)
 
+	socketPath := filepath.Join(v.state, "run_vminitd.sock")
 	if err := v.vmc.AddVSockPort(1025, socketPath); err != nil {
 		log.Fatal("Failed to add vsock port:", err)
 	}
@@ -213,9 +229,17 @@ func (v *vmInstance) Start(ctx context.Context, socketPath string, mounts map[st
 			if err != nil {
 				return fmt.Errorf("failed to connect to TTRPC server: %w", err)
 			}
-			if err := ttrpcutil.PingTTRPC(conn, d); err != nil {
+			conn.SetReadDeadline(time.Now().Add(d))
+			if err := ttrpcutil.PingTTRPC(conn); err != nil {
 				conn.Close()
 				d = d + time.Millisecond
+				continue
+			}
+
+			conn.SetReadDeadline(time.Time{}) // Clear the deadline
+			// Ensure connection alive after deadline is cleared
+			if err := ttrpcutil.PingTTRPC(conn); err != nil {
+				conn.Close()
 				continue
 			}
 

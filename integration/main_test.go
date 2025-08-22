@@ -45,28 +45,25 @@ func TestMain(m *testing.M) {
 
 func runWithVM(t *testing.T, runTest func(*testing.T, vm.Instance)) {
 	for _, tc := range []struct {
-		name   string
-		create func() (vm.Instance, error)
+		name string
+		vmm  vm.Manager
 	}{
 		{
-			name:   "run_vminitd",
-			create: runvm.NewVMInstance,
+			name: "run_vminitd",
+			vmm:  runvm.NewManager(),
 		},
 		{
 			name: "libkrun",
-			create: func() (vm.Instance, error) {
-				return libkrun.NewVMInstance(libkrun.DebugLevel)
-			},
+			vmm:  libkrun.NewManager(),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			vm, err := tc.create()
+			vm, err := tc.vmm.NewInstance(t.Context(), t.TempDir())
 			if err != nil {
 				t.Fatal("Failed to create VM instance:", err)
 			}
 
-			f := filepath.Join(t.TempDir(), "vminitd.sock")
-			if err := vm.Start(t.Context(), f, nil); err != nil {
+			if err := vm.Start(t.Context()); err != nil {
 				t.Fatal("Failed to start VM instance:", err)
 			}
 

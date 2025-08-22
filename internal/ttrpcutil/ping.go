@@ -21,14 +21,13 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"time"
 )
 
 // PingTTRPC sends an invalid request to a TTRPC server to check
 // for a response, indicating the server is alive and accepting
 // requests. The duration is the max time to wait for a
 // response.
-func PingTTRPC(rw net.Conn, d time.Duration) error {
+func PingTTRPC(rw net.Conn) error {
 	n, err := rw.Write([]byte{
 		0, 0, 0, 0, // Zero length
 		0, 0, 0, 0, // Zero stream ID to force rejection response (must be odd)
@@ -39,13 +38,11 @@ func PingTTRPC(rw net.Conn, d time.Duration) error {
 	} else if n != 10 {
 		return fmt.Errorf("short write: %d bytes written", n)
 	}
-	rw.SetReadDeadline(time.Now().Add(d))
 	p := make([]byte, 10)
 	_, err = io.ReadFull(rw, p)
 	if err != nil {
 		return err
 	}
-	rw.SetReadDeadline(time.Time{}) // Clear the deadline
 	length := binary.BigEndian.Uint32(p[:4])
 	sid := binary.BigEndian.Uint32(p[4:8])
 	if sid != 0 {

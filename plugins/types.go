@@ -14,7 +14,7 @@
    limitations under the License.
 */
 
-// plugins package stores all the plugin types used internally.
+// Package plugins package stores all the plugin types used internally.
 package plugins
 
 import "github.com/containerd/plugin"
@@ -22,6 +22,9 @@ import "github.com/containerd/plugin"
 const (
 	// TTRPCPlugin implements a ttrpc service
 	TTRPCPlugin plugin.Type = "io.containerd.ttrpc.v1"
+
+	// VMManagerPlugin implements the vm manager interface
+	VMManagerPlugin plugin.Type = "nerdbox.vm-manager.v1"
 )
 
 const (

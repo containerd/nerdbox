@@ -18,6 +18,7 @@ package libkrun
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -26,9 +27,11 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/containerd/errdefs"
 	"github.com/containerd/fifo"
 	"github.com/containerd/ttrpc"
 	"github.com/ebitengine/purego"
@@ -36,6 +39,8 @@ import (
 	"github.com/dmcgowan/nerdbox/internal/ttrpcutil"
 	"github.com/dmcgowan/nerdbox/internal/vm"
 )
+
+var setLogging sync.Once
 
 func NewManager() vm.Manager {
 	return &vmManager{}
@@ -97,7 +102,10 @@ func (*vmManager) NewInstance(ctx context.Context, state string) (vm.Instance, e
 		return nil, err
 	}
 
-	ret := lib.InitLog(os.Stdout.Fd(), uint32(debugLevel), 0, 0)
+	var ret int32
+	setLogging.Do(func() {
+		ret = lib.InitLog(os.Stdout.Fd(), uint32(debugLevel), 0, 0)
+	})
 	if ret != 0 {
 		return nil, fmt.Errorf("krun_init_log failed: %d", ret)
 	}
@@ -112,6 +120,7 @@ func (*vmManager) NewInstance(ctx context.Context, state string) (vm.Instance, e
 		state:      state,
 		kernelPath: kernelPath,
 		initrdPath: initrdPath,
+		streamPath: filepath.Join(state, "streaming.sock"),
 		lib:        lib,
 		handler:    handler,
 	}, nil
@@ -124,6 +133,9 @@ type vmInstance struct {
 
 	kernelPath string
 	initrdPath string
+	streamPath string
+
+	streamC uint32
 
 	lib     *libkrun
 	handler uintptr
@@ -160,8 +172,9 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 
 	args := []string{
 		"-debug",
-		"-vsock-port=1025", // vsock port number
-		"-vsock-cid=3",     // vsock guest context id
+		"-vsock-rpc-port=1025",    // vsock rpc port number
+		"-vsock-stream-port=1026", // vsock stream port number
+		"-vsock-cid=3",            // vsock guest context id
 	}
 
 	env := []string{
@@ -184,9 +197,14 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 	}
 	go io.Copy(os.Stderr, lr)
 
+	// Consider not using unix sockets here and directly connecting via vsock
 	socketPath := filepath.Join(v.state, "run_vminitd.sock")
 	if err := v.vmc.AddVSockPort(1025, socketPath); err != nil {
-		log.Fatal("Failed to add vsock port:", err)
+		return fmt.Errorf("failed to add vsock port: %w", err)
+	}
+
+	if err := v.vmc.AddVSockPort(1026, v.streamPath); err != nil {
+		return fmt.Errorf("failed to add vsock port: %w", err)
 	}
 
 	// Start it
@@ -253,6 +271,47 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 	v.client = ttrpc.NewClient(conn)
 
 	return nil
+}
+
+func (v *vmInstance) StartStream(ctx context.Context) (uint32, net.Conn, error) {
+	var conn net.Conn
+	const timeIncrement = 10 * time.Millisecond
+	for d := timeIncrement; d < time.Second; d += timeIncrement {
+		sid := atomic.AddUint32(&v.streamC, 1)
+		if sid == 0 {
+			return 0, nil, fmt.Errorf("exhausted stream identifiers: %w", errdefs.ErrUnavailable)
+		}
+		select {
+		case <-ctx.Done():
+			return 0, nil, ctx.Err()
+		default:
+		}
+		if _, err := os.Stat(v.streamPath); err == nil {
+			conn, err = net.Dial("unix", v.streamPath)
+			if err != nil {
+				return 0, nil, fmt.Errorf("failed to connect to stream server: %w", err)
+			}
+			var vs [4]byte
+			binary.BigEndian.PutUint32(vs[:], sid)
+			if _, err := conn.Write(vs[:]); err != nil {
+				conn.Close()
+				return 0, nil, fmt.Errorf("failed to write stream id to stream server: %w", err)
+			}
+			// Wait for ack
+			var ack [4]byte
+			if _, err := io.ReadFull(conn, ack[:]); err != nil {
+				conn.Close()
+				return 0, nil, fmt.Errorf("failed to read ack from stream server: %w", err)
+			}
+			if binary.BigEndian.Uint32(ack[:]) != sid {
+				conn.Close()
+				return 0, nil, fmt.Errorf("stream server ack mismatch: got %d, expected %d", binary.BigEndian.Uint32(ack[:]), sid)
+			}
+
+			return sid, conn, nil
+		}
+	}
+	return 0, nil, fmt.Errorf("timeout waiting for stream server: %w", errdefs.ErrUnavailable)
 }
 
 func (v *vmInstance) Client() *ttrpc.Client {

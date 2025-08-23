@@ -72,6 +72,7 @@ struct cmdline
     char const *kernel_cmdline;
     char const *initrd_path;
     char const *listen_path;
+    char const *stream_path;
     bool nested;
 };
 
@@ -85,18 +86,22 @@ bool parse_cmdline(int argc, char *const argv[], struct cmdline *cmdline)
         .data_disk = NULL,
         .kernel_cmdline = NULL,
         .listen_path = NULL,
+        .stream_path = NULL,
         .nested = false,
     };
 
     int option_index = 0;
     int c;
     // the '+' in optstring is a GNU extension that disables permutating argv
-    while ((c = getopt_long(argc, argv, "+hl:k:c:d:v:n", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "+hl:s:k:c:d:v:n", long_options, &option_index)) != -1)
     {
         switch (c)
         {
         case 'l':
             cmdline->listen_path = optarg;
+            break;
+        case 's':
+            cmdline->stream_path = optarg;
             break;
         case 'k':
             cmdline->kernel_cmdline = optarg;
@@ -226,7 +231,8 @@ int main(int argc, char *const argv[])
     const char *const init_args[] =
     {
         "-debug",
-        "-vsock-port=1025", // vsock port number
+        "-vsock-rpc-port=1024", // vsock port number
+        "-vsock-stream-port=1025", // vsock port number
         "-vsock-cid=3", // vsock guest context id
         0
     };
@@ -250,7 +256,18 @@ int main(int argc, char *const argv[])
     if (cmdline.listen_path)
     {
         fprintf(stderr, "listen_path: %s\n", cmdline.listen_path);
-        if (err = krun_add_vsock_port2(ctx_id, 1025, cmdline.listen_path, true))
+        if (err = krun_add_vsock_port2(ctx_id, 1024, cmdline.listen_path, true))
+        {
+            errno = -err;
+            perror("Error configuring vsock port");
+            return -1;
+        }
+    }
+
+    if (cmdline.stream_path)
+    {
+        fprintf(stderr, "stream_path: %s\n", cmdline.stream_path);
+        if (err = krun_add_vsock_port2(ctx_id, 1025, cmdline.stream_path, true))
         {
             errno = -err;
             perror("Error configuring vsock port");

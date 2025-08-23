@@ -47,6 +47,8 @@ import (
 
 	_ "github.com/dmcgowan/nerdbox/plugins/services/bundle"
 	_ "github.com/dmcgowan/nerdbox/plugins/services/system"
+
+	_ "github.com/dmcgowan/nerdbox/plugins/vminit/streaming"
 	_ "github.com/dmcgowan/nerdbox/plugins/vminit/task"
 )
 
@@ -57,7 +59,8 @@ func main() {
 		dev    = flag.Bool("dev", false, "Development mode with graceful exit")
 		debug  = flag.Bool("debug", true, "Debug log level")
 	)
-	flag.IntVar(&config.VSockPort, "vsock-port", 1024, "vsock port to listen on")
+	flag.IntVar(&config.RPCPort, "vsock-rpc-port", 1024, "vsock port to listen for rpc on")
+	flag.IntVar(&config.StreamPort, "vsock-stream-port", 1025, "vsock port to listen for streams on")
 	flag.IntVar(&config.VSockContextID, "vsock-cid", 0, "vsock context ID for vsock listen")
 
 	args := os.Args[1:]
@@ -225,7 +228,8 @@ type Runnable interface {
 
 type ServiceConfig struct {
 	VSockContextID int
-	VSockPort      int
+	RPCPort        int
+	StreamPort     int
 	Shutdown       shutdown.Service
 }
 
@@ -239,9 +243,9 @@ func New(ctx context.Context, config ServiceConfig) (Runnable, error) {
 		// TODO: service config?
 	)
 
-	l, err := vsock.ListenContextID(uint32(config.VSockContextID), uint32(config.VSockPort), &vsock.Config{})
+	l, err := vsock.ListenContextID(uint32(config.VSockContextID), uint32(config.RPCPort), &vsock.Config{})
 	if err != nil {
-		return nil, fmt.Errorf("failed to listen on vsock port %d with context id %d: %w", config.VSockPort, config.VSockContextID, err)
+		return nil, fmt.Errorf("failed to listen on vsock port %d with context id %d: %w", config.RPCPort, config.VSockContextID, err)
 	}
 	config.Shutdown.RegisterCallback(func(ctx context.Context) error {
 		return l.Close()
@@ -258,7 +262,7 @@ func New(ctx context.Context, config ServiceConfig) (Runnable, error) {
 	registry.Register(&plugin.Registration{
 		Type: cplugins.InternalPlugin,
 		ID:   "shutdown",
-		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
+		InitFn: func(ic *plugin.InitContext) (any, error) {
 			return config.Shutdown, nil
 		},
 	})
@@ -283,6 +287,12 @@ func New(ctx context.Context, config ServiceConfig) (Runnable, error) {
 
 		if reg.Config != nil {
 			// TODO: Allow plugin config?
+			if vc, ok := reg.Config.(interface{ SetVsock(uint32, uint32) }); ok {
+				if reg.Type == plugins.StreamingPlugin {
+					vc.SetVsock(uint32(config.VSockContextID), uint32(config.StreamPort))
+				}
+			}
+
 			ic.Config = reg.Config
 		}
 

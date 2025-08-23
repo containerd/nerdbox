@@ -54,6 +54,7 @@ import (
 	"github.com/dmcgowan/nerdbox/internal/systools"
 	"github.com/dmcgowan/nerdbox/internal/vminit/process"
 	"github.com/dmcgowan/nerdbox/internal/vminit/runc"
+	"github.com/dmcgowan/nerdbox/internal/vminit/stream"
 )
 
 var (
@@ -62,7 +63,7 @@ var (
 )
 
 // NewTaskService creates a new instance of a task service
-func NewTaskService(ctx context.Context, bundle string, publisher events.Publisher, sd shutdown.Service) (taskAPI.TTRPCTaskService, error) {
+func NewTaskService(ctx context.Context, bundle string, publisher events.Publisher, sd shutdown.Service, sm stream.Manager) (taskAPI.TTRPCTaskService, error) {
 	if cgroups.Mode() != cgroups.Unified {
 		return nil, fmt.Errorf("only unified cgroups mode is supported: %w", errdefs.ErrNotImplemented)
 	}
@@ -76,6 +77,7 @@ func NewTaskService(ctx context.Context, bundle string, publisher events.Publish
 		events:               make(chan interface{}, 128),
 		ec:                   reaper.Default.Subscribe(),
 		ep:                   ep,
+		streams:              sm,
 		shutdown:             sd,
 		containers:           make(map[string]*runc.Container),
 		running:              make(map[int][]containerProcess),
@@ -112,6 +114,8 @@ type service struct {
 	platform stdio.Platform
 	ec       chan runcC.Exit
 	ep       oom.Watcher
+
+	streams stream.Manager
 
 	containers map[string]*runc.Container
 
@@ -232,7 +236,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 
 	systools.DumpFile(ctx, filepath.Join(r.Bundle, "config.json"))
 
-	container, err := runc.NewContainer(ctx, s.platform, r)
+	container, err := runc.NewContainer(ctx, s.platform, r, s.streams)
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}

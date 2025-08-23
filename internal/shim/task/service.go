@@ -18,6 +18,7 @@ package task
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -48,15 +49,13 @@ var (
 // NewTaskService creates a new instance of a task service
 func NewTaskService(ctx context.Context, vmm vm.Manager, publisher shim.Publisher, sd shutdown.Service) (taskAPI.TTRPCTaskService, error) {
 	s := &service{
-		context:  ctx,
-		vmm:      vmm,
-		events:   make(chan interface{}, 128),
-		shutdown: sd,
+		context:          ctx,
+		vmm:              vmm,
+		events:           make(chan interface{}, 128),
+		containers:       make(map[string]*container),
+		initiateShutdown: sd.Shutdown,
 	}
-	sd.RegisterCallback(func(context.Context) error {
-		close(s.events)
-		return nil
-	})
+	sd.RegisterCallback(s.shutdown)
 
 	if address, err := shim.ReadAddress("address"); err == nil {
 		sd.RegisterCallback(func(context.Context) error {
@@ -66,10 +65,8 @@ func NewTaskService(ctx context.Context, vmm vm.Manager, publisher shim.Publishe
 	return s, nil
 }
 
-type vmProcess struct {
-	pid    int
-	path   string
-	client *ttrpc.Client
+type container struct {
+	ioShutdown func(context.Context) error
 }
 
 // service is the shim implementation of a remote shim over GRPC
@@ -88,12 +85,38 @@ type service struct {
 	events   chan interface{}
 	platform stdio.Platform
 
-	shutdown shutdown.Service
+	containers map[string]*container
+
+	initiateShutdown func()
 }
 
 func (s *service) RegisterTTRPC(server *ttrpc.Server) error {
 	taskAPI.RegisterTTRPCTaskService(server, s)
 	return nil
+}
+
+func (s *service) shutdown(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var errs []error
+
+	if s.vm != nil {
+		if err := s.vm.Shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("vm shutdown: %w", err))
+		}
+	}
+
+	for id, c := range s.containers {
+		if c.ioShutdown != nil {
+			if err := c.ioShutdown(ctx); err != nil {
+				errs = append(errs, fmt.Errorf("container %q io shutdown: %w", id, err))
+			}
+		}
+
+	}
+
+	close(s.events)
+	return errors.Join(errs...)
 }
 
 type containerProcess struct {
@@ -158,84 +181,48 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		return nil, err
 	}
 
-	/*
-		rio := stdio.Stdio{
-			Stdin:    r.Stdin,
-			Stdout:   r.Stdout,
-			Stderr:   r.Stderr,
-			Terminal: r.Terminal,
-		}
-	*/
-	//sio, err :=
-
-	vr := &taskAPI.CreateTaskRequest{
-		ID:     r.ID,
-		Bundle: br.Bundle,
-		Rootfs: m,
-		// TODO: Add terminal and stdio
-		// Terminal: r.Terminal,
-		// Stdin:   r.Stdin,
-		// Stdout:  r.Stdout,
-		// Stderr:  r.Stderr,
-		Options: r.Options,
+	rio := stdio.Stdio{
+		Stdin:    r.Stdin,
+		Stdout:   r.Stdout,
+		Stderr:   r.Stderr,
+		Terminal: r.Terminal,
 	}
 
-	/*
-		if r.Stdin != "" || r.Stdout != "" || r.Stderr != "" {
-			streamID := "stdio-" + r.ID
-			stream, err := proxy.NewStreamCreator(s.vm.Client()).Create(ctx, streamID)
-			if err != nil {
-				log.G(ctx).WithError(err).Error("failed to create stdio stream")
-				return nil, errgrpc.ToGRPC(err)
-			}
-			//s.shutdown.RegisterCallback(stream.Close)
+	var c container
+	cio, err := s.forwardIO(ctx, vmi, rio, &c)
+	if err != nil {
+		return nil, errgrpc.ToGRPC(err)
+	}
 
-			if r.Stdout != "" {
-				vr.Stdout = fmt.Sprintf("stream://%s", streamID)
-				go func() {
-					for {
-						p, err := stream.Recv()
-						if err != nil {
-							log.G(ctx).WithError(err).Error("failed to receive stdout message")
-							return
-						}
-						var r stdiotypes.Data
-						if err := typeurl.UnmarshalTo(p, &r); err != nil {
-							log.G(ctx).WithError(err).Error("failed to unmarshal stdout message")
-							return
-						}
-						switch r.Stream {
-						case stdiotypes.Stream_STDOUT:
-							// Forward to stdout
-						case stdiotypes.Stream_STDERR:
-						default:
-						}
-
-					}
-
-					/*
-						if err := stream.Send(&taskAPI.StreamMessage{
-							Stream: taskAPI.Stream_STDOUT,
-							Data:   []byte(r.Stdout),
-						}); err != nil {
-							log.G(ctx).WithError(err).Error("failed to send stdout message")
-						}
-					* /
-				}()
-			}
-		}
-	*/
+	vr := &taskAPI.CreateTaskRequest{
+		ID:       r.ID,
+		Bundle:   br.Bundle,
+		Rootfs:   m,
+		Terminal: cio.Terminal,
+		Stdin:    cio.Stdin,
+		Stdout:   cio.Stdout,
+		Stderr:   cio.Stderr,
+		Options:  r.Options,
+	}
 
 	tc := taskAPI.NewTTRPCTaskClient(vmc)
 	resp, err := tc.Create(ctx, vr)
 	if err != nil {
+		if c.ioShutdown != nil {
+			// TODO: stop this
+			if err := c.ioShutdown(ctx); err != nil {
+				log.G(ctx).WithError(err).Error("failed to shutdown io after create failure")
+			}
+		}
 		log.G(ctx).WithError(err).Error("failed to create task")
 		return nil, errgrpc.ToGRPC(err)
 	} else {
 		log.G(ctx).Debug("no failure creating task")
 	}
 
-	// TODO: Keep track of container until successfully removed
+	s.mu.Lock()
+	s.containers[r.ID] = &c
+	s.mu.Unlock()
 
 	// TODO: Forward events rather than generate here?
 	s.send(&eventstypes.TaskCreate{
@@ -447,23 +434,20 @@ func (s *service) Connect(ctx context.Context, r *taskAPI.ConnectRequest) (*task
 
 func (s *service) Shutdown(ctx context.Context, r *taskAPI.ShutdownRequest) (*ptypes.Empty, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID}).Info("shutdown")
+
+	// TODO: Should we forward this to VM?
 	//tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
 	//return tc.Shutdown(ctx, r)
 
-	// TODO: Keep track of running containers (or rely on sandbox interface?)
-	/*
-		s.mu.Lock()
-		defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-		// return out if the shim is still servicing containers
-		if len(s.containers) > 0 {
-			return empty, nil
-		}
-	*/
-
-	// please make sure that temporary resource has been cleanup or registered
-	// for cleanup before calling shutdown
-	s.shutdown.Shutdown()
+	if s.initiateShutdown != nil {
+		// please make sure that temporary resource has been cleanup or registered
+		// for cleanup before calling shutdown
+		s.initiateShutdown()
+		s.initiateShutdown = nil
+	}
 
 	return empty, nil
 }

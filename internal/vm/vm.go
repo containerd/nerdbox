@@ -14,10 +14,12 @@
    limitations under the License.
 */
 
+// Package vm defines the interface for vm managers and instances
 package vm
 
 import (
 	"context"
+	"net"
 
 	"github.com/containerd/ttrpc"
 )
@@ -41,4 +43,12 @@ type Instance interface {
 	Start(ctx context.Context, opts ...StartOpt) error
 	Client() *ttrpc.Client
 	Shutdown(context.Context) error
+
+	// StartStream makes a connection to the VM for streaming, returning a 32-bit
+	// identifier for the stream that can be used to reference the stream inside
+	// the vm.
+	//
+	// TODO: Consider making this interface optional, a per RPC implementation
+	// is possible but likely less efficient.
+	StartStream(ctx context.Context) (uint32, net.Conn, error)
 }

@@ -87,6 +87,7 @@ func (v *vmInstance) Start(ctx context.Context, _ ...vm.StartOpt) error {
 	}
 
 	socketPath := filepath.Join(v.state, "run_vminitd.sock")
+	streamPath := filepath.Join(v.state, "streaming.sock")
 
 	if _, err := os.Stat(socketPath); err == nil {
 		if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
@@ -107,6 +108,7 @@ func (v *vmInstance) Start(ctx context.Context, _ ...vm.StartOpt) error {
 
 	args := []string{
 		"-l", socketPath,
+		"-s", streamPath,
 		"-c", cf,
 		"-k", "console=hvc0",
 	}
@@ -193,6 +195,10 @@ func (v *vmInstance) Start(ctx context.Context, _ ...vm.StartOpt) error {
 	v.path = socketPath
 	v.client = ttrpc.NewClient(conn)
 	return nil
+}
+
+func (v *vmInstance) StartStream(ctx context.Context) (uint32, net.Conn, error) {
+	return 0, nil, fmt.Errorf("StartStream not implemented for runvm: %w", errdefs.ErrNotImplemented)
 }
 
 func (v *vmInstance) Client() *ttrpc.Client {

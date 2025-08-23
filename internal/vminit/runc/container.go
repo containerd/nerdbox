@@ -39,12 +39,13 @@ import (
 	"github.com/containerd/typeurl/v2"
 
 	"github.com/dmcgowan/nerdbox/internal/vminit/process"
+	"github.com/dmcgowan/nerdbox/internal/vminit/stream"
 )
 
 const runtimePath = "/sbin/crun"
 
 // NewContainer returns a new runc container
-func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTaskRequest) (_ *Container, retErr error) {
+func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTaskRequest, streams stream.Manager) (_ *Container, retErr error) {
 	opts := &options.Options{}
 	if r.Options.GetValue() != nil {
 		v, err := typeurl.UnmarshalAny(r.Options)
@@ -123,6 +124,7 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 		config,
 		opts,
 		rootfs,
+		streams,
 	)
 	if err != nil {
 		return nil, err
@@ -180,7 +182,7 @@ func WriteOptions(path string, opts *options.Options) error {
 }
 
 func newInit(ctx context.Context, path, workDir string, platform stdio.Platform,
-	r *process.CreateConfig, options *options.Options, rootfs string) (*process.Init, error) {
+	r *process.CreateConfig, options *options.Options, rootfs string, streams stream.Manager) (*process.Init, error) {
 	runtime := process.NewRunc(options.Root, path, runtimePath, options.SystemdCgroup)
 
 	p := process.New(r.ID, runtime, stdio.Stdio{
@@ -188,7 +190,7 @@ func newInit(ctx context.Context, path, workDir string, platform stdio.Platform,
 		Stdout:   r.Stdout,
 		Stderr:   r.Stderr,
 		Terminal: r.Terminal,
-	})
+	}, streams)
 	p.Bundle = r.Bundle
 	p.Platform = platform
 	p.Rootfs = rootfs

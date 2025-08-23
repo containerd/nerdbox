@@ -41,6 +41,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/dmcgowan/nerdbox/internal/systools"
+	"github.com/dmcgowan/nerdbox/internal/vminit/stream"
 )
 
 // Init represents an initial process for a container
@@ -78,6 +79,7 @@ type Init struct {
 	NoPivotRoot  bool
 	NoNewKeyring bool
 	CriuWorkPath string
+	streams      stream.Manager
 }
 
 // NewRunc returns a new runc instance for a process
@@ -97,13 +99,14 @@ func NewRunc(root, path, runtime string, systemd bool) *runc.Runc {
 }
 
 // New returns a new process
-func New(id string, runtime *runc.Runc, stdio stdio.Stdio) *Init {
+func New(id string, runtime *runc.Runc, stdio stdio.Stdio, sm stream.Manager) *Init {
 	p := &Init{
 		id:        id,
 		runtime:   runtime,
 		stdio:     stdio,
 		status:    0,
 		waitBlock: make(chan struct{}),
+		streams:   sm,
 	}
 	p.initState = &createdState{p: p}
 	return p
@@ -124,7 +127,7 @@ func (p *Init) Create(ctx context.Context, r *CreateConfig) (retError error) {
 		}
 		defer socket.Close()
 	} else {
-		if pio, err = createIO(ctx, p.id, p.IoUID, p.IoGID, p.stdio); err != nil {
+		if pio, err = createIO(ctx, p.id, p.IoUID, p.IoGID, p.stdio, p.streams); err != nil {
 			return fmt.Errorf("failed to create init process I/O: %w", err)
 		}
 		p.io = pio
@@ -154,7 +157,7 @@ func (p *Init) Create(ctx context.Context, r *CreateConfig) (retError error) {
 		return p.runtimeError(err, "OCI runtime create failed")
 	}
 
-	if r.Stdin != "" {
+	if r.Stdin != "" && !strings.HasPrefix(r.Stdin, "stream://") {
 		if err := p.openStdin(r.Stdin); err != nil {
 			return err
 		}

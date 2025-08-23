@@ -27,6 +27,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -34,9 +36,12 @@ import (
 
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/containerd/v2/pkg/stdio"
+	"github.com/containerd/errdefs"
 	"github.com/containerd/fifo"
 	runc "github.com/containerd/go-runc"
 	"github.com/containerd/log"
+
+	"github.com/dmcgowan/nerdbox/internal/vminit/stream"
 )
 
 const binaryIOProcTermTimeout = 12 * time.Second // Give logger process solid 10 seconds for cleanup
@@ -56,11 +61,16 @@ type processIO struct {
 	uri   *url.URL
 	copy  bool
 	stdio stdio.Stdio
+
+	streams []io.ReadWriteCloser
 }
 
 func (p *processIO) Close() error {
 	if p.io != nil {
 		return p.io.Close()
+	}
+	for _, s := range p.streams {
+		s.Close()
 	}
 	return nil
 }
@@ -74,14 +84,15 @@ func (p *processIO) Copy(ctx context.Context, wg *sync.WaitGroup) error {
 		return nil
 	}
 	var cwg sync.WaitGroup
-	if err := copyPipes(ctx, p.IO(), p.stdio.Stdin, p.stdio.Stdout, p.stdio.Stderr, wg, &cwg); err != nil {
+	if err := copyPipes(ctx, p.IO(), p.stdio.Stdin, p.stdio.Stdout, p.stdio.Stderr, p.streams, wg, &cwg); err != nil {
 		return fmt.Errorf("unable to copy pipes: %w", err)
 	}
+
 	cwg.Wait()
 	return nil
 }
 
-func createIO(ctx context.Context, id string, ioUID, ioGID int, stdio stdio.Stdio) (*processIO, error) {
+func createIO(ctx context.Context, id string, ioUID, ioGID int, stdio stdio.Stdio, ss stream.Manager) (*processIO, error) {
 	pio := &processIO{
 		stdio: stdio,
 	}
@@ -102,6 +113,35 @@ func createIO(ctx context.Context, id string, ioUID, ioGID int, stdio stdio.Stdi
 	}
 	pio.uri = u
 	switch u.Scheme {
+	case "stream":
+		var sid uint64
+		var c io.ReadWriteCloser
+		sid, err = strconv.ParseUint(stdio.Stdout[9:], 10, 32)
+		if err != nil {
+			return nil, fmt.Errorf("invalid stream id %q: %w", u.Path, err)
+		}
+		c, err = ss.Get(uint32(sid))
+		if err != nil {
+			return nil, fmt.Errorf("unable to get stream %d: %w", sid, errdefs.ErrNotFound)
+		}
+		streams := []io.ReadWriteCloser{c}
+		if stdio.Stdout != stdio.Stderr && strings.HasPrefix(stdio.Stderr, "stream://") {
+			sid, err = strconv.ParseUint(stdio.Stderr[9:], 10, 32)
+			if err != nil {
+				return nil, fmt.Errorf("invalid stderr stream id %q: %w", stdio.Stderr, err)
+			}
+			c, err = ss.Get(uint32(sid))
+			if err != nil {
+				return nil, fmt.Errorf("unable to get stream %d: %w", sid, errdefs.ErrNotFound)
+			}
+			streams = append(streams, c)
+		}
+
+		log.G(ctx).WithField("id", id).WithField("streams", streams).Debug("using stream IO")
+		//pio.io, err = newStreamIO(ctx, streams)
+		pio.streams = streams
+		pio.copy = true
+		pio.io, err = runc.NewPipeIO(ioUID, ioGID, withConditionalIO(stdio))
 	case "fifo":
 		pio.copy = true
 		pio.io, err = runc.NewPipeIO(ioUID, ioGID, withConditionalIO(stdio))
@@ -123,7 +163,7 @@ func createIO(ctx context.Context, id string, ioUID, ioGID int, stdio stdio.Stdi
 		pio.copy = true
 		pio.io, err = runc.NewPipeIO(ioUID, ioGID, withConditionalIO(stdio))
 	default:
-		return nil, fmt.Errorf("unknown STDIO scheme %s", u.Scheme)
+		return nil, fmt.Errorf("unsupported STDIO scheme %s: %w", u.Scheme, errdefs.ErrNotImplemented)
 	}
 	if err != nil {
 		return nil, err
@@ -131,14 +171,16 @@ func createIO(ctx context.Context, id string, ioUID, ioGID int, stdio stdio.Stdi
 	return pio, nil
 }
 
-func copyPipes(ctx context.Context, rio runc.IO, stdin, stdout, stderr string, wg, cwg *sync.WaitGroup) error {
+func copyPipes(ctx context.Context, rio runc.IO, stdin, stdout, stderr string, streams []io.ReadWriteCloser, wg, cwg *sync.WaitGroup) error {
 	var sameFile *countingWriteCloser
 	for _, i := range []struct {
-		name string
-		dest func(wc io.WriteCloser, rc io.Closer)
+		name  string
+		index int
+		dest  func(wc io.WriteCloser, rc io.Closer)
 	}{
 		{
-			name: stdout,
+			name:  stdout,
+			index: 0,
 			dest: func(wc io.WriteCloser, rc io.Closer) {
 				wg.Add(1)
 				cwg.Add(1)
@@ -157,7 +199,8 @@ func copyPipes(ctx context.Context, rio runc.IO, stdin, stdout, stderr string, w
 				}()
 			},
 		}, {
-			name: stderr,
+			name:  stderr,
+			index: 1,
 			dest: func(wc io.WriteCloser, rc io.Closer) {
 				wg.Add(1)
 				cwg.Add(1)
@@ -177,32 +220,40 @@ func copyPipes(ctx context.Context, rio runc.IO, stdin, stdout, stderr string, w
 			},
 		},
 	} {
-		ok, err := fifo.IsFifo(i.name)
-		if err != nil {
-			return err
-		}
 		var (
 			fw io.WriteCloser
 			fr io.Closer
 		)
-		if ok {
-			if fw, err = fifo.OpenFifo(ctx, i.name, syscall.O_WRONLY, 0); err != nil {
-				return fmt.Errorf("containerd-shim: opening w/o fifo %q failed: %w", i.name, err)
+		if streams != nil {
+			idx := i.index
+			if idx+1 >= len(streams) {
+				idx = len(streams) - 1
 			}
-			if fr, err = fifo.OpenFifo(ctx, i.name, syscall.O_RDONLY, 0); err != nil {
-				return fmt.Errorf("containerd-shim: opening r/o fifo %q failed: %w", i.name, err)
-			}
+			fw = streams[idx]
 		} else {
-			if sameFile != nil {
-				sameFile.bumpCount(1)
-				i.dest(sameFile, nil)
-				continue
+			ok, err := fifo.IsFifo(i.name)
+			if err != nil {
+				return err
 			}
-			if fw, err = os.OpenFile(i.name, syscall.O_WRONLY|syscall.O_APPEND, 0); err != nil {
-				return fmt.Errorf("containerd-shim: opening file %q failed: %w", i.name, err)
-			}
-			if stdout == stderr {
-				sameFile = newCountingWriteCloser(fw, 1)
+			if ok {
+				if fw, err = fifo.OpenFifo(ctx, i.name, syscall.O_WRONLY, 0); err != nil {
+					return fmt.Errorf("containerd-shim: opening w/o fifo %q failed: %w", i.name, err)
+				}
+				if fr, err = fifo.OpenFifo(ctx, i.name, syscall.O_RDONLY, 0); err != nil {
+					return fmt.Errorf("containerd-shim: opening r/o fifo %q failed: %w", i.name, err)
+				}
+			} else {
+				if sameFile != nil {
+					sameFile.bumpCount(1)
+					i.dest(sameFile, nil)
+					continue
+				}
+				if fw, err = os.OpenFile(i.name, syscall.O_WRONLY|syscall.O_APPEND, 0); err != nil {
+					return fmt.Errorf("containerd-shim: opening file %q failed: %w", i.name, err)
+				}
+				if stdout == stderr {
+					sameFile = newCountingWriteCloser(fw, 1)
+				}
 			}
 		}
 		i.dest(fw, fr)
@@ -210,9 +261,17 @@ func copyPipes(ctx context.Context, rio runc.IO, stdin, stdout, stderr string, w
 	if stdin == "" {
 		return nil
 	}
-	f, err := fifo.OpenFifo(context.Background(), stdin, syscall.O_RDONLY|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return fmt.Errorf("containerd-shim: opening %s failed: %s", stdin, err)
+	var (
+		f   io.ReadCloser
+		err error
+	)
+	if streams != nil {
+		f = streams[0]
+	} else {
+		f, err = fifo.OpenFifo(context.Background(), stdin, syscall.O_RDONLY|syscall.O_NONBLOCK, 0)
+		if err != nil {
+			return fmt.Errorf("containerd-shim: opening %s failed: %s", stdin, err)
+		}
 	}
 	cwg.Add(1)
 	go func() {
@@ -251,6 +310,54 @@ func (c *countingWriteCloser) Close() error {
 		return nil
 	}
 	return c.WriteCloser.Close()
+}
+
+// newStreamIO connects stream to runc.IO
+func newStreamIO(ctx context.Context, streams []io.ReadWriteCloser) (_ runc.IO, err error) {
+	if len(streams) == 0 {
+		return nil, errors.New("no streams provided")
+	}
+	return &streamIO{
+		streams: streams,
+	}, nil
+}
+
+type streamIO struct {
+	streams []io.ReadWriteCloser
+}
+
+func (s *streamIO) Close() error {
+	var result []error
+
+	for _, rw := range s.streams {
+		if err := rw.Close(); err != nil {
+			result = append(result, err)
+		}
+	}
+
+	return errors.Join(result...)
+}
+
+func (s *streamIO) Stdin() io.WriteCloser {
+	return nil
+}
+
+func (s *streamIO) Stdout() io.ReadCloser {
+	return nil
+}
+
+func (s *streamIO) Stderr() io.ReadCloser {
+	return nil
+}
+
+func (s *streamIO) Set(cmd *exec.Cmd) {
+	cmd.Stdin = s.streams[0]
+	cmd.Stdout = s.streams[0]
+	if len(s.streams) > 1 {
+		cmd.Stderr = s.streams[1]
+	} else {
+		cmd.Stderr = s.streams[0]
+	}
 }
 
 // NewBinaryIO runs a custom binary process for pluggable shim logging

@@ -14,23 +14,6 @@
    limitations under the License.
 */
 
-// Package plugins package stores all the plugin types used internally.
-package plugins
+package task
 
-import "github.com/containerd/plugin"
-
-const (
-	// TTRPCPlugin implements a ttrpc service
-	TTRPCPlugin plugin.Type = "io.containerd.ttrpc.v1"
-
-	// VMManagerPlugin implements the vm manager interface
-	VMManagerPlugin plugin.Type = "nerdbox.vm-manager.v1"
-
-	// StreamingPlugin implements a stream manager
-	StreamingPlugin plugin.Type = "nerdbox.streaming.v1"
-)
-
-const (
-	// PropertyBundleDir sets the bundle directory property for containers
-	PropertyBundleDir = "nerdbox.bundle"
-)
+const defaultScheme = "pipe"

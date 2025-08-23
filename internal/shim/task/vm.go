@@ -48,19 +48,6 @@ func (s *service) vmInstance(ctx context.Context, state string) (vm.Instance, er
 		if err != nil {
 			return nil, err
 		}
-		if s.shutdown != nil {
-			s.shutdown.RegisterCallback(s.vm.Shutdown)
-		}
 	}
 	return s.vm, nil
-
-	/*
-		for tag, path := range mounts {
-			if err := s.vm.AddFS(ctx, tag, path); err != nil {
-				return err
-			}
-		}
-
-		return s.vm.Start(ctx)
-	*/
 }

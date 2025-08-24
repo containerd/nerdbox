@@ -816,7 +816,7 @@ func (s *service) initPlatform() error {
 	if s.platform != nil {
 		return nil
 	}
-	p, err := runc.NewPlatform()
+	p, err := runc.NewPlatform(s.streams)
 	if err != nil {
 		return err
 	}

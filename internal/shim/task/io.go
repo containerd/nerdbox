@@ -212,6 +212,9 @@ func copyStreams(ctx context.Context, streams []net.Conn, stdin, stdout, stderr 
 			},
 		},
 	} {
+		if i.name == "" {
+			continue
+		}
 		ok, err := fifo.IsFifo(i.name)
 		if err != nil {
 			return err

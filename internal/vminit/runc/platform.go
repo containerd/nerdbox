@@ -25,6 +25,8 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -34,6 +36,7 @@ import (
 	"github.com/containerd/fifo"
 
 	"github.com/dmcgowan/nerdbox/internal/vminit/process"
+	"github.com/dmcgowan/nerdbox/internal/vminit/stream"
 )
 
 var bufPool = sync.Pool{
@@ -46,7 +49,7 @@ var bufPool = sync.Pool{
 }
 
 // NewPlatform returns a linux platform for use with I/O operations
-func NewPlatform() (stdio.Platform, error) {
+func NewPlatform(m stream.Manager) (stdio.Platform, error) {
 	epoller, err := console.NewEpoller()
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize epoller: %w", err)
@@ -54,11 +57,13 @@ func NewPlatform() (stdio.Platform, error) {
 	go epoller.Wait()
 	return &linuxPlatform{
 		epoller: epoller,
+		streams: m,
 	}, nil
 }
 
 type linuxPlatform struct {
 	epoller *console.Epoller
+	streams stream.Manager
 }
 
 func (p *linuxPlatform) CopyConsole(ctx context.Context, console console.Console, id, stdin, stdout, stderr string, wg *sync.WaitGroup) (cons console.Console, retErr error) {
@@ -73,7 +78,17 @@ func (p *linuxPlatform) CopyConsole(ctx context.Context, console console.Console
 
 	var cwg sync.WaitGroup
 	if stdin != "" {
-		in, err := fifo.OpenFifo(context.Background(), stdin, syscall.O_RDONLY|syscall.O_NONBLOCK, 0)
+		var in io.ReadCloser
+		if s, ok := strings.CutPrefix(stdin, "stream://"); ok {
+			var sid uint64
+			sid, err = strconv.ParseUint(s, 10, 32)
+			if err != nil {
+				return nil, err
+			}
+			in, err = p.streams.Get(uint32(sid))
+		} else {
+			in, err = fifo.OpenFifo(context.Background(), stdin, syscall.O_RDONLY|syscall.O_NONBLOCK, 0)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -96,6 +111,27 @@ func (p *linuxPlatform) CopyConsole(ctx context.Context, console console.Console
 	}
 
 	switch uri.Scheme {
+	case "stream":
+		sid, err := strconv.ParseUint(strings.TrimPrefix(stdout, "stream://"), 10, 32)
+		if err != nil {
+			return nil, err
+		}
+		out, err := p.streams.Get(uint32(sid))
+		if err != nil {
+			return nil, err
+		}
+		wg.Add(1)
+		cwg.Add(1)
+		go func() {
+			cwg.Done()
+			buf := bufPool.Get().(*[]byte)
+			defer bufPool.Put(buf)
+			io.CopyBuffer(out, epollConsole, *buf)
+
+			out.Close()
+			wg.Done()
+		}()
+		cwg.Wait()
 	case "binary":
 		ns, err := namespaces.NamespaceRequired(ctx)
 		if err != nil {

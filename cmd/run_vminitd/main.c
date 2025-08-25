@@ -9,6 +9,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+#include <libgen.h>
 #include <libkrun.h>
 #include <getopt.h>
 #include <stdbool.h>
@@ -148,6 +149,7 @@ int main(int argc, char *const argv[])
     pthread_t thread;
     char kernel_path[255];
     char initrd_path[255];
+    char * bin_path;
     struct cmdline cmdline;
 
     if (!parse_cmdline(argc, argv, &cmdline))
@@ -163,14 +165,14 @@ int main(int argc, char *const argv[])
         return 0;
     }
 
-
-    // Size must allow "-kernel" at end
-    if (sizeof(argv[0]) > 247) {
+    bin_path = dirname(argv[0]);
+    // Size must allow "nerdbox-kernel" at end
+    if (sizeof(bin_path) > 240) {
         printf("executable path is too long");
         return -1;
     }
-    strcat(strcpy(kernel_path, argv[0]), "-kernel");
-    strcat(strcpy(initrd_path, argv[0]), "-initrd");
+    strcat(strcpy(kernel_path, bin_path), "/nerdbox-kernel");
+    strcat(strcpy(initrd_path, bin_path), "/nerdbox-initrd");
 
     fprintf(stderr, "initrd: %s\n", initrd_path);
     fprintf(stderr, "kernel_path: %s\n", kernel_path);

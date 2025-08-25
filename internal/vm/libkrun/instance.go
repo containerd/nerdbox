@@ -73,28 +73,26 @@ func (*vmManager) NewInstance(ctx context.Context, state string) (vm.Instance, e
 			}
 		}
 		if kernelPath == "" {
-			path = filepath.Join(dir, "run_vminitd-kernel")
+			path = filepath.Join(dir, "nerdbox-kernel")
 			if _, err := os.Stat(path); err == nil {
 				kernelPath = path
 			}
-			// TODO: Also check nerdbox-kernel?
 		}
 		if initrdPath == "" {
-			path = filepath.Join(dir, "run_vminitd-initrd")
+			path = filepath.Join(dir, "nerdbox-initrd")
 			if _, err := os.Stat(path); err == nil {
 				initrdPath = path
 			}
-			// TODO: Also check nerdbox-initrd?
 		}
 	}
 	if krunPath == "" {
 		return nil, fmt.Errorf("libkrun.so not found in PATH or LIBKRUN_PATH")
 	}
 	if kernelPath == "" {
-		return nil, fmt.Errorf("run_vminitd-kernel not found in PATH or LIBKRUN_PATH")
+		return nil, fmt.Errorf("nerdbox-kernel not found in PATH or LIBKRUN_PATH")
 	}
 	if initrdPath == "" {
-		return nil, fmt.Errorf("run_vminitd-initrd not found in PATH or LIBKRUN_PATH")
+		return nil, fmt.Errorf("nerdbox-initrd not found in PATH or LIBKRUN_PATH")
 	}
 
 	lib, handler, err := openLibkrun(krunPath)

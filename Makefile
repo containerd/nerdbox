@@ -67,13 +67,13 @@ build/runc:
 	@echo "$(WHALE) $@"
 	wget -O build/runc https://github.com/opencontainers/runc/releases/download/v1.3.0/runc.amd64
 
-build/run_vminitd-initrd: build/vminitd build/crun build/runc
+build/nerdbox-initrd: build/vminitd build/crun build/runc
 	mkdir -p build/init/sbin build/init/proc build/init/sys build/init/tmp build/init/run
 	cp build/vminitd build/init/init
 	cp build/crun build/init/sbin/crun
 	cp build/runc build/init/sbin/runc
 	chmod +x build/init/sbin/crun build/init/sbin/runc
-	(cd build/init && find . -print0 | cpio --null -H newc -o ) | gzip -9 > build/run_vminitd-initrd
+	(cd build/init && find . -print0 | cpio --null -H newc -o ) | gzip -9 > build/nerdbox-initrd
 
 generate: protos
 	@echo "$(WHALE) $@"

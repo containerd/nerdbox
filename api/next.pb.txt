@@ -29,11 +29,32 @@ file {
       json_name: "id"
     }
     field {
-      name: "config"
+      name: "files"
       number: 2
-      label: LABEL_OPTIONAL
-      type: TYPE_BYTES
-      json_name: "config"
+      label: LABEL_REPEATED
+      type: TYPE_MESSAGE
+      type_name: ".containerd.vminitd.services.bundle.v1.CreateRequest.FilesEntry"
+      json_name: "files"
+    }
+    nested_type {
+      name: "FilesEntry"
+      field {
+        name: "key"
+        number: 1
+        label: LABEL_OPTIONAL
+        type: TYPE_STRING
+        json_name: "key"
+      }
+      field {
+        name: "value"
+        number: 2
+        label: LABEL_OPTIONAL
+        type: TYPE_BYTES
+        json_name: "value"
+      }
+      options {
+        map_entry: true
+      }
     }
   }
   message_type {

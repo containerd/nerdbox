@@ -71,8 +71,10 @@ func (s *service) Create(ctx context.Context, r *api.CreateRequest) (*api.Create
 		return nil, errgrpc.ToGRPC(err)
 	}
 
-	if err := os.WriteFile(filepath.Join(d, "config.json"), r.Config, 0644); err != nil {
-		return nil, errgrpc.ToGRPC(err)
+	for f, b := range r.Files {
+		if err := os.WriteFile(filepath.Join(d, f), b, 0644); err != nil {
+			return nil, errgrpc.ToGRPC(err)
+		}
 	}
 	return &api.CreateResponse{
 		Bundle: d,

@@ -20,6 +20,6 @@ package task
 
 import "github.com/containerd/containerd/api/types"
 
-func setupMounts(m []*types.Mount, root string) ([]*types.Mount, string, error) {
-	return m, "", nil
+func setupMounts(tag string, m []*types.Mount, rootfs string) ([]*types.Mount, error) {
+	return m, nil
 }

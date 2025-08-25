@@ -18,6 +18,7 @@ package task
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -36,6 +37,7 @@ import (
 	"github.com/containerd/errdefs/pkg/errgrpc"
 	"github.com/containerd/log"
 	"github.com/containerd/ttrpc"
+	"github.com/opencontainers/runtime-spec/specs-go"
 
 	bundleAPI "github.com/dmcgowan/nerdbox/api/services/bundle/v1"
 	"github.com/dmcgowan/nerdbox/internal/vm"
@@ -124,6 +126,77 @@ type containerProcess struct {
 	Process   process.Process
 }
 
+// getBundleFiles gets all the files in the bundle that must be setup inside the
+// VM as well as the path to the root filesystem on the local host for setting
+// up virtiofs
+func getBundleFiles(ctx context.Context, bundle string) (map[string][]byte, string, error) {
+	cb, err := os.ReadFile(filepath.Join(bundle, "config.json"))
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to read config.json: %w", err)
+	}
+
+	var s specs.Spec
+
+	if err := json.Unmarshal(cb, &s); err != nil {
+		return nil, "", err
+	}
+	if s.Root == nil || s.Root.Path == "" {
+		return nil, "", fmt.Errorf("root path not specified: %w", errdefs.ErrInvalidArgument)
+	}
+	var (
+		rootfs        string
+		bundleFiles   = make(map[string][]byte)
+		alteredConfig bool
+	)
+	if s.Root.Path != "rootfs" {
+		aPath := s.Root.Path
+		s.Root.Path = "rootfs"
+		alteredConfig = true
+		if filepath.IsAbs(aPath) {
+			rootfs = aPath
+		} else {
+			rootfs = filepath.Join(bundle, s.Root.Path)
+		}
+	} else {
+		rootfs = filepath.Join(bundle, s.Root.Path)
+	}
+
+	for i, m := range s.Mounts {
+		if m.Type == "bind" {
+			filename := filepath.Base(m.Source)
+			// Check that the bind is from a path with the bundle id
+			if filepath.Base(filepath.Dir(m.Source)) != filepath.Base(bundle) {
+				log.G(ctx).WithFields(log.Fields{
+					"source": m.Source,
+					"name":   filename,
+				}).Debug("ignoring bind mount")
+				continue
+			}
+
+			b, err := os.ReadFile(m.Source)
+			if err != nil {
+				return nil, "", fmt.Errorf("failed to read mount file %q: %w", filename, err)
+			}
+			s.Mounts[i].Source = filename
+			bundleFiles[filename] = b
+
+			alteredConfig = true
+		}
+	}
+
+	if alteredConfig {
+		cb, err = json.Marshal(s)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to marshal updated config.json: %w", err)
+		}
+		bundleFiles["config.json"] = cb
+	} else {
+		bundleFiles["config.json"] = cb
+	}
+
+	return bundleFiles, rootfs, nil
+}
+
 // Create a new initial process and container with the underlying OCI runtime
 func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *taskAPI.CreateTaskResponse, err error) {
 	log.G(ctx).WithFields(log.Fields{
@@ -139,8 +212,18 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		return nil, errgrpc.ToGRPC(fmt.Errorf("checkpoints not supported: %w", errdefs.ErrNotImplemented))
 	}
 
+	bundleFiles, rootPath, err := getBundleFiles(ctx, r.Bundle)
+	if err != nil {
+		return nil, errgrpc.ToGRPCf(err, "failed to get root path")
+	}
+
 	// Handle mounts
-	m, err := setupMounts(r.ID, r.Rootfs, filepath.Join(r.Bundle, "rootfs"))
+	tag := fmt.Sprintf("rootfs-%s", r.ID)
+	// virtiofs implementation has a limit of 36 characters for the tag
+	if len(tag) > 36 {
+		tag = tag[:36]
+	}
+	m, err := setupMounts(tag, r.Rootfs, rootPath)
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
@@ -154,7 +237,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		return nil, errgrpc.ToGRPC(err)
 	}
 
-	err = vmi.AddFS(ctx, fmt.Sprintf("rootfs-%s", r.ID), filepath.Join(r.Bundle, "rootfs"))
+	err = vmi.AddFS(ctx, tag, rootPath)
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
@@ -163,10 +246,6 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		return nil, errgrpc.ToGRPC(err)
 	}
 
-	cb, err := os.ReadFile(filepath.Join(r.Bundle, "config.json"))
-	if err != nil {
-		return nil, errgrpc.ToGRPCf(err, "failed to read config file")
-	}
 
 	vmc, err := s.client()
 	if err != nil {
@@ -174,8 +253,8 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	}
 	bundleService := bundleAPI.NewTTRPCBundleClient(vmc)
 	br, err := bundleService.Create(ctx, &bundleAPI.CreateRequest{
-		ID:     r.ID,
-		Config: cb,
+		ID:    r.ID,
+		Files: bundleFiles,
 	})
 	if err != nil {
 		return nil, err

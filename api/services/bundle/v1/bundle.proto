@@ -28,7 +28,7 @@ service Bundle {
 
 message CreateRequest {
 	string id = 1;
-	bytes config = 2;
+	map<string, bytes> files = 2;
 }
 
 message CreateResponse {

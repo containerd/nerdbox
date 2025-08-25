@@ -196,11 +196,23 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 	go io.Copy(os.Stderr, lr)
 
 	// Consider not using unix sockets here and directly connecting via vsock
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get cwd: %w", err)
+	}
 	socketPath := filepath.Join(v.state, "run_vminitd.sock")
+	socketPath, err = filepath.Rel(cwd, socketPath)
+	if err != nil {
+		return fmt.Errorf("failed to get relative socket path: %w", err)
+	}
 	if err := v.vmc.AddVSockPort(1025, socketPath); err != nil {
 		return fmt.Errorf("failed to add vsock port: %w", err)
 	}
 
+	v.streamPath, err = filepath.Rel(cwd, v.streamPath)
+	if err != nil {
+		return fmt.Errorf("failed to get relative socket path: %w", err)
+	}
 	if err := v.vmc.AddVSockPort(1026, v.streamPath); err != nil {
 		return fmt.Errorf("failed to add vsock port: %w", err)
 	}

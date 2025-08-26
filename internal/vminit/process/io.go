@@ -133,7 +133,6 @@ func createIO(ctx context.Context, id string, ioUID, ioGID int, stdio stdio.Stdi
 		pio.streams = streams
 		pio.copy = true
 		pio.io, err = runc.NewPipeIO(ioUID, ioGID, withConditionalIO(stdio))
-		//pio.io, err = newStreamIO(ctx, streams)
 	case "fifo":
 		pio.copy = true
 		pio.io, err = runc.NewPipeIO(ioUID, ioGID, withConditionalIO(stdio))
@@ -307,52 +306,6 @@ func (c *countingWriteCloser) Close() error {
 		return nil
 	}
 	return c.WriteCloser.Close()
-}
-
-// newStreamIO connects stream to runc.IO
-func newStreamIO(streams [3]io.ReadWriteCloser) (_ runc.IO, err error) {
-	if len(streams) == 0 {
-		return nil, errors.New("no streams provided")
-	}
-	return &streamIO{
-		streams: streams,
-	}, nil
-}
-
-type streamIO struct {
-	streams [3]io.ReadWriteCloser
-}
-
-func (s *streamIO) Close() error {
-	var result []error
-
-	for i, rw := range s.streams {
-		if rw != nil && (i != 2 || rw != s.streams[1]) {
-			if err := rw.Close(); err != nil {
-				result = append(result, err)
-			}
-		}
-	}
-
-	return errors.Join(result...)
-}
-
-func (s *streamIO) Stdin() io.WriteCloser {
-	return nil
-}
-
-func (s *streamIO) Stdout() io.ReadCloser {
-	return nil
-}
-
-func (s *streamIO) Stderr() io.ReadCloser {
-	return nil
-}
-
-func (s *streamIO) Set(cmd *exec.Cmd) {
-	cmd.Stdin = s.streams[0]
-	cmd.Stdout = s.streams[1]
-	cmd.Stdout = s.streams[2]
 }
 
 // NewBinaryIO runs a custom binary process for pluggable shim logging

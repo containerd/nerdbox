@@ -22,7 +22,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -162,10 +161,10 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 	}
 
 	if err := v.vmc.SetCPUAndMemory(2, 2096); err != nil {
-		log.Fatal("Failed to set CPU and memory:", err)
+		return fmt.Errorf("failed to set cpu and memory: %w", err)
 	}
 	if err := v.vmc.SetKernel(v.kernelPath, v.initrdPath, "console=hvc0"); err != nil {
-		log.Fatal("Failed to set kernel:", err)
+		return fmt.Errorf("failed to set kernel: %w", err)
 	}
 
 	args := []string{
@@ -188,7 +187,7 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 	cf := "./krun.fifo"
 	lr, err := fifo.OpenFifo(ctx, cf, os.O_RDONLY|os.O_CREATE|syscall.O_NONBLOCK, 0644)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	if err := v.vmc.SetConsole(cf); err != nil {
 		return fmt.Errorf("failed to set console: %w", err)

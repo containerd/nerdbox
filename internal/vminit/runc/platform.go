@@ -34,7 +34,6 @@ import (
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/containerd/v2/pkg/stdio"
 	"github.com/containerd/fifo"
-	"github.com/containerd/log"
 
 	"github.com/dmcgowan/nerdbox/internal/vminit/process"
 	"github.com/dmcgowan/nerdbox/internal/vminit/stream"
@@ -87,22 +86,8 @@ func (p *linuxPlatform) CopyConsole(ctx context.Context, console console.Console
 			if err != nil {
 				return nil, err
 			}
-			var s io.ReadWriteCloser
-			s, err = p.streams.Get(uint32(sid))
-			if err != nil {
-				return nil, err
-			}
-			r, w := io.Pipe()
-			go func() {
-				p := bufPool.Get().(*[]byte)
-				defer bufPool.Put(p)
-				if _, err := io.CopyBuffer(w, s, *p); err != nil {
-					log.G(ctx).WithError(err).Error("error copying from stream to pipe")
-				}
-				w.Close()
-			}()
-			in = r
-			cstdin = w
+			in, err = p.streams.Get(uint32(sid))
+			cstdin = in
 		} else {
 			in, err = fifo.OpenFifo(ctx, stdin, syscall.O_RDONLY|syscall.O_NONBLOCK, 0)
 			cstdin = in

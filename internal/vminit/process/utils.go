@@ -30,6 +30,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/containerd/containerd/v2/pkg/stdio"
 	"github.com/containerd/errdefs"
 	runc "github.com/containerd/go-runc"
 	"golang.org/x/sys/unix"
@@ -186,6 +187,39 @@ func stateName(v interface{}) string {
 		return "stopped"
 	}
 	panic(fmt.Errorf("invalid state %v", v))
+}
+
+func getStreams(stdio stdio.Stdio, sm stream.Manager) ([3]io.ReadWriteCloser, error) {
+	var streams [3]io.ReadWriteCloser
+	var err error
+	if stdio.Stdin != "" {
+		streams[0], err = getStream(stdio.Stdin, sm)
+		if err != nil {
+			return streams, fmt.Errorf("failed to get stdin stream: %w", err)
+		}
+	}
+	if stdio.Stdout != "" {
+		streams[1], err = getStream(stdio.Stdout, sm)
+		if err != nil {
+			if streams[0] != nil {
+				streams[0].Close()
+			}
+			return streams, fmt.Errorf("failed to get stdout stream: %w", err)
+		}
+	}
+	if stdio.Stderr != "" {
+		streams[2], err = getStream(stdio.Stderr, sm)
+		if err != nil {
+			if streams[0] != nil {
+				streams[0].Close()
+			}
+			if streams[1] != nil {
+				streams[1].Close()
+			}
+			return streams, fmt.Errorf("failed to get stderr stream: %w", err)
+		}
+	}
+	return streams, nil
 }
 
 func getStream(uri string, sm stream.Manager) (io.ReadWriteCloser, error) {

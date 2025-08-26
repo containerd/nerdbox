@@ -46,8 +46,8 @@ type streamCreator interface {
 	StartStream(ctx context.Context) (uint32, net.Conn, error)
 }
 
-func (s *service) forwardIO(ctx context.Context, ss streamCreator, io stdio.Stdio, c *container) (stdio.Stdio, error) {
-	pio := io
+func (s *service) forwardIO(ctx context.Context, ss streamCreator, sio stdio.Stdio, c *container) (stdio.Stdio, error) {
+	pio := sio
 	if pio.IsNull() {
 		return pio, nil
 	}
@@ -58,7 +58,7 @@ func (s *service) forwardIO(ctx context.Context, ss streamCreator, io stdio.Stdi
 	if u.Scheme == "" {
 		u.Scheme = defaultScheme
 	}
-	var streams []net.Conn
+	var streams [3]io.ReadWriteCloser
 	switch u.Scheme {
 	case "stream":
 		// Pass through
@@ -97,18 +97,22 @@ func (s *service) forwardIO(ctx context.Context, ss streamCreator, io stdio.Stdi
 
 	defer func() {
 		if err != nil {
-			for _, c := range streams {
-				c.Close()
+			for i, c := range streams {
+				if c != nil && (i != 2 || c != streams[1]) {
+					c.Close()
+				}
 			}
 		}
 	}()
 	ioDone := make(chan struct{})
-	if err = copyStreams(ctx, streams, io.Stdin, io.Stdout, io.Stderr, ioDone); err != nil {
+	if err = copyStreams(ctx, streams, sio.Stdin, sio.Stdout, sio.Stderr, ioDone); err != nil {
 		return stdio.Stdio{}, err
 	}
 	c.ioShutdown = func(ctx context.Context) error {
-		for _, c := range streams {
-			c.Close()
+		for i, c := range streams {
+			if c != nil && (i != 2 || c != streams[1]) {
+				c.Close()
+			}
 		}
 		select {
 		case <-ioDone:
@@ -121,30 +125,47 @@ func (s *service) forwardIO(ctx context.Context, ss streamCreator, io stdio.Stdi
 	return pio, nil
 }
 
-func createStreams(ctx context.Context, ss streamCreator, io stdio.Stdio) (stdio.Stdio, []net.Conn, error) {
-	sid1, conn, err := ss.StartStream(ctx)
-	if err != nil {
-		return io, nil, fmt.Errorf("failed to start fifo stream: %w", err)
-	}
-	conns := []net.Conn{conn}
-	if io.Stderr != "" {
-		if io.Stderr == io.Stdout {
-			io.Stderr = fmt.Sprintf("stream://%d", sid1)
-		} else {
-			sid2, conn2, err := ss.StartStream(ctx)
-			if err != nil {
-				conn.Close()
-				return io, nil, fmt.Errorf("failed to start fifo stream: %w", err)
+func createStreams(ctx context.Context, ss streamCreator, io stdio.Stdio) (_ stdio.Stdio, conns [3]io.ReadWriteCloser, err error) {
+	defer func() {
+		if err != nil {
+			for i, c := range conns {
+				if c != nil && (i != 2 || c != conns[1]) {
+					c.Close()
+				}
 			}
-			conns = append(conns, conn2)
-			io.Stderr = fmt.Sprintf("stream://%d", sid2)
 		}
-	}
-	if io.Stdout != "" {
-		io.Stdout = fmt.Sprintf("stream://%d", sid1)
-	}
+	}()
 	if io.Stdin != "" {
-		io.Stdin = fmt.Sprintf("stream://%d", sid1)
+		sid, conn, err := ss.StartStream(ctx)
+		if err != nil {
+			return io, conns, fmt.Errorf("failed to start fifo stream: %w", err)
+		}
+		io.Stdin = fmt.Sprintf("stream://%d", sid)
+		conns[0] = conn
+	}
+
+	stdout := io.Stdout
+	if stdout != "" {
+		sid, conn, err := ss.StartStream(ctx)
+		if err != nil {
+			return io, conns, fmt.Errorf("failed to start fifo stream: %w", err)
+		}
+		io.Stdout = fmt.Sprintf("stream://%d", sid)
+		conns[1] = conn
+	}
+
+	if io.Stderr != "" {
+		if io.Stderr == stdout {
+			io.Stderr = io.Stdout
+			conns[2] = conns[1]
+		} else {
+			sid, conn, err := ss.StartStream(ctx)
+			if err != nil {
+				return io, conns, fmt.Errorf("failed to start fifo stream: %w", err)
+			}
+			io.Stderr = fmt.Sprintf("stream://%d", sid)
+			conns[2] = conn
+		}
 	}
 	return io, conns, nil
 }
@@ -158,7 +179,7 @@ var bufPool = sync.Pool{
 	},
 }
 
-func copyStreams(ctx context.Context, streams []net.Conn, stdin, stdout, stderr string, done chan struct{}) error {
+func copyStreams(ctx context.Context, streams [3]io.ReadWriteCloser, stdin, stdout, stderr string, done chan struct{}) error {
 	var cwg sync.WaitGroup
 	var copying int32 = 2
 	var sameFile *countingWriteCloser
@@ -174,8 +195,8 @@ func copyStreams(ctx context.Context, streams []net.Conn, stdin, stdout, stderr 
 					cwg.Done()
 					p := bufPool.Get().(*[]byte)
 					defer bufPool.Put(p)
-					if _, err := io.CopyBuffer(wc, streams[0], *p); err != nil {
-						log.G(ctx).WithError(err).Warn("error copying stdout")
+					if _, err := io.CopyBuffer(wc, streams[1], *p); err != nil {
+						log.G(ctx).WithError(err).WithField("stream", streams[1]).Warn("error copying stdout")
 					}
 					if atomic.AddInt32(&copying, -1) == 0 {
 						close(done)
@@ -194,11 +215,7 @@ func copyStreams(ctx context.Context, streams []net.Conn, stdin, stdout, stderr 
 					cwg.Done()
 					p := bufPool.Get().(*[]byte)
 					defer bufPool.Put(p)
-					stream := streams[0]
-					if len(streams) == 2 {
-						stream = streams[1]
-					}
-					if _, err := io.CopyBuffer(wc, stream, *p); err != nil {
+					if _, err := io.CopyBuffer(wc, streams[2], *p); err != nil {
 						log.G(ctx).WithError(err).Warn("error copying stderr")
 					}
 					if atomic.AddInt32(&copying, -1) == 0 {

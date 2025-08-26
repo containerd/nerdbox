@@ -175,7 +175,7 @@ func copyStreams(ctx context.Context, streams []net.Conn, stdin, stdout, stderr 
 					p := bufPool.Get().(*[]byte)
 					defer bufPool.Put(p)
 					if _, err := io.CopyBuffer(wc, streams[0], *p); err != nil {
-						log.G(ctx).Warn("error copying stdout")
+						log.G(ctx).WithError(err).Warn("error copying stdout")
 					}
 					if atomic.AddInt32(&copying, -1) == 0 {
 						close(done)
@@ -199,7 +199,7 @@ func copyStreams(ctx context.Context, streams []net.Conn, stdin, stdout, stderr 
 						stream = streams[1]
 					}
 					if _, err := io.CopyBuffer(wc, stream, *p); err != nil {
-						log.G(ctx).Warn("error copying stderr")
+						log.G(ctx).WithError(err).Warn("error copying stderr")
 					}
 					if atomic.AddInt32(&copying, -1) == 0 {
 						close(done)

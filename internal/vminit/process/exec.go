@@ -223,9 +223,19 @@ func (e *execProcess) start(ctx context.Context) (err error) {
 		if e.console, err = e.parent.Platform.CopyConsole(ctx, console, e.id, e.stdio.Stdin, e.stdio.Stdout, e.stdio.Stderr, &e.wg); err != nil {
 			return fmt.Errorf("failed to start console copy: %w", err)
 		}
+		if sc, ok := console.(interface{ StdinCloser() io.Closer }); ok {
+			c := sc.StdinCloser()
+			e.stdin = c
+			e.closers = append(e.closers, c)
+		}
 	} else {
-		if err := pio.Copy(ctx, &e.wg); err != nil {
+		c, err := pio.Copy(ctx, &e.wg)
+		if err != nil {
 			return fmt.Errorf("failed to start io pipe copy: %w", err)
+		}
+		if c != nil {
+			e.stdin = c
+			e.closers = append(e.closers, c)
 		}
 	}
 	pid, err := pidFile.Read()

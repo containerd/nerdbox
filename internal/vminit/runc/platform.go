@@ -34,6 +34,7 @@ import (
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/containerd/v2/pkg/stdio"
 	"github.com/containerd/fifo"
+	"github.com/containerd/log"
 
 	"github.com/dmcgowan/nerdbox/internal/vminit/process"
 	"github.com/dmcgowan/nerdbox/internal/vminit/stream"
@@ -75,6 +76,7 @@ func (p *linuxPlatform) CopyConsole(ctx context.Context, console console.Console
 	if err != nil {
 		return nil, err
 	}
+	var cstdin io.Closer
 
 	var cwg sync.WaitGroup
 	if stdin != "" {
@@ -85,9 +87,25 @@ func (p *linuxPlatform) CopyConsole(ctx context.Context, console console.Console
 			if err != nil {
 				return nil, err
 			}
-			in, err = p.streams.Get(uint32(sid))
+			var s io.ReadWriteCloser
+			s, err = p.streams.Get(uint32(sid))
+			if err != nil {
+				return nil, err
+			}
+			r, w := io.Pipe()
+			go func() {
+				p := bufPool.Get().(*[]byte)
+				defer bufPool.Put(p)
+				if _, err := io.CopyBuffer(w, s, *p); err != nil {
+					log.G(ctx).WithError(err).Error("error copying from stream to pipe")
+				}
+				w.Close()
+			}()
+			in = r
+			cstdin = w
 		} else {
-			in, err = fifo.OpenFifo(context.Background(), stdin, syscall.O_RDONLY|syscall.O_NONBLOCK, 0)
+			in, err = fifo.OpenFifo(ctx, stdin, syscall.O_RDONLY|syscall.O_NONBLOCK, 0)
+			cstdin = in
 		}
 		if err != nil {
 			return nil, err
@@ -101,7 +119,6 @@ func (p *linuxPlatform) CopyConsole(ctx context.Context, console console.Console
 			// we need to shutdown epollConsole when pipe broken
 			epollConsole.Shutdown(p.epoller.CloseConsole)
 			epollConsole.Close()
-			in.Close()
 		}()
 	}
 
@@ -219,8 +236,16 @@ func (p *linuxPlatform) CopyConsole(ctx context.Context, console console.Console
 		}()
 		cwg.Wait()
 	}
+	if cstdin != nil {
+		cons = &closingConsole{
+			Console:    epollConsole,
+			closeStdin: cstdin,
+		}
+	} else {
+		cons = epollConsole
+	}
 
-	return epollConsole, nil
+	return
 }
 
 func (p *linuxPlatform) ShutdownConsole(ctx context.Context, cons console.Console) error {
@@ -236,4 +261,14 @@ func (p *linuxPlatform) ShutdownConsole(ctx context.Context, cons console.Consol
 
 func (p *linuxPlatform) Close() error {
 	return p.epoller.Close()
+}
+
+type closingConsole struct {
+	console.Console
+
+	closeStdin io.Closer
+}
+
+func (c *closingConsole) StdinCloser() io.Closer {
+	return c.closeStdin
 }

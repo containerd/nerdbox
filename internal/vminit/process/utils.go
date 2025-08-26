@@ -25,6 +25,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +33,8 @@ import (
 	"github.com/containerd/errdefs"
 	runc "github.com/containerd/go-runc"
 	"golang.org/x/sys/unix"
+
+	"github.com/dmcgowan/nerdbox/internal/vminit/stream"
 )
 
 const (
@@ -183,4 +186,19 @@ func stateName(v interface{}) string {
 		return "stopped"
 	}
 	panic(fmt.Errorf("invalid state %v", v))
+}
+
+func getStream(uri string, sm stream.Manager) (io.ReadWriteCloser, error) {
+	if !strings.HasPrefix(uri, "stream://") {
+		return nil, fmt.Errorf("not a stream: %s", errdefs.ErrInvalidArgument)
+	}
+	sid, err := strconv.ParseUint(uri[9:], 10, 32)
+	if err != nil {
+		return nil, fmt.Errorf("invalid stream id %q: %w", uri, err)
+	}
+	c, err := sm.Get(uint32(sid))
+	if err != nil {
+		return nil, fmt.Errorf("unable to get stream %d: %w", sid, errdefs.ErrNotFound)
+	}
+	return c, err
 }

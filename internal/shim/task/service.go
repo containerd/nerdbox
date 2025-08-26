@@ -446,7 +446,7 @@ func (s *service) Pids(ctx context.Context, r *taskAPI.PidsRequest) (*taskAPI.Pi
 
 // CloseIO of a process
 func (s *service) CloseIO(ctx context.Context, r *taskAPI.CloseIORequest) (*ptypes.Empty, error) {
-	log.G(ctx).WithFields(log.Fields{"id": r.ID, "exec": r.ExecID}).Info("close io")
+	log.G(ctx).WithFields(log.Fields{"id": r.ID, "exec": r.ExecID, "stdin": r.Stdin}).Info("close io")
 	vmc, err := s.client()
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)

@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 
 	google_protobuf "github.com/containerd/containerd/v2/pkg/protobuf/types"
 	runc "github.com/containerd/go-runc"
@@ -163,11 +164,6 @@ func (s *createdCheckpointState) Start(ctx context.Context) error {
 	if _, err := s.p.runtime.Restore(ctx, p.id, p.Bundle, s.opts); err != nil {
 		return p.runtimeError(err, "OCI runtime restore failed")
 	}
-	if sio.Stdin != "" {
-		if err := p.openStdin(sio.Stdin); err != nil {
-			return fmt.Errorf("failed to open stdin fifo %s: %w", sio.Stdin, err)
-		}
-	}
 	if socket != nil {
 		console, err := socket.ReceiveMaster()
 		if err != nil {
@@ -178,11 +174,22 @@ func (s *createdCheckpointState) Start(ctx context.Context) error {
 			return fmt.Errorf("failed to start console copy: %w", err)
 		}
 		p.console = console
+		if sc, ok := console.(interface{ StdinCloser() io.Closer }); ok {
+			c := sc.StdinCloser()
+			p.stdin = c
+			p.closers = append(p.closers, c)
+		}
 	} else {
-		if err := p.io.Copy(ctx, &p.wg); err != nil {
+		c, err := p.io.Copy(ctx, &p.wg)
+		if err != nil {
 			return fmt.Errorf("failed to start io pipe copy: %w", err)
 		}
+		if c != nil {
+			p.stdin = c
+			p.closers = append(p.closers, c)
+		}
 	}
+
 	pid, err := runc.ReadPidFile(s.opts.PidFile)
 	if err != nil {
 		return fmt.Errorf("failed to retrieve OCI runtime container pid: %w", err)

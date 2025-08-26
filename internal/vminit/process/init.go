@@ -34,7 +34,6 @@ import (
 	"github.com/containerd/containerd/v2/core/mount"
 	google_protobuf "github.com/containerd/containerd/v2/pkg/protobuf/types"
 	"github.com/containerd/containerd/v2/pkg/stdio"
-	"github.com/containerd/fifo"
 	runc "github.com/containerd/go-runc"
 	"github.com/containerd/log"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
@@ -157,11 +156,6 @@ func (p *Init) Create(ctx context.Context, r *CreateConfig) (retError error) {
 		return p.runtimeError(err, "OCI runtime create failed")
 	}
 
-	if r.Stdin != "" && !strings.HasPrefix(r.Stdin, "stream://") {
-		if err := p.openStdin(r.Stdin); err != nil {
-			return err
-		}
-	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if socket != nil {
@@ -174,9 +168,19 @@ func (p *Init) Create(ctx context.Context, r *CreateConfig) (retError error) {
 			return fmt.Errorf("failed to start console copy: %w", err)
 		}
 		p.console = console
+		if sc, ok := console.(interface{ StdinCloser() io.Closer }); ok {
+			c := sc.StdinCloser()
+			p.stdin = c
+			p.closers = append(p.closers, c)
+		}
 	} else {
-		if err := pio.Copy(ctx, &p.wg); err != nil {
+		c, err := pio.Copy(ctx, &p.wg)
+		if err != nil {
 			return fmt.Errorf("failed to start io pipe copy: %w", err)
+		}
+		if c != nil {
+			p.stdin = c
+			p.closers = append(p.closers, c)
 		}
 	}
 	pid, err := pidFile.Read()
@@ -184,16 +188,6 @@ func (p *Init) Create(ctx context.Context, r *CreateConfig) (retError error) {
 		return fmt.Errorf("failed to retrieve OCI runtime container pid: %w", err)
 	}
 	p.pid = pid
-	return nil
-}
-
-func (p *Init) openStdin(path string) error {
-	sc, err := fifo.OpenFifo(context.Background(), path, unix.O_WRONLY|unix.O_NONBLOCK, 0)
-	if err != nil {
-		return fmt.Errorf("failed to open stdin fifo %s: %w", path, err)
-	}
-	p.stdin = sc
-	p.closers = append(p.closers, sc)
 	return nil
 }
 

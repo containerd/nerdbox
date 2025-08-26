@@ -120,7 +120,7 @@ func (vm *vmcontext) AddVSockPort(port uint32, path string) error {
 }
 
 func (vm *vmcontext) AddVirtiofs(tag, path string) error {
-	if vm.lib.AddVsockPort == nil {
+	if vm.lib.AddVirtiofs == nil {
 		return fmt.Errorf("libkrun not loaded")
 	}
 	ret := vm.lib.AddVirtiofs(vm.ctxId, tag, path)

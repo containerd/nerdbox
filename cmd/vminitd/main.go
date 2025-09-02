@@ -1,3 +1,5 @@
+//go:build linux
+
 /*
    Copyright The containerd Authors.
 
@@ -43,11 +45,10 @@ import (
 	"github.com/dmcgowan/nerdbox/internal/systools"
 	"github.com/dmcgowan/nerdbox/plugins"
 
-	_ "github.com/containerd/containerd/v2/plugins/events"
-
 	_ "github.com/dmcgowan/nerdbox/plugins/services/bundle"
 	_ "github.com/dmcgowan/nerdbox/plugins/services/system"
 
+	_ "github.com/dmcgowan/nerdbox/plugins/vminit/events"
 	_ "github.com/dmcgowan/nerdbox/plugins/vminit/streaming"
 	_ "github.com/dmcgowan/nerdbox/plugins/vminit/task"
 )

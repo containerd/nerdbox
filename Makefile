@@ -1,4 +1,6 @@
 GO ?= go
+DOCKER ?= docker
+BUILDX ?= $(DOCKER) buildx
 
 ROOTDIR=$(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
@@ -37,43 +39,31 @@ API_PACKAGES=$(shell ($(GO) list ${GO_TAGS} ./... | grep /api/ ))
 
 .PHONY: clean all generate protos check-protos check-api-descriptors proto-fmt
 
-BINARIES := build/vminitd build/run_vminitd build/containerd-shim-nerdbox-v1 build/test_vminitd
+all:
+	$(BUILDX) bake
 
-all: binaries
-
-binaries: $(BINARIES)
+_output/containerd-shim-nerdbox-v1: cmd/containerd-shim-nerdbox-v1 FORCE
 	@echo "$(WHALE) $@"
+	$(BUILDX) bake shim
 
-build/vminitd: cmd/vminitd FORCE
+_output/vminitd: cmd/vminitd FORCE
+	@echo "$(WHALE) $@"
 	$(GO) build ${DEBUG_GO_GCFLAGS} ${GO_GCFLAGS} ${GO_BUILD_FLAGS} -o $@ ${GO_STATIC_LDFLAGS} ${GO_STATIC_TAGS}  ./$<
 
-build/run_vminitd: cmd/run_vminitd/main.c
+_output/nerdbox-initrd: cmd/vminitd FORCE
+	@echo "$(WHALE) $@"
+	$(BUILDX) bake initrd
+
+_output/test_vminitd: cmd/test_vminitd FORCE
+	@echo "$(WHALE) $@"
+	$(GO) build ${DEBUG_GO_GCFLAGS} ${GO_GCFLAGS} ${GO_BUILD_FLAGS} -o $@ ${GO_LDFLAGS} ${GO_TAGS} ./$<
+
+_output/run_vminitd: cmd/run_vminitd/main.c
 	gcc -o $@ $< $(CFLAGS) $(LDFLAGS_$(ARCH)_$(OS))
 ifeq ($(OS),Darwin)
 	codesign --entitlements src/run_vminitd.entitlements --force -s - $@
 endif
 
-build/containerd-shim-nerdbox-v1: cmd/containerd-shim-nerdbox-v1 FORCE
-	$(GO) build ${DEBUG_GO_GCFLAGS} ${GO_CGFLAGS} ${GO_BUILD_FLAGS} -o $@ ${GO_LDFLAGS} ${GO_TAGS} ./$<
-
-build/test_vminitd: cmd/test_vminitd FORCE
-	$(GO) build ${DEBUG_GO_GCFLAGS} ${GO_CGFLAGS} ${GO_BUILD_FLAGS} -o $@ ${GO_LDFLAGS} ${GO_TAGS} ./$<
-
-build/crun:
-	@echo "$(WHALE) $@"
-	wget -O build/crun https://github.com/containers/crun/releases/download/1.23.1/crun-1.23.1-linux-amd64-disable-systemd
-
-build/runc:
-	@echo "$(WHALE) $@"
-	wget -O build/runc https://github.com/opencontainers/runc/releases/download/v1.3.0/runc.amd64
-
-build/nerdbox-initrd: build/vminitd build/crun build/runc
-	mkdir -p build/init/sbin build/init/proc build/init/sys build/init/tmp build/init/run
-	cp build/vminitd build/init/init
-	cp build/crun build/init/sbin/crun
-	cp build/runc build/init/sbin/runc
-	chmod +x build/init/sbin/crun build/init/sbin/runc
-	(cd build/init && find . -print0 | cpio --null -H newc -o ) | gzip -9 > build/nerdbox-initrd
 
 generate: protos
 	@echo "$(WHALE) $@"
@@ -105,4 +95,4 @@ proto-fmt: ## check format of proto files
 FORCE:
 
 clean:
-	rm -rf build
+	rm -rf _output

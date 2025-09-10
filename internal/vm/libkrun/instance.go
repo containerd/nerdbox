@@ -25,6 +25,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -72,7 +73,7 @@ func (*vmManager) NewInstance(ctx context.Context, state string) (vm.Instance, e
 			}
 		}
 		if kernelPath == "" {
-			path = filepath.Join(dir, "nerdbox-kernel")
+			path = filepath.Join(dir, fmt.Sprintf("nerdbox-kernel-%s", kernelArch()))
 			if _, err := os.Stat(path); err == nil {
 				kernelPath = path
 			}
@@ -341,4 +342,13 @@ func (v *vmInstance) Shutdown(ctx context.Context) error {
 	}
 	v.handler = 0 // Mark as closed
 	return nil
+}
+
+func kernelArch() string {
+	switch runtime.GOARCH {
+	case "amd64":
+		return "x86_64"
+	default:
+		return runtime.GOARCH
+	}
 }

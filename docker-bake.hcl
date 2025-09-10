@@ -1,5 +1,5 @@
 variable "KERNEL_VERSION" {
-  default = "6.12.28"
+  default = "6.12.46"
 }
 
 variable "KERNEL_ARCH" {

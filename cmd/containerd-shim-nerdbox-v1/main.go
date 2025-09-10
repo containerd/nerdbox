@@ -25,7 +25,6 @@ import (
 
 	_ "github.com/dmcgowan/nerdbox/plugins/shim/task"
 	_ "github.com/dmcgowan/nerdbox/plugins/vm/libkrun"
-	_ "github.com/dmcgowan/nerdbox/plugins/vm/runvm"
 )
 
 func main() {

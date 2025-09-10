@@ -24,7 +24,6 @@ import (
 
 	"github.com/dmcgowan/nerdbox/internal/vm"
 	"github.com/dmcgowan/nerdbox/internal/vm/libkrun"
-	"github.com/dmcgowan/nerdbox/internal/vm/runvm"
 )
 
 func TestMain(m *testing.M) {
@@ -48,10 +47,6 @@ func runWithVM(t *testing.T, runTest func(*testing.T, vm.Instance)) {
 		name string
 		vmm  vm.Manager
 	}{
-		{
-			name: "run_vminitd",
-			vmm:  runvm.NewManager(),
-		},
 		{
 			name: "libkrun",
 			vmm:  libkrun.NewManager(),

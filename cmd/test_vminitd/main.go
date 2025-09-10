@@ -23,13 +23,13 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/dmcgowan/nerdbox/internal/vm/runvm"
+	"github.com/dmcgowan/nerdbox/internal/vm/libkrun"
 )
 
 func main() {
 	ctx := context.Background()
 
-	vm, err := runvm.NewManager().NewInstance(ctx, ".")
+	vm, err := libkrun.NewManager().NewInstance(ctx, ".")
 	if err != nil {
 		log.Fatal("Failed to create VM instance:", err)
 	}

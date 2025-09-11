@@ -28,7 +28,6 @@ import (
 	eventstypes "github.com/containerd/containerd/api/events"
 	taskAPI "github.com/containerd/containerd/api/runtime/task/v3"
 	"github.com/containerd/containerd/v2/cmd/containerd-shim-runc-v2/process"
-	"github.com/containerd/containerd/v2/cmd/containerd-shim-runc-v2/runc"
 	ptypes "github.com/containerd/containerd/v2/pkg/protobuf/types"
 	"github.com/containerd/containerd/v2/pkg/shim"
 	"github.com/containerd/containerd/v2/pkg/shutdown"
@@ -122,8 +121,8 @@ func (s *service) shutdown(ctx context.Context) error {
 }
 
 type containerProcess struct {
-	Container *runc.Container
-	Process   process.Process
+	//Container *runc.Container
+	Process process.Process
 }
 
 // getBundleFiles gets all the files in the bundle that must be setup inside the
@@ -245,7 +244,6 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	if err := vmi.Start(ctx); err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
-
 
 	vmc, err := s.client()
 	if err != nil {

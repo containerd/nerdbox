@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	eventstypes "github.com/containerd/containerd/api/events"
 	taskAPI "github.com/containerd/containerd/api/runtime/task/v3"
@@ -241,9 +242,11 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		return nil, errgrpc.ToGRPC(err)
 	}
 
+	t := time.Now()
 	if err := vmi.Start(ctx); err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
+	log.G(ctx).WithField("t", time.Since(t)).Info("vm started")
 
 	vmc, err := s.client()
 	if err != nil {

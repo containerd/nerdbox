@@ -35,9 +35,10 @@ GO_BUILD_FLAGS ?=
 GO_LDFLAGS := -ldflags '$(EXTRA_LDFLAGS)'
 GO_STATIC_LDFLAGS := -ldflags '-extldflags "-static" $(EXTRA_LDFLAGS)'
 
+MODULE_NAME=$(shell go list -m)
 API_PACKAGES=$(shell ($(GO) list ${GO_TAGS} ./... | grep /api/ ))
 
-.PHONY: clean all generate protos check-protos check-api-descriptors proto-fmt
+.PHONY: clean all generate protos check-protos check-api-descriptors proto-fmt shell
 
 all:
 	$(BUILDX) bake
@@ -96,3 +97,14 @@ FORCE:
 
 clean:
 	rm -rf _output
+
+shell:
+	@echo "$(WHALE) $@"
+	@$(BUILDX) bake dev
+	@docker run --rm -it --privileged \
+		--name nerdbox-dev \
+		-v ./:/go/src/$(MODULE_NAME) \
+		-v /var/run/docker.sock:/var/run/docker.sock \
+		-w /go/src/$(MODULE_NAME) \
+		$(DOCKER_EXTRA_ARGS) \
+		nerdbox-dev

@@ -114,3 +114,157 @@ file {
   }
   syntax: "proto3"
 }
+file {
+  name: "github.com/containerd/containerd/api/types/fieldpath.proto"
+  package: "containerd.types"
+  dependency: "google/protobuf/descriptor.proto"
+  extension {
+    name: "fieldpath_all"
+    extendee: ".google.protobuf.FileOptions"
+    number: 63300
+    label: LABEL_OPTIONAL
+    type: TYPE_BOOL
+    json_name: "fieldpathAll"
+    proto3_optional: true
+  }
+  extension {
+    name: "fieldpath"
+    extendee: ".google.protobuf.MessageOptions"
+    number: 64400
+    label: LABEL_OPTIONAL
+    type: TYPE_BOOL
+    json_name: "fieldpath"
+    proto3_optional: true
+  }
+  options {
+    go_package: "github.com/containerd/containerd/api/types;types"
+  }
+  syntax: "proto3"
+}
+file {
+  name: "google/protobuf/any.proto"
+  package: "google.protobuf"
+  message_type {
+    name: "Any"
+    field {
+      name: "type_url"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "typeUrl"
+    }
+    field {
+      name: "value"
+      number: 2
+      label: LABEL_OPTIONAL
+      type: TYPE_BYTES
+      json_name: "value"
+    }
+  }
+  options {
+    java_package: "com.google.protobuf"
+    java_outer_classname: "AnyProto"
+    java_multiple_files: true
+    go_package: "google.golang.org/protobuf/types/known/anypb"
+    objc_class_prefix: "GPB"
+    csharp_namespace: "Google.Protobuf.WellKnownTypes"
+  }
+  syntax: "proto3"
+}
+file {
+  name: "google/protobuf/timestamp.proto"
+  package: "google.protobuf"
+  message_type {
+    name: "Timestamp"
+    field {
+      name: "seconds"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_INT64
+      json_name: "seconds"
+    }
+    field {
+      name: "nanos"
+      number: 2
+      label: LABEL_OPTIONAL
+      type: TYPE_INT32
+      json_name: "nanos"
+    }
+  }
+  options {
+    java_package: "com.google.protobuf"
+    java_outer_classname: "TimestampProto"
+    java_multiple_files: true
+    go_package: "google.golang.org/protobuf/types/known/timestamppb"
+    cc_enable_arenas: true
+    objc_class_prefix: "GPB"
+    csharp_namespace: "Google.Protobuf.WellKnownTypes"
+  }
+  syntax: "proto3"
+}
+file {
+  name: "github.com/containerd/containerd/api/types/event.proto"
+  package: "containerd.types"
+  dependency: "github.com/containerd/containerd/api/types/fieldpath.proto"
+  dependency: "google/protobuf/any.proto"
+  dependency: "google/protobuf/timestamp.proto"
+  message_type {
+    name: "Envelope"
+    field {
+      name: "timestamp"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_MESSAGE
+      type_name: ".google.protobuf.Timestamp"
+      json_name: "timestamp"
+    }
+    field {
+      name: "namespace"
+      number: 2
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "namespace"
+    }
+    field {
+      name: "topic"
+      number: 3
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "topic"
+    }
+    field {
+      name: "event"
+      number: 4
+      label: LABEL_OPTIONAL
+      type: TYPE_MESSAGE
+      type_name: ".google.protobuf.Any"
+      json_name: "event"
+    }
+    options {
+      64400: 1
+    }
+  }
+  options {
+    go_package: "github.com/containerd/containerd/api/types;types"
+  }
+  syntax: "proto3"
+}
+file {
+  name: "github.com/dmcgowan/nerdbox/api/services/vmevents/v1/events.proto"
+  package: "nerdbox.services.vmevents.v1"
+  dependency: "github.com/containerd/containerd/api/types/event.proto"
+  dependency: "google/protobuf/empty.proto"
+  service {
+    name: "Events"
+    method {
+      name: "Stream"
+      input_type: ".google.protobuf.Empty"
+      output_type: ".containerd.types.Envelope"
+      server_streaming: true
+    }
+  }
+  options {
+    go_package: "github.com/dmcgowan/nerdbox/api/services/vmevents/v1;vmevents"
+  }
+  syntax: "proto3"
+}

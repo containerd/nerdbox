@@ -53,5 +53,4 @@ func init() {
 			return task.NewTaskService(ic.Context, ic.Properties[plugins.PropertyBundleDir], pp.(events.Publisher), ss.(shutdown.Service), sm.(stream.Manager))
 		},
 	})
-
 }

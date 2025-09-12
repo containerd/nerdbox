@@ -22,6 +22,7 @@ import (
 	"github.com/containerd/plugin/registry"
 
 	"github.com/dmcgowan/nerdbox/internal/events"
+	eventsrv "github.com/dmcgowan/nerdbox/internal/vminit/events"
 )
 
 func init() {
@@ -30,6 +31,23 @@ func init() {
 		ID:   "exchange",
 		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
 			return events.NewExchange(), nil
+		},
+	})
+}
+
+func init() {
+	registry.Register(&plugin.Registration{
+		Type: plugins.TTRPCPlugin,
+		ID:   "events",
+		Requires: []plugin.Type{
+			plugins.EventPlugin,
+		},
+		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
+			ep, err := ic.GetSingle(plugins.EventPlugin)
+			if err != nil {
+				return nil, err
+			}
+			return eventsrv.NewService(ep.(eventsrv.Subscriber)), nil
 		},
 	})
 }

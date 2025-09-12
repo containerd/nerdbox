@@ -21,14 +21,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
-	eventstypes "github.com/containerd/containerd/api/events"
 	taskAPI "github.com/containerd/containerd/api/runtime/task/v3"
+	"github.com/containerd/containerd/api/types"
 	"github.com/containerd/containerd/v2/cmd/containerd-shim-runc-v2/process"
+	"github.com/containerd/containerd/v2/core/runtime"
+	"github.com/containerd/containerd/v2/pkg/namespaces"
 	ptypes "github.com/containerd/containerd/v2/pkg/protobuf/types"
 	"github.com/containerd/containerd/v2/pkg/shim"
 	"github.com/containerd/containerd/v2/pkg/shutdown"
@@ -40,6 +43,7 @@ import (
 	"github.com/opencontainers/runtime-spec/specs-go"
 
 	bundleAPI "github.com/dmcgowan/nerdbox/api/services/bundle/v1"
+	"github.com/dmcgowan/nerdbox/api/services/vmevents/v1"
 	"github.com/dmcgowan/nerdbox/internal/vm"
 )
 
@@ -64,6 +68,9 @@ func NewTaskService(ctx context.Context, vmm vm.Manager, publisher shim.Publishe
 			return shim.RemoveSocket(address)
 		})
 	}
+
+	go s.forward(ctx, publisher)
+
 	return s, nil
 }
 
@@ -114,10 +121,11 @@ func (s *service) shutdown(ctx context.Context) error {
 				errs = append(errs, fmt.Errorf("container %q io shutdown: %w", id, err))
 			}
 		}
-
 	}
 
-	close(s.events)
+	// Signal last event and stop forwarding
+	s.events <- nil
+
 	return errors.Join(errs...)
 }
 
@@ -252,6 +260,27 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
+	// Start forwarding events
+	sc, err := vmevents.NewTTRPCEventsClient(vmc).Stream(ctx, empty)
+	if err != nil {
+		return nil, errgrpc.ToGRPC(err)
+	}
+	ns, _ := namespaces.Namespace(ctx)
+	go func(ns string) {
+		for {
+			ev, err := sc.Recv()
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					log.G(ctx).Info("vm event stream closed")
+				} else {
+					log.G(ctx).WithError(err).Error("vm event stream error")
+				}
+				return
+			}
+			s.send(ev)
+		}
+	}(ns)
+
 	bundleService := bundleAPI.NewTTRPCBundleClient(vmc)
 	br, err := bundleService.Create(ctx, &bundleAPI.CreateRequest{
 		ID:    r.ID,
@@ -305,18 +334,18 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	s.mu.Unlock()
 
 	// TODO: Forward events rather than generate here?
-	s.send(&eventstypes.TaskCreate{
-		ContainerID: r.ID,
-		Bundle:      r.Bundle,
-		Rootfs:      r.Rootfs,
-		IO: &eventstypes.TaskIO{
-			Stdin:    r.Stdin,
-			Stdout:   r.Stdout,
-			Stderr:   r.Stderr,
-			Terminal: r.Terminal,
-		},
-		Pid: resp.Pid,
-	})
+	//s.send(&eventstypes.TaskCreate{
+	//	ContainerID: r.ID,
+	//	Bundle:      r.Bundle,
+	//	Rootfs:      r.Rootfs,
+	//	IO: &eventstypes.TaskIO{
+	//		Stdin:    r.Stdin,
+	//		Stdout:   r.Stdout,
+	//		Stderr:   r.Stderr,
+	//		Terminal: r.Terminal,
+	//	},
+	//	Pid: resp.Pid,
+	//})
 
 	// The following line cannot return an error as the only state in which that
 	// could happen would also cause the container.Pid() call above to
@@ -587,6 +616,32 @@ func (s *service) send(evt interface{}) {
 	s.events <- evt
 }
 
+func (s *service) forward(ctx context.Context, publisher shim.Publisher) {
+	ns, _ := namespaces.Namespace(ctx)
+	ctx = namespaces.WithNamespace(context.Background(), ns)
+	for e := range s.events {
+		if e == nil {
+			break
+		}
+		switch e := e.(type) {
+		case *types.Envelope:
+			// TODO: Transform event fields?
+			if err := publisher.Publish(ctx, e.Topic, e.Event); err != nil {
+				log.G(ctx).WithError(err).Error("forward event")
+			}
+		default:
+			err := publisher.Publish(ctx, runtime.GetTopic(e), e)
+			if err != nil {
+				log.G(ctx).WithError(err).Error("post event")
+			}
+		}
+	}
+	publisher.Close()
+	for e := range s.events {
+		log.G(ctx).WithField("event", e).Error("ignored event after shutdown")
+	}
+}
+
 /*
 // handleInitExit processes container init process exits.
 // This is handled separately from non-init exits, because there
@@ -676,17 +731,6 @@ func (s *service) getContainerPids(ctx context.Context, container *runc.Containe
 	return pids, nil
 }
 
-func (s *service) forward(ctx context.Context, publisher shim.Publisher) {
-	ns, _ := namespaces.Namespace(ctx)
-	ctx = namespaces.WithNamespace(context.Background(), ns)
-	for e := range s.events {
-		err := publisher.Publish(ctx, runtime.GetTopic(e), e)
-		if err != nil {
-			log.G(ctx).WithError(err).Error("post event")
-		}
-	}
-	publisher.Close()
-}
 
 func (s *service) getContainer(id string) (*runc.Container, error) {
 	s.mu.Lock()

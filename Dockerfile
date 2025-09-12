@@ -3,6 +3,8 @@
 ARG GO_VERSION=1.25.1
 ARG BASE_DEBIAN_DISTRO="bookworm"
 ARG GOLANG_IMAGE="golang:${GO_VERSION}-${BASE_DEBIAN_DISTRO}"
+ARG DOCKER_VERSION=28.4.0
+ARG DOCKER_IMAGE="docker:${DOCKER_VERSION}-cli"
 
 FROM ${GOLANG_IMAGE} AS base
 
@@ -131,3 +133,33 @@ COPY --from=initrd-build /build/nerdbox-initrd /nerdbox-initrd
 
 FROM scratch AS shim
 COPY --from=shim-build /build/containerd-shim-nerdbox-v1 /containerd-shim-nerdbox-v1
+
+FROM "${DOCKER_IMAGE}" AS docker-cli
+
+FROM "${GOLANG_IMAGE}" AS dlv
+RUN go install github.com/go-delve/delve/cmd/dlv@latest
+
+FROM debian:${BASE_DEBIAN_DISTRO} AS dev
+ARG CONTAINERD_VERSION=2.1.4
+ARG TARGETARCH
+
+# Install build dependencies
+RUN --mount=type=cache,sharing=locked,id=dev-aptlib,target=/var/lib/apt \
+    --mount=type=cache,sharing=locked,id=dev-aptcache,target=/var/cache/apt \
+        apt-get update && apt-get install -y git make wget
+
+RUN wget https://github.com/containerd/containerd/releases/download/v${CONTAINERD_VERSION}/containerd-${CONTAINERD_VERSION}-linux-${TARGETARCH}.tar.gz && \
+    tar -C /usr/local/bin --strip-components=1 -xf containerd-${CONTAINERD_VERSION}-linux-${TARGETARCH}.tar.gz && \
+    rm containerd-${CONTAINERD_VERSION}-linux-${TARGETARCH}.tar.gz
+
+COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-buildx /usr/local/libexec/docker/cli-plugins/docker-buildx
+
+COPY --from=dlv /go/bin/dlv /usr/local/bin/dlv
+
+RUN << EOT
+    set -e
+    echo 'export PATH=$(pwd)/_output:$PATH' >> /etc/profile
+EOT
+
+ENTRYPOINT ["/bin/bash", "-l"]

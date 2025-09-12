@@ -58,3 +58,9 @@ target "shim" {
 group "default" {
     targets = ["kernel", "initrd", "shim"]
 }
+
+target "dev" {
+  inherits = ["_common"]
+  target = "dev"
+  output = ["type=image,name=nerdbox-dev"]
+}

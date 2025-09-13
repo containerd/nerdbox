@@ -148,7 +148,7 @@ func getBundleFiles(ctx context.Context, bundle string) (map[string][]byte, stri
 	if err := json.Unmarshal(cb, &s); err != nil {
 		return nil, "", err
 	}
-	if s.Root == nil || s.Root.Path == "" {
+	if s.Root == nil {
 		return nil, "", fmt.Errorf("root path not specified: %w", errdefs.ErrInvalidArgument)
 	}
 	var (
@@ -156,6 +156,7 @@ func getBundleFiles(ctx context.Context, bundle string) (map[string][]byte, stri
 		bundleFiles   = make(map[string][]byte)
 		alteredConfig bool
 	)
+
 	if s.Root.Path != "rootfs" {
 		aPath := s.Root.Path
 		s.Root.Path = "rootfs"
@@ -165,8 +166,11 @@ func getBundleFiles(ctx context.Context, bundle string) (map[string][]byte, stri
 		} else {
 			rootfs = filepath.Join(bundle, s.Root.Path)
 		}
-	} else {
+	} else if s.Root.Path != "" {
 		rootfs = filepath.Join(bundle, s.Root.Path)
+	} else {
+		alteredConfig = true
+		s.Root.Path = "rootfs"
 	}
 
 	for i, m := range s.Mounts {
@@ -245,9 +249,11 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		return nil, errgrpc.ToGRPC(err)
 	}
 
-	err = vmi.AddFS(ctx, tag, rootPath)
-	if err != nil {
-		return nil, errgrpc.ToGRPC(err)
+	if rootPath != "" {
+		err = vmi.AddFS(ctx, tag, rootPath)
+		if err != nil {
+			return nil, errgrpc.ToGRPC(err)
+		}
 	}
 
 	t := time.Now()
@@ -317,13 +323,13 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	tc := taskAPI.NewTTRPCTaskClient(vmc)
 	resp, err := tc.Create(ctx, vr)
 	if err != nil {
+		log.G(ctx).WithError(err).Error("failed to create task")
 		if c.ioShutdown != nil {
 			// TODO: stop this
 			if err := c.ioShutdown(ctx); err != nil {
 				log.G(ctx).WithError(err).Error("failed to shutdown io after create failure")
 			}
 		}
-		log.G(ctx).WithError(err).Error("failed to create task")
 		return nil, errgrpc.ToGRPC(err)
 	} else {
 		log.G(ctx).Debug("no failure creating task")

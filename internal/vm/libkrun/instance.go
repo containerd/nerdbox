@@ -59,6 +59,11 @@ func (*vmManager) NewInstance(ctx context.Context, state string) (vm.Instance, e
 	if len(p2) == 0 {
 		p2 = []string{"/usr/local/lib", "/usr/lib", "/lib"}
 	}
+	sharedName := "libkrun.so"
+	if runtime.GOOS == "darwin" {
+		sharedName = "libkrun-efi.dylib"
+		p2 = append(p2, "/opt/homebrew/lib")
+	}
 
 	for _, dir := range append(p1, p2...) {
 		if dir == "" {
@@ -67,7 +72,7 @@ func (*vmManager) NewInstance(ctx context.Context, state string) (vm.Instance, e
 		}
 		var path string
 		if krunPath == "" {
-			path = filepath.Join(dir, "libkrun.so")
+			path = filepath.Join(dir, sharedName)
 			if _, err := os.Stat(path); err == nil {
 				krunPath = path
 			}
@@ -86,7 +91,7 @@ func (*vmManager) NewInstance(ctx context.Context, state string) (vm.Instance, e
 		}
 	}
 	if krunPath == "" {
-		return nil, fmt.Errorf("libkrun.so not found in PATH or LIBKRUN_PATH")
+		return nil, fmt.Errorf("%s not found in PATH or LIBKRUN_PATH", sharedName)
 	}
 	if kernelPath == "" {
 		return nil, fmt.Errorf("nerdbox-kernel not found in PATH or LIBKRUN_PATH")

@@ -19,6 +19,7 @@ package libkrun
 import (
 	"fmt"
 	"reflect"
+	"runtime"
 	"strings"
 	"unsafe"
 
@@ -28,6 +29,16 @@ import (
 const (
 	VirglrendererVenus   = 1 << 6
 	VirglrendererNoVirgl = 1 << 7
+)
+
+const (
+	kernelFormatRaw = 0
+	kernelFormatElf = 1
+
+// #define KRUN_KERNEL_FORMAT_PE_GZ 2
+// #define KRUN_KERNEL_FORMAT_IMAGE_BZ2 3
+// #define KRUN_KERNEL_FORMAT_IMAGE_GZ 4
+// #define KRUN_KERNEL_FORMAT_IMAGE_ZSTD 5
 )
 
 type logLevel uint32
@@ -72,14 +83,15 @@ func (vm *vmcontext) SetKernel(kernelPath string, initrdPath string, kernelCmdli
 	if vm.lib.SetKernel == nil {
 		return fmt.Errorf("libkrun not loaded")
 	}
-	// kernelFormat can be one of the following:
-	//#define KRUN_KERNEL_FORMAT_RAW 0
-	//#define KRUN_KERNEL_FORMAT_ELF 1
-	//#define KRUN_KERNEL_FORMAT_PE_GZ 2
-	//#define KRUN_KERNEL_FORMAT_IMAGE_BZ2 3
-	//#define KRUN_KERNEL_FORMAT_IMAGE_GZ 4
-	//#define KRUN_KERNEL_FORMAT_IMAGE_ZSTD 5
-	ret := vm.lib.SetKernel(vm.ctxId, kernelPath, 1, initrdPath, kernelCmdline)
+
+	// TODO: Support different kernel formats
+	var format uint32
+	if runtime.GOOS == "darwin" {
+		format = kernelFormatRaw
+	} else {
+		format = kernelFormatElf
+	}
+	ret := vm.lib.SetKernel(vm.ctxId, kernelPath, format, initrdPath, kernelCmdline)
 	if ret != 0 {
 		return fmt.Errorf("krun_set_kernel failed: %d", ret)
 	}

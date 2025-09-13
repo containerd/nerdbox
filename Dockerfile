@@ -45,6 +45,17 @@ COPY kernel/config-${KERNEL_VERSION}-${KERNEL_ARCH} /usr/src/linux/.config
 # Compile the kernel
 RUN cd linux && make -j${KERNEL_NPROC}
 
+RUN << EOT
+    set -e
+    cd linux
+    mkdir /build
+    case $(uname -m) in
+        x86_64) cp arch/x86_64/boot/bzImage /build/kernel ;;
+        aarch64) cp arch/arm64/boot/Image /build/kernel ;;
+        *) echo "Unsupported architecture: $(uname -m)" ; exit 1 ;;
+    esac
+EOT
+
 FROM base AS shim-build
 
 WORKDIR /go/src/github.com/dmcgowan/nerdbox
@@ -126,7 +137,7 @@ EOT
 
 FROM scratch AS kernel
 ARG KERNEL_ARCH="x86_64"
-COPY --from=kernel-build /usr/src/linux/vmlinux /nerdbox-kernel-${KERNEL_ARCH}
+COPY --from=kernel-build /build/kernel /nerdbox-kernel-${KERNEL_ARCH}
 
 FROM scratch AS initrd
 COPY --from=initrd-build /build/nerdbox-initrd /nerdbox-initrd

@@ -45,7 +45,10 @@ all:
 
 _output/containerd-shim-nerdbox-v1: cmd/containerd-shim-nerdbox-v1 FORCE
 	@echo "$(WHALE) $@"
-	$(BUILDX) bake shim
+	$(GO) build ${DEBUG_GO_GCFLAGS} ${GO_GCFLAGS} ${GO_BUILD_FLAGS} -o $@ ${GO_LDFLAGS} ${GO_TAGS} ./$<
+ifeq ($(OS),Darwin)
+	codesign --entitlements cmd/containerd-shim-nerdbox-v1/containerd-shim-nerdbox-v1.entitlements --force -s - $@
+endif
 
 _output/vminitd: cmd/vminitd FORCE
 	@echo "$(WHALE) $@"
@@ -58,6 +61,9 @@ _output/nerdbox-initrd: cmd/vminitd FORCE
 _output/test_vminitd: cmd/test_vminitd FORCE
 	@echo "$(WHALE) $@"
 	$(GO) build ${DEBUG_GO_GCFLAGS} ${GO_GCFLAGS} ${GO_BUILD_FLAGS} -o $@ ${GO_LDFLAGS} ${GO_TAGS} ./$<
+ifeq ($(OS),Darwin)
+	codesign --entitlements cmd/test_vminitd/test_vminitd.entitlements --force -s - $@
+endif
 
 _output/run_vminitd: cmd/run_vminitd/main.c
 	gcc -o $@ $< $(CFLAGS) $(LDFLAGS_$(ARCH)_$(OS))

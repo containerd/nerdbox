@@ -114,7 +114,15 @@ RUN --mount=type=bind,target=.,rw \
 FROM base AS crun-build
 WORKDIR /usr/src/crun
 
-RUN mkdir /build && wget -O /build/crun https://github.com/containers/crun/releases/download/1.24/crun-1.24-linux-amd64-disable-systemd
+RUN << EOT
+    mkdir /build
+    case $(uname -m) in
+        x86_64) ARCH=amd64 ;;
+        aarch64) ARCH=arm64 ;;
+        *) echo "Unsupported architecture: $(uname -m)" ; exit 1 ;;
+    esac
+    wget -O /build/crun https://github.com/containers/crun/releases/download/1.24/crun-1.24-linux-${ARCH}-disable-systemd
+EOT
 
 FROM base AS initrd-build
 WORKDIR /usr/src/init

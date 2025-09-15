@@ -183,7 +183,7 @@ WORKDIR /go/src/github.com/dmcgowan/nerdbox
 
 RUN --mount=type=cache,sharing=locked,id=dev-aptlib,target=/var/lib/apt \
     --mount=type=cache,sharing=locked,id=dev-aptcache,target=/var/cache/apt \
-        apt-get update && apt-get install -y git make wget
+        apt-get update && apt-get install -y erofs-utils git make wget
 
 RUN wget https://github.com/containerd/containerd/releases/download/v${CONTAINERD_VERSION}/containerd-${CONTAINERD_VERSION}-linux-${TARGETARCH}.tar.gz && \
     tar -C /usr/local/bin --strip-components=1 -xf containerd-${CONTAINERD_VERSION}-linux-${TARGETARCH}.tar.gz && \

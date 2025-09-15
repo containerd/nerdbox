@@ -55,6 +55,12 @@ target "shim" {
   output = ["${DESTDIR}"]
 }
 
+target "libkrun" {
+  inherits = ["_common"]
+  target = "libkrun"
+  output = ["${DESTDIR}"]
+}
+
 group "default" {
     targets = ["kernel", "initrd", "shim"]
 }

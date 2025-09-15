@@ -71,6 +71,10 @@ ifeq ($(OS),Darwin)
 	codesign --entitlements src/run_vminitd.entitlements --force -s - $@
 endif
 
+_output/libkrun.so: FORCE
+	@echo "$(WHALE) $@"
+	$(BUILDX) bake libkrun
+
 
 generate: protos
 	@echo "$(WHALE) $@"

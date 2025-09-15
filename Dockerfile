@@ -196,3 +196,4 @@ COPY --from=dlv /go/bin/dlv /usr/local/bin/dlv
 COPY --from=libkrun /libkrun.so /usr/local/lib64/libkrun.so
 ENV LIBKRUN_PATH=/go/src/github.com/dmcgowan/nerdbox/_output
 
+VOLUME /var/lib/containerd

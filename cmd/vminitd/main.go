@@ -23,7 +23,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io/fs"
 	"net"
 	"os"
 	"os/signal"
@@ -172,24 +171,22 @@ func systemInit() error {
 		return err
 	}
 
-	if err := unix.Mknod(os.DevNull, uint32(fs.ModeDevice|fs.ModeCharDevice|0666), int(unix.Mkdev(1, 3))); err != nil {
-		return err
-	}
-
 	return setupCgroupControl()
 }
 
 func systemMounts() error {
 	return mount.All([]mount.Mount{
 		{
-			Type:   "proc",
-			Source: "proc",
-			Target: "/proc",
+			Type:    "proc",
+			Source:  "proc",
+			Target:  "/proc",
+			Options: []string{"nosuid", "noexec", "nodev"},
 		},
 		{
-			Type:   "sysfs",
-			Source: "sysfs",
-			Target: "/sys",
+			Type:    "sysfs",
+			Source:  "sysfs",
+			Target:  "/sys",
+			Options: []string{"nosuid", "noexec", "nodev"},
 		},
 		{
 			Type:   "cgroup2",
@@ -197,14 +194,22 @@ func systemMounts() error {
 			Target: "/sys/fs/cgroup",
 		},
 		{
-			Type:   "tmpfs",
-			Source: "tmpfs",
-			Target: "/run",
+			Type:    "tmpfs",
+			Source:  "tmpfs",
+			Target:  "/run",
+			Options: []string{"nosuid", "noexec", "nodev"},
 		},
 		{
-			Type:   "tmpfs",
-			Source: "tmpsfs",
-			Target: "/tmp",
+			Type:    "tmpfs",
+			Source:  "tmpsfs",
+			Target:  "/tmp",
+			Options: []string{"nosuid", "noexec", "nodev"},
+		},
+		{
+			Type:    "devtmpfs",
+			Source:  "devtmpsfs",
+			Target:  "/dev",
+			Options: []string{"nosuid", "noexec"},
 		},
 	}, "/")
 }

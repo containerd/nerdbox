@@ -107,7 +107,7 @@ func (*vmManager) NewInstance(ctx context.Context, state string) (vm.Instance, e
 
 	var ret int32
 	setLogging.Do(func() {
-		ret = lib.InitLog(os.Stdout.Fd(), uint32(debugLevel), 0, 0)
+		ret = lib.InitLog(os.Stderr.Fd(), uint32(debugLevel), 0, 0)
 	})
 	if ret != 0 {
 		return nil, fmt.Errorf("krun_init_log failed: %d", ret)

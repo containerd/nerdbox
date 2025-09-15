@@ -116,5 +116,7 @@ shell:
 		-v ./:/go/src/$(MODULE_NAME) \
 		-v /var/run/docker.sock:/var/run/docker.sock \
 		-w /go/src/$(MODULE_NAME) \
+		-e KERNEL_ARCH=$(ARCH) \
+		-e KERNEL_NPROC \
 		$(DOCKER_EXTRA_ARGS) \
 		nerdbox-dev

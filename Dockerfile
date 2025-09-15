@@ -64,11 +64,12 @@ WORKDIR /go/src/github.com/dmcgowan/nerdbox
 ARG GO_DEBUG_GCFLAGS
 ARG GO_GCFLAGS
 ARG GO_BUILD_FLAGS
+ARG GO_LDFLAGS
 ARG TARGETPLATFORM
 
 RUN --mount=type=bind,target=.,rw \
     --mount=type=cache,target=/root/.cache/go-build,id=shim-build-$TARGETPLATFORM \
-    go build ${GO_DEBUG_GCFLAGS} ${GO_GCFLAGS} ${GO_BUILD_FLAGS} -o /build/containerd-shim-nerdbox-v1 -ldflags '-s -w' -tags 'no_grpc' ./cmd/containerd-shim-nerdbox-v1
+    go build ${GO_DEBUG_GCFLAGS} ${GO_GCFLAGS} ${GO_BUILD_FLAGS} -o /build/containerd-shim-nerdbox-v1 ${GO_LDFLAGS} -tags 'no_grpc' ./cmd/containerd-shim-nerdbox-v1
 
 FROM base AS vminit-build
 

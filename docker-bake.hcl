@@ -22,6 +22,10 @@ variable "GO_DEBUG_GCFLAGS" {
   default = ""
 }
 
+variable "GO_LDFLAGS" {
+  default = ""
+}
+
 target "_common" {
   args = {
     KERNEL_VERSION = KERNEL_VERSION
@@ -30,6 +34,7 @@ target "_common" {
     GO_BUILD_FLAGS = GO_BUILD_FLAGS
     GO_GCFLAGS = GO_GCFLAGS
     GO_DEBUG_GCFLAGS = GO_DEBUG_GCFLAGS
+    GO_LDFLAGS = GO_LDFLAGS
   }
 }
 

@@ -14,7 +14,7 @@ LDFLAGS_aarch64_Linux = -lkrun
 LDFLAGS_arm64_Darwin = -L/opt/homebrew/lib -lkrun
 CFLAGS = -O2 -g -I../include
 
-EXTRA_LDFLAGS += -s -w
+LDFLAGS += -s -w
 DEBUG_GO_GCFLAGS :=
 DEBUG_TAGS :=
 
@@ -32,8 +32,8 @@ GO_TAGS=$(if $(GO_BUILDTAGS),-tags "$(strip $(GO_BUILDTAGS))",)
 GO_STATIC_TAGS=$(if $(GO_STATIC_BUILDTAGS),-tags "$(strip $(GO_STATIC_BUILDTAGS))",)
 
 GO_BUILD_FLAGS ?=
-GO_LDFLAGS := -ldflags '$(EXTRA_LDFLAGS)'
-GO_STATIC_LDFLAGS := -ldflags '-extldflags "-static" $(EXTRA_LDFLAGS)'
+GO_LDFLAGS ?= -ldflags '$(LDFLAGS) $(EXTRA_LDFLAGS)'
+GO_STATIC_LDFLAGS := -ldflags '-extldflags "-static" $(LDFLAGS) $(EXTRA_LDFLAGS)'
 
 MODULE_NAME=$(shell go list -m)
 API_PACKAGES=$(shell ($(GO) list ${GO_TAGS} ./... | grep /api/ ))

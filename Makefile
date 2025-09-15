@@ -14,7 +14,7 @@ LDFLAGS_aarch64_Linux = -lkrun
 LDFLAGS_arm64_Darwin = -L/opt/homebrew/lib -lkrun
 CFLAGS = -O2 -g -I../include
 
-EXTRA_LDFLAGS += -s -w
+LDFLAGS += -s -w
 DEBUG_GO_GCFLAGS :=
 DEBUG_TAGS :=
 
@@ -32,8 +32,8 @@ GO_TAGS=$(if $(GO_BUILDTAGS),-tags "$(strip $(GO_BUILDTAGS))",)
 GO_STATIC_TAGS=$(if $(GO_STATIC_BUILDTAGS),-tags "$(strip $(GO_STATIC_BUILDTAGS))",)
 
 GO_BUILD_FLAGS ?=
-GO_LDFLAGS := -ldflags '$(EXTRA_LDFLAGS)'
-GO_STATIC_LDFLAGS := -ldflags '-extldflags "-static" $(EXTRA_LDFLAGS)'
+GO_LDFLAGS ?= -ldflags '$(LDFLAGS) $(EXTRA_LDFLAGS)'
+GO_STATIC_LDFLAGS := -ldflags '-extldflags "-static" $(LDFLAGS) $(EXTRA_LDFLAGS)'
 
 MODULE_NAME=$(shell go list -m)
 API_PACKAGES=$(shell ($(GO) list ${GO_TAGS} ./... | grep /api/ ))
@@ -70,6 +70,10 @@ _output/run_vminitd: cmd/run_vminitd/main.c
 ifeq ($(OS),Darwin)
 	codesign --entitlements src/run_vminitd.entitlements --force -s - $@
 endif
+
+_output/libkrun.so: FORCE
+	@echo "$(WHALE) $@"
+	$(BUILDX) bake libkrun
 
 
 generate: protos
@@ -112,5 +116,7 @@ shell:
 		-v ./:/go/src/$(MODULE_NAME) \
 		-v /var/run/docker.sock:/var/run/docker.sock \
 		-w /go/src/$(MODULE_NAME) \
+		-e KERNEL_ARCH=$(ARCH) \
+		-e KERNEL_NPROC \
 		$(DOCKER_EXTRA_ARGS) \
 		nerdbox-dev

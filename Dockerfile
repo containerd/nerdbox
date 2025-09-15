@@ -5,6 +5,7 @@ ARG BASE_DEBIAN_DISTRO="bookworm"
 ARG GOLANG_IMAGE="golang:${GO_VERSION}-${BASE_DEBIAN_DISTRO}"
 ARG DOCKER_VERSION=28.4.0
 ARG DOCKER_IMAGE="docker:${DOCKER_VERSION}-cli"
+ARG RUST_IMAGE="rust:1.89.0-slim-${BASE_DEBIAN_DISTRO}"
 
 FROM ${GOLANG_IMAGE} AS base
 
@@ -63,11 +64,12 @@ WORKDIR /go/src/github.com/dmcgowan/nerdbox
 ARG GO_DEBUG_GCFLAGS
 ARG GO_GCFLAGS
 ARG GO_BUILD_FLAGS
+ARG GO_LDFLAGS
 ARG TARGETPLATFORM
 
 RUN --mount=type=bind,target=.,rw \
     --mount=type=cache,target=/root/.cache/go-build,id=shim-build-$TARGETPLATFORM \
-    go build ${GO_DEBUG_GCFLAGS} ${GO_GCFLAGS} ${GO_BUILD_FLAGS} -o /build/containerd-shim-nerdbox-v1 -ldflags '-s -w' -tags 'no_grpc' ./cmd/containerd-shim-nerdbox-v1
+    go build ${GO_DEBUG_GCFLAGS} ${GO_GCFLAGS} ${GO_BUILD_FLAGS} -o /build/containerd-shim-nerdbox-v1 ${GO_LDFLAGS} -tags 'no_grpc' ./cmd/containerd-shim-nerdbox-v1
 
 FROM base AS vminit-build
 
@@ -158,14 +160,30 @@ FROM "${DOCKER_IMAGE}" AS docker-cli
 FROM "${GOLANG_IMAGE}" AS dlv
 RUN go install github.com/go-delve/delve/cmd/dlv@latest
 
-FROM debian:${BASE_DEBIAN_DISTRO} AS dev
+FROM "${RUST_IMAGE}" AS libkrun-build
+ARG LIBKRUN_VERSION=v1.15.1
+
+RUN --mount=type=cache,sharing=locked,id=libkrun-aptlib,target=/var/lib/apt \
+    --mount=type=cache,sharing=locked,id=libkrun-aptcache,target=/var/cache/apt \
+        apt-get update && apt-get install -y git libclang-19-dev llvm make
+
+RUN git clone --depth 1 --branch ${LIBKRUN_VERSION} https://github.com/containers/libkrun.git && \
+    cd libkrun && \
+    make BLK=1 NET=1
+
+FROM scratch AS libkrun
+COPY --from=libkrun-build /libkrun/target/release/libkrun.so /libkrun.so
+
+FROM ${GOLANG_IMAGE} AS dev
 ARG CONTAINERD_VERSION=2.1.4
 ARG TARGETARCH
 
-# Install build dependencies
+ENV PATH=/go/src/github.com/dmcgowan/nerdbox/_output:$PATH
+WORKDIR /go/src/github.com/dmcgowan/nerdbox
+
 RUN --mount=type=cache,sharing=locked,id=dev-aptlib,target=/var/lib/apt \
     --mount=type=cache,sharing=locked,id=dev-aptcache,target=/var/cache/apt \
-        apt-get update && apt-get install -y git make wget
+        apt-get update && apt-get install -y erofs-utils git make wget
 
 RUN wget https://github.com/containerd/containerd/releases/download/v${CONTAINERD_VERSION}/containerd-${CONTAINERD_VERSION}-linux-${TARGETARCH}.tar.gz && \
     tar -C /usr/local/bin --strip-components=1 -xf containerd-${CONTAINERD_VERSION}-linux-${TARGETARCH}.tar.gz && \
@@ -176,9 +194,7 @@ COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-buildx /usr/
 
 COPY --from=dlv /go/bin/dlv /usr/local/bin/dlv
 
-RUN << EOT
-    set -e
-    echo 'export PATH=$(pwd)/_output:$PATH' >> /etc/profile
-EOT
+COPY --from=libkrun /libkrun.so /usr/local/lib64/libkrun.so
+ENV LIBKRUN_PATH=/go/src/github.com/dmcgowan/nerdbox/_output
 
-ENTRYPOINT ["/bin/bash", "-l"]
+VOLUME /var/lib/containerd

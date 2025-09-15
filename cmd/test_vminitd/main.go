@@ -29,7 +29,17 @@ import (
 func main() {
 	ctx := context.Background()
 
-	vm, err := libkrun.NewManager().NewInstance(ctx, ".")
+	state, err := os.MkdirTemp("", "nerdbox")
+	if err != nil {
+		log.Fatal("Failed to create state dir:", err)
+	}
+	defer func() {
+		if err := os.RemoveAll(state); err != nil {
+			log.Printf("Failed to remove state dir %s: %v", state, err)
+		}
+	}()
+
+	vm, err := libkrun.NewManager().NewInstance(ctx, state)
 	if err != nil {
 		log.Fatal("Failed to create VM instance:", err)
 	}

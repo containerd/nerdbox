@@ -173,11 +173,13 @@ RUN git clone --depth 1 --branch ${LIBKRUN_VERSION} https://github.com/container
 FROM scratch AS libkrun
 COPY --from=libkrun-build /libkrun/target/release/libkrun.so /libkrun.so
 
-FROM debian:${BASE_DEBIAN_DISTRO} AS dev
+FROM ${GOLANG_IMAGE} AS dev
 ARG CONTAINERD_VERSION=2.1.4
 ARG TARGETARCH
 
-# Install build dependencies
+ENV PATH=/go/src/github.com/dmcgowan/nerdbox/_output:$PATH
+WORKDIR /go/src/github.com/dmcgowan/nerdbox
+
 RUN --mount=type=cache,sharing=locked,id=dev-aptlib,target=/var/lib/apt \
     --mount=type=cache,sharing=locked,id=dev-aptcache,target=/var/cache/apt \
         apt-get update && apt-get install -y git make wget
@@ -194,9 +196,3 @@ COPY --from=dlv /go/bin/dlv /usr/local/bin/dlv
 COPY --from=libkrun /libkrun.so /usr/local/lib64/libkrun.so
 ENV LIBKRUN_PATH=/go/src/github.com/dmcgowan/nerdbox/_output
 
-RUN << EOT
-    set -e
-    echo 'export PATH=$(pwd)/_output:$PATH' >> /etc/profile
-EOT
-
-ENTRYPOINT ["/bin/bash", "-l"]

@@ -142,6 +142,17 @@ func (vm *vmcontext) AddVirtiofs(tag, path string) error {
 	return nil
 }
 
+func (vm *vmcontext) AddDisk(blockID, path string, readonly bool) error {
+	if vm.lib.AddDisk == nil {
+		return fmt.Errorf("libkrun not loaded")
+	}
+	ret := vm.lib.AddDisk(vm.ctxId, blockID, path, readonly)
+	if ret != 0 {
+		return fmt.Errorf("krun_add_disk failed: %d", ret)
+	}
+	return nil
+}
+
 func (vm *vmcontext) Start() error {
 	if vm.lib.StartEnter == nil {
 		return fmt.Errorf("libkrun not loaded")

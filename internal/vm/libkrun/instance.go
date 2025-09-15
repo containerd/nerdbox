@@ -159,6 +159,23 @@ func (v *vmInstance) AddFS(ctx context.Context, tag, mountPath string, opts ...v
 
 	return nil
 }
+
+func (v *vmInstance) AddDisk(ctx context.Context, blockID, mountPath string, opts ...vm.MountOpt) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	var mc vm.MountConfig
+	for _, o := range opts {
+		o(&mc)
+	}
+
+	if err := v.vmc.AddDisk(blockID, mountPath, mc.Readonly); err != nil {
+		return fmt.Errorf("failed to add virtiofs: %w", err)
+	}
+
+	return nil
+}
+
 func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()

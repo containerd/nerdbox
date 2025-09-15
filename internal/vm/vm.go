@@ -33,13 +33,15 @@ type startOpts struct {
 
 type StartOpt func(*startOpts)
 
-type mountOpts struct {
+type MountConfig struct {
+	Readonly bool
 }
 
-type MountOpt func(*mountOpts)
+type MountOpt func(*MountConfig)
 
 type Instance interface {
 	AddFS(ctx context.Context, tag, mountPath string, opts ...MountOpt) error
+	AddDisk(ctx context.Context, blockID, mountPath string, opts ...MountOpt) error
 	Start(ctx context.Context, opts ...StartOpt) error
 	Client() *ttrpc.Client
 	Shutdown(context.Context) error
@@ -51,4 +53,10 @@ type Instance interface {
 	// TODO: Consider making this interface optional, a per RPC implementation
 	// is possible but likely less efficient.
 	StartStream(ctx context.Context) (uint32, net.Conn, error)
+}
+
+func WithReadOnly() MountOpt {
+	return func(o *MountConfig) {
+		o.Readonly = true
+	}
 }

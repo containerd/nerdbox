@@ -86,7 +86,7 @@ func (vm *vmcontext) SetKernel(kernelPath string, initrdPath string, kernelCmdli
 
 	// TODO: Support different kernel formats
 	var format uint32
-	if runtime.GOOS == "darwin" {
+	if runtime.GOARCH == "arm64" {
 		format = kernelFormatRaw
 	} else {
 		format = kernelFormatElf

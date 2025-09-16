@@ -51,7 +51,7 @@ RUN << EOT
     cd linux
     mkdir /build
     case $(uname -m) in
-        x86_64) cp arch/x86_64/boot/bzImage /build/kernel ;;
+        x86_64) cp vmlinux /build/kernel ;;
         aarch64) cp arch/arm64/boot/Image /build/kernel ;;
         *) echo "Unsupported architecture: $(uname -m)" ; exit 1 ;;
     esac

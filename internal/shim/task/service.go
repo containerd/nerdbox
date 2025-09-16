@@ -44,6 +44,7 @@ import (
 
 	bundleAPI "github.com/dmcgowan/nerdbox/api/services/bundle/v1"
 	"github.com/dmcgowan/nerdbox/api/services/vmevents/v1"
+	"github.com/dmcgowan/nerdbox/internal/kvm"
 	"github.com/dmcgowan/nerdbox/internal/vm"
 )
 
@@ -227,6 +228,11 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	bundleFiles, rootPath, err := getBundleFiles(ctx, r.Bundle)
 	if err != nil {
 		return nil, errgrpc.ToGRPCf(err, "failed to get root path")
+	}
+
+	// Libkrun panics if KVM is not available, so check it here.
+	if err := kvm.CheckKVM(); err != nil {
+		return nil, errgrpc.ToGRPC(err)
 	}
 
 	// Handle mounts

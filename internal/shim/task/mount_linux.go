@@ -17,18 +17,33 @@
 package task
 
 import (
+	"context"
+	"fmt"
+
 	"github.com/containerd/containerd/api/types"
 	"github.com/containerd/containerd/v2/core/mount"
+
+	"github.com/dmcgowan/nerdbox/internal/vm"
 )
 
-func setupMounts(tag string, m []*types.Mount, rootfs string) ([]*types.Mount, error) {
+func setupMounts(ctx context.Context, vmi vm.Instance, id string, m []*types.Mount, rootfs string) ([]*types.Mount, error) {
+	// Handle mounts
+
 	if len(m) == 1 && (m[0].Type == "overlay" || m[0].Type == "bind") {
+		tag := fmt.Sprintf("rootfs-%s", id)
+		// virtiofs implementation has a limit of 36 characters for the tag
+		if len(tag) > 36 {
+			tag = tag[:36]
+		}
 		mnt := mount.Mount{
 			Type:    m[0].Type,
 			Source:  m[0].Source,
 			Options: m[0].Options,
 		}
 		if err := mnt.Mount(rootfs); err != nil {
+			return nil, err
+		}
+		if err := vmi.AddFS(ctx, tag, rootfs); err != nil {
 			return nil, err
 		}
 		return []*types.Mount{&types.Mount{
@@ -38,12 +53,18 @@ func setupMounts(tag string, m []*types.Mount, rootfs string) ([]*types.Mount, e
 			//Options: m[0].Options,
 		}}, nil
 	} else if len(m) == 0 {
+		tag := fmt.Sprintf("rootfs-%s", id)
+		// virtiofs implementation has a limit of 36 characters for the tag
+		if len(tag) > 36 {
+			tag = tag[:36]
+		}
+		if err := vmi.AddFS(ctx, tag, rootfs); err != nil {
+			return nil, err
+		}
 		return []*types.Mount{&types.Mount{
 			Type:   "virtiofs",
 			Source: tag,
 		}}, nil
 	}
-	// TODO: Handle other mount types and devices
-
-	return m, nil
+	return transformMounts(ctx, vmi, id, m)
 }

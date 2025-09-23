@@ -19,12 +19,16 @@
 package runc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"text/template"
+	"time"
 
 	"github.com/containerd/cgroups/v3"
 	"github.com/containerd/cgroups/v3/cgroup1"
@@ -104,13 +108,80 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 	}
 
 	if len(mounts) != 0 && (len(mounts) != 1 || mounts[0].Type != "bind" || mounts[0].Source != rootfs) {
-		if err := mount.All(mounts, rootfs); err != nil {
-			return nil, fmt.Errorf("failed to mount rootfs component: %w", err)
+		log.G(ctx).WithField("mounts", mounts).Debugf("mounting rootfs components")
+		mdir := filepath.Join(r.Bundle, "mounts")
+		active := []mount.ActiveMount{}
+
+		// TODO: Use mount manager interface, mount temps to directory
+		for i, m := range mounts {
+			var target string
+			if i < len(mounts)-1 {
+				target = filepath.Join(mdir, fmt.Sprintf("%d", i))
+				if err := os.MkdirAll(target, 0711); err != nil {
+					return nil, err
+				}
+			} else {
+				target = rootfs
+			}
+			// TODO: Use mount handlers
+			if t, ok := strings.CutPrefix(m.Type, "format/"); ok {
+				m.Type = t
+				for i, o := range m.Options {
+					format := formatString(o)
+					if format != nil {
+						s, err := format(active)
+						if err != nil {
+							return nil, fmt.Errorf("formatting mount option %q: %w", o, err)
+						}
+						m.Options[i] = s
+					}
+				}
+				if format := formatString(m.Source); format != nil {
+					s, err := format(active)
+					if err != nil {
+						return nil, fmt.Errorf("formatting mount source %q: %w", m.Source, err)
+					}
+					m.Source = s
+				}
+				if format := formatString(m.Target); format != nil {
+					s, err := format(active)
+					if err != nil {
+						return nil, fmt.Errorf("formatting mount target %q: %w", m.Target, err)
+					}
+					m.Target = s
+				}
+			}
+			if m.Type == "mkdir" {
+				if !strings.HasPrefix(m.Source, mdir) {
+					return nil, fmt.Errorf("mkdir mount source %q must be under %q", m.Source, mdir)
+				}
+				// TODO: Use containerd's mkdir handler
+				if err := os.MkdirAll(m.Source, 0755); err != nil {
+					return nil, err
+				}
+			} else {
+				if err := m.Mount(target); err != nil {
+					return nil, err
+				}
+			}
+			t := time.Now()
+			active = append(active, mount.ActiveMount{
+				Mount:      m,
+				MountedAt:  &t,
+				MountPoint: target,
+			})
+
 		}
 		defer func() {
 			if retErr != nil {
-				if err := mount.UnmountMounts(mounts, rootfs, 0); err != nil {
-					log.G(ctx).WithError(err).Warn("failed to cleanup rootfs mount")
+				for i := len(active) - 1; i >= 0; i-- {
+					// TODO: delegate custom types to handlers
+					if active[i].Mount.Type == "mkdir" {
+						continue
+					}
+					if err := mount.UnmountAll(active[i].MountPoint, 0); err != nil {
+						log.G(ctx).WithError(err).WithField("mountpoint", active[i].MountPoint).Warn("failed to cleanup mount mount")
+					}
 				}
 			}
 		}()
@@ -146,6 +217,66 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 		}
 	}
 	return container, nil
+}
+
+const formatCheck = "{{"
+
+func formatString(s string) func([]mount.ActiveMount) (string, error) {
+	if !strings.Contains(s, formatCheck) {
+		return nil
+	}
+
+	return func(a []mount.ActiveMount) (string, error) {
+		fm := template.FuncMap{
+			"source": func(i int) (string, error) {
+				if i < 0 || i >= len(a) {
+					return "", fmt.Errorf("index out of bounds: %d, has %d active mounts", i, len(a))
+				}
+				return a[i].Source, nil
+			},
+			"target": func(i int) (string, error) {
+				if i < 0 || i >= len(a) {
+					return "", fmt.Errorf("index out of bounds: %d, has %d active mounts", i, len(a))
+				}
+				return a[i].Target, nil
+			},
+			"mount": func(i int) (string, error) {
+				if i < 0 || i >= len(a) {
+					return "", fmt.Errorf("index out of bounds: %d, has %d active mounts", i, len(a))
+				}
+				return a[i].MountPoint, nil
+			},
+			"overlay": func(start, end int) (string, error) {
+				var dirs []string
+				if start > end {
+					if start >= len(a) || end < 0 {
+						return "", fmt.Errorf("invalid range: %d-%d, has %d active mounts", start, end, len(a))
+					}
+					for i := start; i >= end; i-- {
+						dirs = append(dirs, a[i].MountPoint)
+					}
+				} else {
+					if start < 0 || end >= len(a) {
+						return "", fmt.Errorf("invalid range: %d-%d, has %d active mounts", start, end, len(a))
+					}
+					for i := start; i <= end; i++ {
+						dirs = append(dirs, a[i].MountPoint)
+					}
+				}
+				return strings.Join(dirs, ":"), nil
+			},
+		}
+		t, err := template.New("").Funcs(fm).Parse(s)
+		if err != nil {
+			return "", err
+		}
+
+		buf := bytes.NewBuffer(nil)
+		if err := t.Execute(buf, nil); err != nil {
+			return "", err
+		}
+		return buf.String(), nil
+	}
 }
 
 const optionsFilename = "options.json"

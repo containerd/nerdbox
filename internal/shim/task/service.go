@@ -235,17 +235,6 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		return nil, errgrpc.ToGRPC(err)
 	}
 
-	// Handle mounts
-	tag := fmt.Sprintf("rootfs-%s", r.ID)
-	// virtiofs implementation has a limit of 36 characters for the tag
-	if len(tag) > 36 {
-		tag = tag[:36]
-	}
-	m, err := setupMounts(tag, r.Rootfs, rootPath)
-	if err != nil {
-		return nil, errgrpc.ToGRPC(err)
-	}
-
 	vmState := filepath.Join(r.Bundle, "vm")
 	if err := os.Mkdir(vmState, 0700); err != nil {
 		return nil, errgrpc.ToGRPCf(err, "failed to create vm state directory %q", vmState)
@@ -255,12 +244,18 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		return nil, errgrpc.ToGRPC(err)
 	}
 
-	if rootPath != "" {
-		err = vmi.AddFS(ctx, tag, rootPath)
-		if err != nil {
-			return nil, errgrpc.ToGRPC(err)
-		}
+	m, err := setupMounts(ctx, vmi, r.ID, r.Rootfs, rootPath)
+	if err != nil {
+		return nil, errgrpc.ToGRPC(err)
 	}
+	/*
+		if rootPath != "" {
+			err = vmi.AddFS(ctx, tag, rootPath)
+			if err != nil {
+				return nil, errgrpc.ToGRPC(err)
+			}
+		}
+	*/
 
 	t := time.Now()
 	if err := vmi.Start(ctx); err != nil {

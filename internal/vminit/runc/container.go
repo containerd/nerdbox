@@ -123,7 +123,7 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 			} else {
 				target = rootfs
 			}
-			// TODO: Use mount handler
+			// TODO: Use mount handlers
 			if t, ok := strings.CutPrefix(m.Type, "format/"); ok {
 				m.Type = t
 				for i, o := range m.Options {
@@ -136,10 +136,33 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 						m.Options[i] = s
 					}
 				}
+				if format := formatString(m.Source); format != nil {
+					s, err := format(active)
+					if err != nil {
+						return nil, fmt.Errorf("formatting mount source %q: %w", m.Source, err)
+					}
+					m.Source = s
+				}
+				if format := formatString(m.Target); format != nil {
+					s, err := format(active)
+					if err != nil {
+						return nil, fmt.Errorf("formatting mount target %q: %w", m.Target, err)
+					}
+					m.Target = s
+				}
 			}
-
-			if err := m.Mount(target); err != nil {
-				return nil, err
+			if m.Type == "mkdir" {
+				if !strings.HasPrefix(m.Source, mdir) {
+					return nil, fmt.Errorf("mkdir mount source %q must be under %q", m.Source, mdir)
+				}
+				// TODO: Use containerd's mkdir handler
+				if err := os.MkdirAll(m.Source, 0755); err != nil {
+					return nil, err
+				}
+			} else {
+				if err := m.Mount(target); err != nil {
+					return nil, err
+				}
 			}
 			t := time.Now()
 			active = append(active, mount.ActiveMount{
@@ -151,8 +174,14 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 		}
 		defer func() {
 			if retErr != nil {
-				if err := mount.UnmountMounts(mounts, rootfs, 0); err != nil {
-					log.G(ctx).WithError(err).Warn("failed to cleanup rootfs mount")
+				for i := len(active) - 1; i >= 0; i-- {
+					// TODO: delegate custom types to handlers
+					if active[i].Mount.Type == "mkdir" {
+						continue
+					}
+					if err := mount.UnmountAll(active[i].MountPoint, 0); err != nil {
+						log.G(ctx).WithError(err).WithField("mountpoint", active[i].MountPoint).Warn("failed to cleanup mount mount")
+					}
 				}
 			}
 		}()

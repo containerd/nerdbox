@@ -39,6 +39,13 @@ RUN wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KERNEL_VERSION}.ta
 #COPY --from=config-build /usr/src/fragments/.config /usr/src/linux/.config
 COPY kernel/config-${KERNEL_VERSION}-${KERNEL_ARCH} /usr/src/linux/.config
 
+COPY kernel/patches /usr/src/linux/patches
+RUN << EOT
+    for patch in $(ls -d /usr/src/linux/patches/*.patch); do
+        patch -p1 -d /usr/src/linux < "$patch";
+    done
+EOT
+
 # Build the kernel
 # Seperate from base to allow config construction from fragments in the future
 FROM kernel-build-base AS kernel-build

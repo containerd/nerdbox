@@ -225,6 +225,8 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		return nil, errgrpc.ToGRPC(fmt.Errorf("checkpoints not supported: %w", errdefs.ErrNotImplemented))
 	}
 
+	presetup := time.Now()
+
 	bundleFiles, rootPath, err := getBundleFiles(ctx, r.Bundle)
 	if err != nil {
 		return nil, errgrpc.ToGRPCf(err, "failed to get root path")
@@ -248,20 +250,12 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
-	/*
-		if rootPath != "" {
-			err = vmi.AddFS(ctx, tag, rootPath)
-			if err != nil {
-				return nil, errgrpc.ToGRPC(err)
-			}
-		}
-	*/
 
-	t := time.Now()
+	prestart := time.Now()
 	if err := vmi.Start(ctx); err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
-	log.G(ctx).WithField("t", time.Since(t)).Info("vm started")
+	bootTime := time.Since(prestart)
 
 	vmc, err := s.client()
 	if err != nil {
@@ -310,6 +304,11 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		return nil, errgrpc.ToGRPC(err)
 	}
 
+	// setupTime is the total time to setup the VM and everything neeeded
+	// to proxy the create task request. This measures the the overall
+	// overhead of creating the container inside the VM.
+	setupTime := time.Since(presetup)
+
 	vr := &taskAPI.CreateTaskRequest{
 		ID:       r.ID,
 		Bundle:   br.Bundle,
@@ -321,6 +320,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		Options:  r.Options,
 	}
 
+	preCreate := time.Now()
 	tc := taskAPI.NewTTRPCTaskClient(vmc)
 	resp, err := tc.Create(ctx, vr)
 	if err != nil {
@@ -332,9 +332,13 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 			}
 		}
 		return nil, errgrpc.ToGRPC(err)
-	} else {
-		log.G(ctx).Debug("no failure creating task")
 	}
+
+	log.G(ctx).WithFields(log.Fields{
+		"t_boot":   bootTime,
+		"t_setup":  setupTime - bootTime,
+		"t_create": time.Since(preCreate),
+	}).Info("task successfully created")
 
 	s.mu.Lock()
 	s.containers[r.ID] = &c

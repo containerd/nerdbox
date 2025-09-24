@@ -36,12 +36,12 @@ RUN wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KERNEL_VERSION}.ta
     rm linux-${KERNEL_VERSION}.tar.xz && \
     mv linux-${KERNEL_VERSION} linux
 
+#COPY --from=config-build /usr/src/fragments/.config /usr/src/linux/.config
+COPY kernel/config-${KERNEL_VERSION}-${KERNEL_ARCH} /usr/src/linux/.config
+
 # Build the kernel
 # Seperate from base to allow config construction from fragments in the future
 FROM kernel-build-base AS kernel-build
-
-#COPY --from=config-build /usr/src/fragments/.config /usr/src/linux/.config
-COPY kernel/config-${KERNEL_VERSION}-${KERNEL_ARCH} /usr/src/linux/.config
 
 # Compile the kernel
 RUN cd linux && make -j${KERNEL_NPROC}

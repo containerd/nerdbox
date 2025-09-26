@@ -21,8 +21,8 @@ import (
 	"github.com/containerd/plugin"
 	"github.com/containerd/plugin/registry"
 
-	"github.com/dmcgowan/nerdbox/internal/events"
-	eventsrv "github.com/dmcgowan/nerdbox/internal/vminit/events"
+	"github.com/containerd/nerdbox/internal/events"
+	eventsrv "github.com/containerd/nerdbox/internal/vminit/events"
 )
 
 func init() {

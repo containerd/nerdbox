@@ -39,8 +39,8 @@ import (
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"golang.org/x/sys/unix"
 
-	"github.com/dmcgowan/nerdbox/internal/systools"
-	"github.com/dmcgowan/nerdbox/internal/vminit/stream"
+	"github.com/containerd/nerdbox/internal/systools"
+	"github.com/containerd/nerdbox/internal/vminit/stream"
 )
 
 // Init represents an initial process for a container

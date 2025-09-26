@@ -51,10 +51,10 @@ import (
 	"github.com/containerd/typeurl/v2"
 	"github.com/moby/sys/userns"
 
-	"github.com/dmcgowan/nerdbox/internal/systools"
-	"github.com/dmcgowan/nerdbox/internal/vminit/process"
-	"github.com/dmcgowan/nerdbox/internal/vminit/runc"
-	"github.com/dmcgowan/nerdbox/internal/vminit/stream"
+	"github.com/containerd/nerdbox/internal/systools"
+	"github.com/containerd/nerdbox/internal/vminit/process"
+	"github.com/containerd/nerdbox/internal/vminit/runc"
+	"github.com/containerd/nerdbox/internal/vminit/stream"
 )
 
 var (

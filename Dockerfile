@@ -66,7 +66,7 @@ EOT
 
 FROM base AS shim-build
 
-WORKDIR /go/src/github.com/dmcgowan/nerdbox
+WORKDIR /go/src/github.com/containerd/nerdbox
 
 ARG GO_DEBUG_GCFLAGS
 ARG GO_GCFLAGS
@@ -80,7 +80,7 @@ RUN --mount=type=bind,target=.,rw \
 
 FROM base AS vminit-build
 
-WORKDIR /go/src/github.com/dmcgowan/nerdbox
+WORKDIR /go/src/github.com/containerd/nerdbox
 
 ARG GO_DEBUG_GCFLAGS
 ARG GO_GCFLAGS
@@ -185,8 +185,8 @@ FROM ${GOLANG_IMAGE} AS dev
 ARG CONTAINERD_VERSION=2.1.4
 ARG TARGETARCH
 
-ENV PATH=/go/src/github.com/dmcgowan/nerdbox/_output:$PATH
-WORKDIR /go/src/github.com/dmcgowan/nerdbox
+ENV PATH=/go/src/github.com/containerd/nerdbox/_output:$PATH
+WORKDIR /go/src/github.com/containerd/nerdbox
 
 RUN --mount=type=cache,sharing=locked,id=dev-aptlib,target=/var/lib/apt \
     --mount=type=cache,sharing=locked,id=dev-aptcache,target=/var/cache/apt \
@@ -202,6 +202,6 @@ COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-buildx /usr/
 COPY --from=dlv /go/bin/dlv /usr/local/bin/dlv
 
 COPY --from=libkrun /libkrun.so /usr/local/lib64/libkrun.so
-ENV LIBKRUN_PATH=/go/src/github.com/dmcgowan/nerdbox/_output
+ENV LIBKRUN_PATH=/go/src/github.com/containerd/nerdbox/_output
 
 VOLUME /var/lib/containerd

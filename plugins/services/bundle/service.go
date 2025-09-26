@@ -28,8 +28,8 @@ import (
 	"github.com/containerd/plugin/registry"
 	"github.com/containerd/ttrpc"
 
-	api "github.com/dmcgowan/nerdbox/api/services/bundle/v1"
-	"github.com/dmcgowan/nerdbox/plugins"
+	api "github.com/containerd/nerdbox/api/services/bundle/v1"
+	"github.com/containerd/nerdbox/plugins"
 )
 
 func init() {

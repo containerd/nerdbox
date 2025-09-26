@@ -16,7 +16,7 @@ file {
   syntax: "proto3"
 }
 file {
-  name: "github.com/dmcgowan/nerdbox/api/services/bundle/v1/bundle.proto"
+  name: "github.com/containerd/nerdbox/api/services/bundle/v1/bundle.proto"
   package: "containerd.vminitd.services.bundle.v1"
   dependency: "google/protobuf/empty.proto"
   message_type {
@@ -76,12 +76,12 @@ file {
     }
   }
   options {
-    go_package: "github.com/dmcgowan/nerdbox/api/services/bundle/v1;bundle"
+    go_package: "github.com/containerd/nerdbox/api/services/bundle/v1;bundle"
   }
   syntax: "proto3"
 }
 file {
-  name: "github.com/dmcgowan/nerdbox/api/services/system/v1/info.proto"
+  name: "github.com/containerd/nerdbox/api/services/system/v1/info.proto"
   package: "containerd.vminitd.services.system.v1"
   dependency: "google/protobuf/empty.proto"
   message_type {
@@ -110,7 +110,7 @@ file {
     }
   }
   options {
-    go_package: "github.com/dmcgowan/nerdbox/api/services/system/v1;system"
+    go_package: "github.com/containerd/nerdbox/api/services/system/v1;system"
   }
   syntax: "proto3"
 }
@@ -250,7 +250,7 @@ file {
   syntax: "proto3"
 }
 file {
-  name: "github.com/dmcgowan/nerdbox/api/services/vmevents/v1/events.proto"
+  name: "github.com/containerd/nerdbox/api/services/vmevents/v1/events.proto"
   package: "nerdbox.services.vmevents.v1"
   dependency: "github.com/containerd/containerd/api/types/event.proto"
   dependency: "google/protobuf/empty.proto"
@@ -264,7 +264,7 @@ file {
     }
   }
   options {
-    go_package: "github.com/dmcgowan/nerdbox/api/services/vmevents/v1;vmevents"
+    go_package: "github.com/containerd/nerdbox/api/services/vmevents/v1;vmevents"
   }
   syntax: "proto3"
 }

@@ -21,10 +21,10 @@ import (
 
 	"github.com/containerd/containerd/v2/pkg/shim"
 
-	"github.com/dmcgowan/nerdbox/internal/shim/manager"
+	"github.com/containerd/nerdbox/internal/shim/manager"
 
-	_ "github.com/dmcgowan/nerdbox/plugins/shim/task"
-	_ "github.com/dmcgowan/nerdbox/plugins/vm/libkrun"
+	_ "github.com/containerd/nerdbox/plugins/shim/task"
+	_ "github.com/containerd/nerdbox/plugins/vm/libkrun"
 )
 
 func main() {

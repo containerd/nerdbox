@@ -26,8 +26,8 @@ import (
 	"github.com/containerd/ttrpc"
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
 
-	api "github.com/dmcgowan/nerdbox/api/services/system/v1"
-	"github.com/dmcgowan/nerdbox/plugins"
+	api "github.com/containerd/nerdbox/api/services/system/v1"
+	"github.com/containerd/nerdbox/plugins"
 )
 
 var _ api.TTRPCSystemService = &service{}

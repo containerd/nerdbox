@@ -36,8 +36,8 @@ import (
 	"github.com/containerd/ttrpc"
 	"github.com/ebitengine/purego"
 
-	"github.com/dmcgowan/nerdbox/internal/ttrpcutil"
-	"github.com/dmcgowan/nerdbox/internal/vm"
+	"github.com/containerd/nerdbox/internal/ttrpcutil"
+	"github.com/containerd/nerdbox/internal/vm"
 )
 
 var setLogging sync.Once

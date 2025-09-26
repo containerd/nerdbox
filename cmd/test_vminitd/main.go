@@ -23,7 +23,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/dmcgowan/nerdbox/internal/vm/libkrun"
+	"github.com/containerd/nerdbox/internal/vm/libkrun"
 )
 
 func main() {

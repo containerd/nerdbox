@@ -20,7 +20,7 @@ package containerd.vminitd.services.bundle.v1;
 
 import "google/protobuf/empty.proto";
 
-option go_package = "github.com/dmcgowan/nerdbox/api/services/bundle/v1;bundle";
+option go_package = "github.com/containerd/nerdbox/api/services/bundle/v1;bundle";
 
 service Bundle {
 	rpc Create(CreateRequest) returns (CreateResponse);

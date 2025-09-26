@@ -22,8 +22,8 @@ import (
 
 	"github.com/containerd/errdefs"
 
-	systemapi "github.com/dmcgowan/nerdbox/api/services/system/v1"
-	"github.com/dmcgowan/nerdbox/internal/vm"
+	systemapi "github.com/containerd/nerdbox/api/services/system/v1"
+	"github.com/containerd/nerdbox/internal/vm"
 )
 
 func TestSystemInfo(t *testing.T) {

@@ -35,8 +35,8 @@ import (
 	"github.com/containerd/containerd/v2/pkg/stdio"
 	"github.com/containerd/fifo"
 
-	"github.com/dmcgowan/nerdbox/internal/vminit/process"
-	"github.com/dmcgowan/nerdbox/internal/vminit/stream"
+	"github.com/containerd/nerdbox/internal/vminit/process"
+	"github.com/containerd/nerdbox/internal/vminit/stream"
 )
 
 var bufPool = sync.Pool{

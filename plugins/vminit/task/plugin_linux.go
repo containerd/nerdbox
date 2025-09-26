@@ -23,9 +23,9 @@ import (
 	"github.com/containerd/plugin"
 	"github.com/containerd/plugin/registry"
 
-	"github.com/dmcgowan/nerdbox/internal/vminit/stream"
-	"github.com/dmcgowan/nerdbox/internal/vminit/task"
-	"github.com/dmcgowan/nerdbox/plugins"
+	"github.com/containerd/nerdbox/internal/vminit/stream"
+	"github.com/containerd/nerdbox/internal/vminit/task"
+	"github.com/containerd/nerdbox/plugins"
 )
 
 func init() {

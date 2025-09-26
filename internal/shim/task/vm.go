@@ -23,7 +23,7 @@ import (
 	"github.com/containerd/errdefs"
 	"github.com/containerd/ttrpc"
 
-	"github.com/dmcgowan/nerdbox/internal/vm"
+	"github.com/containerd/nerdbox/internal/vm"
 )
 
 func (s *service) client() (*ttrpc.Client, error) {

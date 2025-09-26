@@ -42,8 +42,8 @@ import (
 	"github.com/containerd/log"
 	"github.com/containerd/typeurl/v2"
 
-	"github.com/dmcgowan/nerdbox/internal/vminit/process"
-	"github.com/dmcgowan/nerdbox/internal/vminit/stream"
+	"github.com/containerd/nerdbox/internal/vminit/process"
+	"github.com/containerd/nerdbox/internal/vminit/stream"
 )
 
 const runtimePath = "/sbin/crun"

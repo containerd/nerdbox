@@ -59,4 +59,4 @@ require (
 	google.golang.org/grpc v1.75.1 // indirect
 )
 
-replace github.com/containerd/containerd/v2 => github.com/dmcgowan/containerd/v2 v2.2.0-beta.0-erofs-darwin.0
+replace github.com/containerd/containerd/v2 => github.com/dmcgowan/containerd/v2 v2.2.0-beta.0-erofs-darwin.3

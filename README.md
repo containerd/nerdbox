@@ -31,7 +31,7 @@ mounted on the host and passed to the VM via virtio-fs. For Mac OS, the erofs
 snapshotter is required. Currently, to run on Mac OS, this requires using a
 development branch of containerd with the changes targed for the containerd 2.2
 release. Use the following tag to build containerd for Mac OS:
-https://github.com/dmcgowan/containerd/tree/v2.2.0-beta.0-erofs-darwin.0
+https://github.com/dmcgowan/containerd/tree/v2.2.0-beta.0-erofs-darwin.3
 
 #### Enabling erofs in containerd config toml
 

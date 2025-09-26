@@ -103,6 +103,22 @@ proto-fmt: ## check format of proto files
 	@test -z "$$(find . -path ./vendor -prune -o -path ./protobuf/google/rpc -prune -o -name '*.proto' -type f -exec grep -Hn -e "^ " {} \; | tee /dev/stderr)" || \
 		(echo "$(ONI) please indent proto files with tabs only" && false)
 
+menuconfig:
+ifeq ($(KERNEL_VERSION),)
+	$(error KERNEL_VERSION is not set)
+endif
+ifeq ($(KERNEL_ARCH),)
+	$(error KERNEL_ARCH is not set)
+endif
+	@echo "$(WHALE) $@"
+	@$(BUILDX) bake menuconfig
+	docker run --rm -it \
+		-v ./kernel:/config \
+		-w /usr/src/linux \
+		-e KCONFIG_CONFIG=/config/config-$(KERNEL_VERSION)-$(KERNEL_ARCH) \
+		nerdbox-menuconfig \
+		make menuconfig
+
 FORCE:
 
 clean:

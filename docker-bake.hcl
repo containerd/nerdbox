@@ -42,6 +42,12 @@ variable "DESTDIR" {
   default = "_output"
 }
 
+target "menuconfig" {
+  inherits = ["_common"]
+  target = "kernel-build-base"
+  output = ["type=image,name=nerdbox-menuconfig"]
+}
+
 target "kernel" {
   inherits = ["_common"]
   target = "kernel"

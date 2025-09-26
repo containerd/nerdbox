@@ -35,7 +35,7 @@ import (
 	runc "github.com/containerd/go-runc"
 	"golang.org/x/sys/unix"
 
-	"github.com/dmcgowan/nerdbox/internal/vminit/stream"
+	"github.com/containerd/nerdbox/internal/vminit/stream"
 )
 
 const (

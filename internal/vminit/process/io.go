@@ -40,7 +40,7 @@ import (
 	"github.com/containerd/log"
 	"golang.org/x/sys/unix"
 
-	"github.com/dmcgowan/nerdbox/internal/vminit/stream"
+	"github.com/containerd/nerdbox/internal/vminit/stream"
 )
 
 const binaryIOProcTermTimeout = 12 * time.Second // Give logger process solid 10 seconds for cleanup

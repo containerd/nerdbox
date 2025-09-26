@@ -1,4 +1,4 @@
-module github.com/dmcgowan/nerdbox
+module github.com/containerd/nerdbox
 
 go 1.24.3
 

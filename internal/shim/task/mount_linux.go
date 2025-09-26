@@ -23,7 +23,7 @@ import (
 	"github.com/containerd/containerd/api/types"
 	"github.com/containerd/containerd/v2/core/mount"
 
-	"github.com/dmcgowan/nerdbox/internal/vm"
+	"github.com/containerd/nerdbox/internal/vm"
 )
 
 func setupMounts(ctx context.Context, vmi vm.Instance, id string, m []*types.Mount, rootfs string) ([]*types.Mount, error) {
@@ -46,7 +46,7 @@ func setupMounts(ctx context.Context, vmi vm.Instance, id string, m []*types.Mou
 		if err := vmi.AddFS(ctx, tag, rootfs); err != nil {
 			return nil, err
 		}
-		return []*types.Mount{&types.Mount{
+		return []*types.Mount{{
 			Type:   "virtiofs",
 			Source: tag,
 			// TODO: Translate the options
@@ -61,7 +61,7 @@ func setupMounts(ctx context.Context, vmi vm.Instance, id string, m []*types.Mou
 		if err := vmi.AddFS(ctx, tag, rootfs); err != nil {
 			return nil, err
 		}
-		return []*types.Mount{&types.Mount{
+		return []*types.Mount{{
 			Type:   "virtiofs",
 			Source: tag,
 		}}, nil

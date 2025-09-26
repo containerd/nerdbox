@@ -25,7 +25,7 @@ import (
 	"github.com/containerd/containerd/api/types"
 	"github.com/containerd/log"
 
-	"github.com/dmcgowan/nerdbox/internal/vm"
+	"github.com/containerd/nerdbox/internal/vm"
 )
 
 // transformMounts does not perform any local mounts but transforms

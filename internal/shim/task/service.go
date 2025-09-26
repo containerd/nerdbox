@@ -42,10 +42,10 @@ import (
 	"github.com/containerd/ttrpc"
 	"github.com/opencontainers/runtime-spec/specs-go"
 
-	bundleAPI "github.com/dmcgowan/nerdbox/api/services/bundle/v1"
-	"github.com/dmcgowan/nerdbox/api/services/vmevents/v1"
-	"github.com/dmcgowan/nerdbox/internal/kvm"
-	"github.com/dmcgowan/nerdbox/internal/vm"
+	bundleAPI "github.com/containerd/nerdbox/api/services/bundle/v1"
+	"github.com/containerd/nerdbox/api/services/vmevents/v1"
+	"github.com/containerd/nerdbox/internal/kvm"
+	"github.com/containerd/nerdbox/internal/vm"
 )
 
 var (

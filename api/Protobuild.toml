@@ -23,7 +23,7 @@ prefix = "TTRPC"
 
 # Aggregrate the API descriptors to lock down API changes.
 [[descriptors]]
-prefix = "github.com/dmcgowan/nerdbox/api"
+prefix = "github.com/containerd/nerdbox/api"
 target = "next.pb.txt"
 ignore_files = [
 	"google/protobuf/descriptor.proto",

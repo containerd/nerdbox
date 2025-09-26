@@ -28,7 +28,7 @@ import (
 	"github.com/containerd/typeurl/v2"
 	"google.golang.org/protobuf/types/known/emptypb"
 
-	"github.com/dmcgowan/nerdbox/api/services/vmevents/v1"
+	"github.com/containerd/nerdbox/api/services/vmevents/v1"
 )
 
 type Subscriber interface {

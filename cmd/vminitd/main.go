@@ -41,15 +41,15 @@ import (
 	"github.com/mdlayher/vsock"
 	"golang.org/x/sys/unix"
 
-	"github.com/dmcgowan/nerdbox/internal/systools"
-	"github.com/dmcgowan/nerdbox/plugins"
+	"github.com/containerd/nerdbox/internal/systools"
+	"github.com/containerd/nerdbox/plugins"
 
-	_ "github.com/dmcgowan/nerdbox/plugins/services/bundle"
-	_ "github.com/dmcgowan/nerdbox/plugins/services/system"
+	_ "github.com/containerd/nerdbox/plugins/services/bundle"
+	_ "github.com/containerd/nerdbox/plugins/services/system"
 
-	_ "github.com/dmcgowan/nerdbox/plugins/vminit/events"
-	_ "github.com/dmcgowan/nerdbox/plugins/vminit/streaming"
-	_ "github.com/dmcgowan/nerdbox/plugins/vminit/task"
+	_ "github.com/containerd/nerdbox/plugins/vminit/events"
+	_ "github.com/containerd/nerdbox/plugins/vminit/streaming"
+	_ "github.com/containerd/nerdbox/plugins/vminit/task"
 )
 
 func main() {

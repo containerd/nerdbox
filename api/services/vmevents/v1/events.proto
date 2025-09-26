@@ -21,7 +21,7 @@ package nerdbox.services.vmevents.v1;
 import "github.com/containerd/containerd/api/types/event.proto";
 import "google/protobuf/empty.proto";
 
-option go_package = "github.com/dmcgowan/nerdbox/api/services/vmevents/v1;vmevents";
+option go_package = "github.com/containerd/nerdbox/api/services/vmevents/v1;vmevents";
 
 service Events {
 	// Stream events

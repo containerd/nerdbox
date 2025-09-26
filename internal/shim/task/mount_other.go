@@ -23,7 +23,7 @@ import (
 
 	"github.com/containerd/containerd/api/types"
 
-	"github.com/dmcgowan/nerdbox/internal/vm"
+	"github.com/containerd/nerdbox/internal/vm"
 )
 
 func setupMounts(_ context.Context, vmi vm.Instance, id string, ms []*types.Mount, rootfs string) ([]*types.Mount, error) {

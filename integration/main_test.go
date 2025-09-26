@@ -22,8 +22,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/dmcgowan/nerdbox/internal/vm"
-	"github.com/dmcgowan/nerdbox/internal/vm/libkrun"
+	"github.com/containerd/nerdbox/internal/vm"
+	"github.com/containerd/nerdbox/internal/vm/libkrun"
 )
 
 func TestMain(m *testing.M) {

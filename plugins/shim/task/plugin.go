@@ -23,9 +23,9 @@ import (
 	"github.com/containerd/plugin"
 	"github.com/containerd/plugin/registry"
 
-	"github.com/dmcgowan/nerdbox/internal/shim/task"
-	"github.com/dmcgowan/nerdbox/internal/vm"
-	"github.com/dmcgowan/nerdbox/plugins"
+	"github.com/containerd/nerdbox/internal/shim/task"
+	"github.com/containerd/nerdbox/internal/vm"
+	"github.com/containerd/nerdbox/plugins"
 )
 
 func init() {

@@ -32,7 +32,7 @@ import (
 	"github.com/containerd/plugin/registry"
 	"github.com/mdlayher/vsock"
 
-	"github.com/dmcgowan/nerdbox/plugins"
+	"github.com/containerd/nerdbox/plugins"
 )
 
 type serviceConfig struct {

@@ -181,7 +181,8 @@ var bufPool = sync.Pool{
 
 func copyStreams(ctx context.Context, streams [3]io.ReadWriteCloser, stdin, stdout, stderr string, done chan struct{}) error {
 	var cwg sync.WaitGroup
-	var copying int32 = 2
+	var copying atomic.Int32
+	copying.Store(2)
 	var sameFile *countingWriteCloser
 	for _, i := range []struct {
 		name string
@@ -198,7 +199,7 @@ func copyStreams(ctx context.Context, streams [3]io.ReadWriteCloser, stdin, stdo
 					if _, err := io.CopyBuffer(wc, streams[1], *p); err != nil {
 						log.G(ctx).WithError(err).WithField("stream", streams[1]).Warn("error copying stdout")
 					}
-					if atomic.AddInt32(&copying, -1) == 0 {
+					if copying.Add(-1) == 0 {
 						close(done)
 					}
 					wc.Close()
@@ -218,7 +219,7 @@ func copyStreams(ctx context.Context, streams [3]io.ReadWriteCloser, stdin, stdo
 					if _, err := io.CopyBuffer(wc, streams[2], *p); err != nil {
 						log.G(ctx).WithError(err).Warn("error copying stderr")
 					}
-					if atomic.AddInt32(&copying, -1) == 0 {
+					if copying.Add(-1) == 0 {
 						close(done)
 					}
 					wc.Close()
@@ -230,6 +231,9 @@ func copyStreams(ctx context.Context, streams [3]io.ReadWriteCloser, stdin, stdo
 		},
 	} {
 		if i.name == "" {
+			if copying.Add(-1) == 0 {
+				close(done)
+			}
 			continue
 		}
 		ok, err := fifo.IsFifo(i.name)

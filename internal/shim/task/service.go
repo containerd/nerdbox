@@ -112,12 +112,6 @@ func (s *service) shutdown(ctx context.Context) error {
 	defer s.mu.Unlock()
 	var errs []error
 
-	if s.vm != nil {
-		if err := s.vm.Shutdown(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("vm shutdown: %w", err))
-		}
-	}
-
 	for id, c := range s.containers {
 		if c.ioShutdown != nil {
 			if err := c.ioShutdown(ctx); err != nil {
@@ -128,6 +122,12 @@ func (s *service) shutdown(ctx context.Context) error {
 			if err := ioShutdown(ctx); err != nil {
 				errs = append(errs, fmt.Errorf("container %q exec %q io shutdown: %w", id, execID, err))
 			}
+		}
+	}
+
+	if s.vm != nil {
+		if err := s.vm.Shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("vm shutdown: %w", err))
 		}
 	}
 
@@ -278,7 +278,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		for {
 			ev, err := sc.Recv()
 			if err != nil {
-				if errors.Is(err, io.EOF) {
+				if errors.Is(err, io.EOF) || errors.Is(err, shutdown.ErrShutdown) {
 					log.G(ctx).Info("vm event stream closed")
 				} else {
 					log.G(ctx).WithError(err).Error("vm event stream error")

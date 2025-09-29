@@ -33,7 +33,6 @@ import (
 	"github.com/containerd/console"
 	"github.com/containerd/containerd/v2/pkg/stdio"
 	"github.com/containerd/errdefs"
-	"github.com/containerd/fifo"
 	runc "github.com/containerd/go-runc"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 )
@@ -183,6 +182,7 @@ func (e *execProcess) start(ctx context.Context) (err error) {
 		pio     *processIO
 		pidFile = newExecPidFile(e.path, e.id)
 	)
+
 	if e.stdio.Terminal {
 		if socket, err = runc.NewTempConsoleSocket(); err != nil {
 			return fmt.Errorf("failed to create runc console socket: %w", err)
@@ -193,6 +193,12 @@ func (e *execProcess) start(ctx context.Context) (err error) {
 			return fmt.Errorf("failed to create init process I/O: %w", err)
 		}
 		e.io = pio
+		defer func() {
+			if err != nil && e.io != nil {
+				e.io.Close()
+			}
+		}()
+
 	}
 	opts := &runc.ExecOpts{
 		PidFile: pidFile.Path(),
@@ -208,11 +214,7 @@ func (e *execProcess) start(ctx context.Context) (err error) {
 		close(e.waitBlock)
 		return e.parent.runtimeError(err, "OCI runtime exec failed")
 	}
-	if e.stdio.Stdin != "" {
-		if err := e.openStdin(e.stdio.Stdin); err != nil {
-			return err
-		}
-	}
+
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if socket != nil {
@@ -243,16 +245,6 @@ func (e *execProcess) start(ctx context.Context) (err error) {
 		return fmt.Errorf("failed to retrieve OCI runtime exec pi: %wd", err)
 	}
 	e.pid.pid = pid
-	return nil
-}
-
-func (e *execProcess) openStdin(path string) error {
-	sc, err := fifo.OpenFifo(context.Background(), path, syscall.O_WRONLY|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return fmt.Errorf("failed to open stdin fifo %s: %w", path, err)
-	}
-	e.stdin = sc
-	e.closers = append(e.closers, sc)
 	return nil
 }
 

@@ -46,14 +46,14 @@ type streamCreator interface {
 	StartStream(ctx context.Context) (uint32, net.Conn, error)
 }
 
-func (s *service) forwardIO(ctx context.Context, ss streamCreator, sio stdio.Stdio, c *container) (stdio.Stdio, error) {
+func (s *service) forwardIO(ctx context.Context, ss streamCreator, sio stdio.Stdio) (stdio.Stdio, func(ctx context.Context) error, error) {
 	pio := sio
 	if pio.IsNull() {
-		return pio, nil
+		return pio, nil, nil
 	}
 	u, err := url.Parse(pio.Stdout)
 	if err != nil {
-		return stdio.Stdio{}, fmt.Errorf("unable to parse stdout uri: %w", err)
+		return stdio.Stdio{}, nil, fmt.Errorf("unable to parse stdout uri: %w", err)
 	}
 	if u.Scheme == "" {
 		u.Scheme = defaultScheme
@@ -62,37 +62,37 @@ func (s *service) forwardIO(ctx context.Context, ss streamCreator, sio stdio.Std
 	switch u.Scheme {
 	case "stream":
 		// Pass through
-		return pio, nil
+		return pio, nil, nil
 	case "fifo":
 		pio, streams, err = createStreams(ctx, ss, pio)
 		if err != nil {
-			return stdio.Stdio{}, err
+			return stdio.Stdio{}, nil, err
 		}
 
 		//pio.io, err = runc.NewPipeIO(ioUID, ioGID, withConditionalIO(stdio))
 	case "file":
 		filePath := u.Path
 		if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
-			return stdio.Stdio{}, err
+			return stdio.Stdio{}, nil, err
 		}
 		var f *os.File
 		f, err = os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
-			return stdio.Stdio{}, err
+			return stdio.Stdio{}, nil, err
 		}
 		f.Close()
 		pio.Stdout = filePath
 		pio.Stderr = filePath
 		pio, streams, err = createStreams(ctx, ss, pio)
 		if err != nil {
-			return stdio.Stdio{}, err
+			return stdio.Stdio{}, nil, err
 		}
 	default:
 		// TODO: Support "binary" and "pipe"
-		return stdio.Stdio{}, fmt.Errorf("unsupported STDIO scheme %s: %w", u.Scheme, errdefs.ErrNotImplemented)
+		return stdio.Stdio{}, nil, fmt.Errorf("unsupported STDIO scheme %s: %w", u.Scheme, errdefs.ErrNotImplemented)
 	}
 	if err != nil {
-		return stdio.Stdio{}, err
+		return stdio.Stdio{}, nil, err
 	}
 
 	defer func() {
@@ -106,9 +106,9 @@ func (s *service) forwardIO(ctx context.Context, ss streamCreator, sio stdio.Std
 	}()
 	ioDone := make(chan struct{})
 	if err = copyStreams(ctx, streams, sio.Stdin, sio.Stdout, sio.Stderr, ioDone); err != nil {
-		return stdio.Stdio{}, err
+		return stdio.Stdio{}, nil, err
 	}
-	c.ioShutdown = func(ctx context.Context) error {
+	return pio, func(ctx context.Context) error {
 		for i, c := range streams {
 			if c != nil && (i != 2 || c != streams[1]) {
 				c.Close()
@@ -120,9 +120,7 @@ func (s *service) forwardIO(ctx context.Context, ss streamCreator, sio stdio.Std
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-	}
-
-	return pio, nil
+	}, nil
 }
 
 func createStreams(ctx context.Context, ss streamCreator, io stdio.Stdio) (_ stdio.Stdio, conns [3]io.ReadWriteCloser, err error) {

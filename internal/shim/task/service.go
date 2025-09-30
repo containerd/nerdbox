@@ -77,6 +77,8 @@ func NewTaskService(ctx context.Context, vmm vm.Manager, publisher shim.Publishe
 
 type container struct {
 	ioShutdown func(context.Context) error
+
+	execShutdowns map[string]func(context.Context) error
 }
 
 // service is the shim implementation of a remote shim over GRPC
@@ -110,17 +112,22 @@ func (s *service) shutdown(ctx context.Context) error {
 	defer s.mu.Unlock()
 	var errs []error
 
-	if s.vm != nil {
-		if err := s.vm.Shutdown(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("vm shutdown: %w", err))
-		}
-	}
-
 	for id, c := range s.containers {
 		if c.ioShutdown != nil {
 			if err := c.ioShutdown(ctx); err != nil {
 				errs = append(errs, fmt.Errorf("container %q io shutdown: %w", id, err))
 			}
+		}
+		for execID, ioShutdown := range c.execShutdowns {
+			if err := ioShutdown(ctx); err != nil {
+				errs = append(errs, fmt.Errorf("container %q exec %q io shutdown: %w", id, execID, err))
+			}
+		}
+	}
+
+	if s.vm != nil {
+		if err := s.vm.Shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("vm shutdown: %w", err))
 		}
 	}
 
@@ -271,7 +278,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		for {
 			ev, err := sc.Recv()
 			if err != nil {
-				if errors.Is(err, io.EOF) {
+				if errors.Is(err, io.EOF) || errors.Is(err, shutdown.ErrShutdown) {
 					log.G(ctx).Info("vm event stream closed")
 				} else {
 					log.G(ctx).WithError(err).Error("vm event stream error")
@@ -298,8 +305,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		Terminal: r.Terminal,
 	}
 
-	var c container
-	cio, err := s.forwardIO(ctx, vmi, rio, &c)
+	cio, ioShutdown, err := s.forwardIO(ctx, vmi, rio)
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
@@ -321,6 +327,10 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	}
 
 	preCreate := time.Now()
+	c := &container{
+		ioShutdown:    ioShutdown,
+		execShutdowns: make(map[string]func(context.Context) error),
+	}
 	tc := taskAPI.NewTTRPCTaskClient(vmc)
 	resp, err := tc.Create(ctx, vr)
 	if err != nil {
@@ -341,7 +351,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	}).Info("task successfully created")
 
 	s.mu.Lock()
-	s.containers[r.ID] = &c
+	s.containers[r.ID] = c
 	s.mu.Unlock()
 
 	// TODO: Forward events rather than generate here?
@@ -382,13 +392,41 @@ func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.
 
 // Delete the initial process and container
 func (s *service) Delete(ctx context.Context, r *taskAPI.DeleteRequest) (*taskAPI.DeleteResponse, error) {
-	log.G(ctx).WithFields(log.Fields{"id": r.ID, "exec": r.ExecID}).Info("deleting container")
+	log.G(ctx).WithFields(log.Fields{"id": r.ID, "exec": r.ExecID}).Info("deleting task")
 	vmc, err := s.client()
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
 	tc := taskAPI.NewTTRPCTaskClient(vmc)
-	return tc.Delete(ctx, r)
+	resp, err := tc.Delete(ctx, r)
+	if err == nil {
+		s.mu.Lock()
+		if c, ok := s.containers[r.ID]; ok {
+			if r.ExecID != "" {
+				if ioShutdown, ok := c.execShutdowns[r.ExecID]; ok {
+					if err := ioShutdown(ctx); err != nil {
+						log.G(ctx).WithError(err).WithField("exec", r.ExecID).Error("failed to shutdown exec io after delete")
+					}
+					delete(c.execShutdowns, r.ExecID)
+				}
+			} else {
+				if c.ioShutdown != nil {
+					if err := c.ioShutdown(ctx); err != nil {
+						log.G(ctx).WithError(err).Error("failed to shutdown io after delete")
+					}
+				}
+				for execID, ioShutdown := range c.execShutdowns {
+					if err := ioShutdown(ctx); err != nil {
+						log.G(ctx).WithError(err).WithField("exec", execID).Error("failed to shutdown exec io after delete")
+					}
+				}
+				delete(s.containers, r.ID)
+			}
+		}
+		s.mu.Unlock()
+
+	}
+	return resp, err
 }
 
 // Exec an additional process inside the container
@@ -399,18 +437,56 @@ func (s *service) Exec(ctx context.Context, r *taskAPI.ExecProcessRequest) (*pty
 		return nil, errgrpc.ToGRPC(err)
 	}
 
-	vr := &taskAPI.ExecProcessRequest{
-		ID:     r.ID,
-		ExecID: r.ExecID,
-		// TODO: Enable support for terminal and stdio
-		//Terminal: r.Terminal,
-		//Stdin:    r.Stdin,
-		//Stdout:   r.Stdout,
-		//Stderr:   r.Stderr,
-		Spec: r.Spec,
+	rio := stdio.Stdio{
+		Stdin:    r.Stdin,
+		Stdout:   r.Stdout,
+		Stderr:   r.Stderr,
+		Terminal: r.Terminal,
 	}
-	tc := taskAPI.NewTTRPCTaskClient(vmc)
-	return tc.Exec(ctx, vr)
+
+	cio, ioShutdown, err := s.forwardIO(ctx, s.vm, rio)
+	if err != nil {
+		return nil, errgrpc.ToGRPC(err)
+	}
+
+	s.mu.Lock()
+	if c, ok := s.containers[r.ID]; ok {
+		c.execShutdowns[r.ExecID] = ioShutdown
+	} else {
+		if ioShutdown != nil {
+			if err := ioShutdown(ctx); err != nil {
+				log.G(ctx).WithError(err).Error("failed to shutdown exec io after container not found")
+			}
+		}
+		return nil, errgrpc.ToGRPCf(errdefs.ErrNotFound, "container %q not found", r.ID)
+	}
+	s.mu.Unlock()
+
+	vr := &taskAPI.ExecProcessRequest{
+		ID:       r.ID,
+		ExecID:   r.ExecID,
+		Terminal: cio.Terminal,
+		Stdin:    cio.Stdin,
+		Stdout:   cio.Stdout,
+		Stderr:   cio.Stderr,
+		Spec:     r.Spec,
+	}
+	resp, err := taskAPI.NewTTRPCTaskClient(vmc).Exec(ctx, vr)
+	if err != nil {
+		s.mu.Lock()
+		if c, ok := s.containers[r.ID]; ok {
+			if ioShutdown, ok := c.execShutdowns[r.ExecID]; ok {
+				if err := ioShutdown(ctx); err != nil {
+					log.G(ctx).WithError(err).Error("failed to shutdown exec io after exec failure")
+				}
+				delete(c.execShutdowns, r.ExecID)
+			}
+		}
+		s.mu.Unlock()
+		return nil, err
+	}
+
+	return resp, err
 }
 
 // ResizePty of a process

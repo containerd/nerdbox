@@ -24,6 +24,13 @@ import (
 	"github.com/containerd/ttrpc"
 )
 
+type NetworkMode int
+
+const (
+	NetworkModeUnixgram NetworkMode = iota
+	NetworkModeUnixstream
+)
+
 type Manager interface {
 	NewInstance(ctx context.Context, state string) (Instance, error)
 }
@@ -42,6 +49,7 @@ type MountOpt func(*MountConfig)
 type Instance interface {
 	AddFS(ctx context.Context, tag, mountPath string, opts ...MountOpt) error
 	AddDisk(ctx context.Context, blockID, mountPath string, opts ...MountOpt) error
+	AddNIC(ctx context.Context, endpoint string, mac net.HardwareAddr, mode NetworkMode, features, flags uint32) error
 	Start(ctx context.Context, opts ...StartOpt) error
 	Client() *ttrpc.Client
 	Shutdown(context.Context) error

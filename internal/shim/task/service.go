@@ -189,9 +189,12 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		return nil, errgrpc.ToGRPC(err)
 	}
 
+	var nwpr networksProvider
 	// Load the OCI bundle and apply transformers to get the bundle that'll be
 	// set up on the VM side.
-	b, err := bundle.Load(ctx, r.Bundle, transformBindMounts)
+	b, err := bundle.Load(ctx, r.Bundle,
+		transformBindMounts,
+		nwpr.FromBundle)
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
@@ -207,6 +210,10 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 
 	m, err := setupMounts(ctx, vmi, r.ID, r.Rootfs, b.Rootfs)
 	if err != nil {
+		return nil, errgrpc.ToGRPC(err)
+	}
+
+	if err := nwpr.SetupVM(ctx, vmi); err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
 

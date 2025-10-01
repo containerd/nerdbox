@@ -176,6 +176,17 @@ func (v *vmInstance) AddDisk(ctx context.Context, blockID, mountPath string, opt
 	return nil
 }
 
+func (v *vmInstance) AddNIC(ctx context.Context, endpoint string, mac net.HardwareAddr, mode vm.NetworkMode, features, flags uint32) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	if err := v.vmc.AddNIC(endpoint, mac, mode, features, flags); err != nil {
+		return fmt.Errorf("failed to add nic: %w", err)
+	}
+
+	return nil
+}
+
 func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()

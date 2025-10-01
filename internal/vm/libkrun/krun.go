@@ -260,7 +260,7 @@ type libkrun struct {
 	*/
 }
 
-func openLibkrun(path string) (*libkrun, uintptr, error) {
+func openLibkrun(path string) (_ *libkrun, _ uintptr, retErr error) {
 	f, err := purego.Dlopen(path, purego.RTLD_NOW|purego.RTLD_GLOBAL)
 	if err != nil {
 		return nil, 0, err
@@ -269,12 +269,12 @@ func openLibkrun(path string) (*libkrun, uintptr, error) {
 	defer func() {
 		if p := recover(); p != nil {
 			if e, ok := p.(error); ok {
-				err = e
+				retErr = e
 			} else {
-				err = fmt.Errorf("panic while loading libkrun: %v", p)
+				retErr = fmt.Errorf("panic while loading libkrun: %v", p)
 			}
 		}
-		if err != nil {
+		if retErr != nil {
 			purego.Dlclose(f)
 		}
 	}()

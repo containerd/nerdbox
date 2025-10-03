@@ -35,10 +35,17 @@ type Manager interface {
 	NewInstance(ctx context.Context, state string) (Instance, error)
 }
 
-type startOpts struct {
+type StartOpts struct {
+	InitArgs []string
 }
 
-type StartOpt func(*startOpts)
+type StartOpt func(*StartOpts)
+
+func WithInitArgs(args ...string) StartOpt {
+	return func(o *StartOpts) {
+		o.InitArgs = append(o.InitArgs, args...)
+	}
+}
 
 type MountConfig struct {
 	Readonly bool

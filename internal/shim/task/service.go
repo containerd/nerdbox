@@ -218,7 +218,9 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	}
 
 	prestart := time.Now()
-	if err := vmi.Start(ctx); err != nil {
+	if err := vmi.Start(ctx,
+		vm.WithInitArgs(nwpr.InitArgs()...),
+	); err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
 	bootTime := time.Since(prestart)

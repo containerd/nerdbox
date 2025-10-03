@@ -165,3 +165,18 @@ func (p *networksProvider) SetupVM(ctx context.Context, vmi vm.Instance) error {
 	}
 	return nil
 }
+
+// InitArgs returns the arguments for the init process to set up networking
+// within the VM.
+func (p *networksProvider) InitArgs() []string {
+	args := make([]string, 0, len(p.nws))
+	for _, nw := range p.nws {
+		if nw.addr4.IsValid() {
+			args = append(args, fmt.Sprintf("-network=mac=%s,addr=%s", nw.mac, nw.addr4))
+		}
+		if nw.addr6.IsValid() {
+			args = append(args, fmt.Sprintf("-network=mac=%s,addr=%s", nw.mac, nw.addr6))
+		}
+	}
+	return args
+}

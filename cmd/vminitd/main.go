@@ -42,6 +42,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/containerd/nerdbox/internal/systools"
+	"github.com/containerd/nerdbox/internal/vminit/vmnetworking"
 	"github.com/containerd/nerdbox/plugins"
 
 	_ "github.com/containerd/nerdbox/plugins/services/bundle"
@@ -62,7 +63,7 @@ func main() {
 	flag.IntVar(&config.RPCPort, "vsock-rpc-port", 1024, "vsock port to listen for rpc on")
 	flag.IntVar(&config.StreamPort, "vsock-stream-port", 1025, "vsock port to listen for streams on")
 	flag.IntVar(&config.VSockContextID, "vsock-cid", 0, "vsock context ID for vsock listen")
-
+	flag.Var(&config.Networks, "network", "network interfaces to set up")
 	args := os.Args[1:]
 	// Strip "tsi_hijack" added by libkrun
 	if len(args) > 0 && args[0] == "tsi_hijack" {
@@ -110,7 +111,7 @@ func main() {
 		}
 	}()
 
-	if err = systemInit(); err != nil {
+	if err = systemInit(ctx, config); err != nil {
 		return
 	}
 
@@ -166,12 +167,16 @@ func main() {
 
 }
 
-func systemInit() error {
+func systemInit(ctx context.Context, config ServiceConfig) error {
 	if err := systemMounts(); err != nil {
 		return err
 	}
 
-	return setupCgroupControl()
+	if err := setupCgroupControl(); err != nil {
+		return err
+	}
+
+	return vmnetworking.SetupVM(ctx, config.Networks)
 }
 
 func systemMounts() error {
@@ -236,6 +241,7 @@ type ServiceConfig struct {
 	VSockContextID int
 	RPCPort        int
 	StreamPort     int
+	Networks       networks
 	Shutdown       shutdown.Service
 }
 

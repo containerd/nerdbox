@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"sync"
 
 	"github.com/containerd/log"
 	"github.com/vishvananda/netlink"
@@ -17,19 +18,23 @@ import (
 type Network struct {
 	MAC  net.HardwareAddr
 	Addr netip.Prefix
+	DHCP bool
 }
 
 func (nw Network) Validate() error {
-	if nw.MAC == nil || !nw.Addr.IsValid() {
-		return errors.New("must specify mac and addr")
+	if nw.MAC == nil || (!nw.Addr.IsValid() && !nw.DHCP) {
+		return errors.New("must specify mac and either addr or dhcp")
+	}
+	if nw.Addr.IsValid() && nw.DHCP {
+		return errors.New("cannot specify both addr and dhcp")
 	}
 	return nil
 }
 
-func SetupVM(ctx context.Context, nws []Network, debug bool) error {
+func SetupVM(ctx context.Context, nws []Network, debug bool) (func(context.Context) error, func() error, error) {
 	ifaces, err := listVirtioIfaces()
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 
 	log.G(ctx).WithFields(log.Fields{
@@ -43,25 +48,30 @@ func SetupVM(ctx context.Context, nws []Network, debug bool) error {
 	nwsCopy := append([]Network{}, nws...)
 	uniqueMACs := len(slices.CompactFunc(nwsCopy, func(a, b Network) bool { return a.MAC.String() == b.MAC.String() }))
 	if len(ifaces) < uniqueMACs {
-		return fmt.Errorf("not enough virtio interfaces found (found %d, expected %d)", len(ifaces), uniqueMACs)
+		return nil, nil, fmt.Errorf("not enough virtio interfaces found (found %d, expected %d)", len(ifaces), uniqueMACs)
 	}
 
 	link, err := netlink.LinkByName("lo")
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	if err := netlink.LinkSetUp(link); err != nil {
 		log.G(ctx).WithFields(log.Fields{
 			"err":   err,
 			"iface": link.Attrs().Name,
 		}).Error("failed to bring up lo interface")
-		return err
+		return nil, nil, err
 	}
 	log.G(ctx).Debug("brought up lo interface")
 
 	eg, ctx := errgroup.WithContext(ctx)
+	var leases []*DHCPLease
+	// Initialize gws with a size to ensure that values are appended in the
+	// same order as nws.
+	gws := make([]netip.Addr, len(nws))
+	var mu sync.Mutex // protects leases and gws
 
-	for _, nw := range nws {
+	for i, nw := range nws {
 		iface, ok := ifaces[nw.MAC.String()]
 		if !ok {
 			log.G(ctx).WithField("mac", nw.MAC.String()).Error("virtio interface not found")
@@ -73,30 +83,74 @@ func SetupVM(ctx context.Context, nws []Network, debug bool) error {
 			"iface": iface.Attrs().Name,
 		}))
 
-		eg.Go(func() error {
-			ctx := log.WithLogger(ctx, log.G(ctx).WithField("addr", nw.Addr.String()))
-			return configureStatic(ctx, iface, nw)
-		})
+		if nw.DHCP {
+			eg.Go(func() error {
+				lease, err := configureDHCP(ctx, iface, nw, debug)
+				if err != nil {
+					return err
+				}
+
+				mu.Lock()
+				leases = append(leases, lease)
+				// If the DHCP lease contains a 'router' option, select the first
+				// value as a potential default gateway.
+				routers := lease.Routers()
+				if len(routers) > 0 {
+					gws[i] = routers[0]
+				}
+				mu.Unlock()
+
+				return nil
+			})
+		} else {
+			eg.Go(func() error {
+				ctx := log.WithLogger(ctx, log.G(ctx).WithField("addr", nw.Addr.String()))
+
+				// Consider that the 1st assignable IP address in the subnet is
+				// the gateway and select that as a potential default gateway.
+				gws[i] = nw.Addr.Masked().Addr().Next()
+
+				return configureStatic(ctx, iface, nw)
+			})
+		}
 	}
 
 	if err := eg.Wait(); err != nil {
-		return err
+		return nil, nil, err
 	}
 
-	if len(nws) > 0 {
+	// Find the first non-zero gateway address and use it to set up the default
+	// route.
+	firstGw := slices.IndexFunc(gws, func(gw netip.Addr) bool { return gw.IsValid() })
+	if firstGw != -1 {
 		if err := netlink.RouteAdd(&netlink.Route{
 			Scope: unix.RT_SCOPE_UNIVERSE,
-			// Consider that the 1st assignable IP address in the subnet is
-			// the gateway.
-			Gw: nws[0].Addr.Masked().Addr().Next().AsSlice(),
+			Gw:    gws[firstGw].AsSlice(),
 		}); err != nil {
-			return fmt.Errorf("failed to add default gateway route: %w", err)
+			return nil, nil, fmt.Errorf("failed to add default gateway route: %w", err)
 		}
 	}
 
 	// TODO(aker): write resolv.conf
 
-	return nil
+	renewer := func(ctx context.Context) error {
+		eg, ctx := errgroup.WithContext(ctx)
+		for _, lease := range leases {
+			eg.Go(func() error { return lease.RenewLoop(ctx) })
+		}
+		return eg.Wait()
+	}
+	releaser := func() error {
+		// Create a new context without cancellation to make sure DHCP leases
+		// are correctly released even if the parent context has been canceled.
+		eg, ctx := errgroup.WithContext(context.WithoutCancel(ctx))
+		for _, lease := range leases {
+			eg.Go(func() error { return lease.Release(ctx) })
+		}
+		return eg.Wait()
+	}
+
+	return renewer, releaser, nil
 }
 
 func listVirtioIfaces() (map[string]netlink.Link, error) {

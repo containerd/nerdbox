@@ -22,6 +22,7 @@ type network struct {
 	endpoint string           // endpoint is the path to the UNIX socket serving that network endpoint
 	mode     string           // mode is either "unixgram" or "unixstream"
 	mac      net.HardwareAddr // mac is the MAC address of the network interface
+	dhcp     bool             // dhcp is a boolean flag indicating whether the network interface should be configured through DHCP.
 	addr4    netip.Prefix     // addr4 is the IPv4 address + subnet mask of the network interface
 	addr6    netip.Prefix     // addr6 is the IPv6 address + subnet mask of the network interface
 	features uint32           // features is a bitmask of virtio-net features enabled on this network endpoint
@@ -36,6 +37,7 @@ const (
 	socketField   = "socket"
 	modeField     = "mode"
 	macField      = "mac"
+	dhcpField     = "dhcp"
 	addrField     = "addr"
 	featuresField = "features" // features is a bitwise-OR separated list of virtio-net features. See https://docs.oasis-open.org/virtio/virtio/v1.3/csd01/virtio-v1.3-csd01.html#x1-2370003
 	vfkitField    = "vfkit"    // vfkit is a boolean flag indicating whether libkrun must send the VFKIT magic sequence after connecting to the socket.
@@ -98,6 +100,12 @@ func parseNetwork(annotation string) (network, error) {
 			if (n.mac[0] & 0xfe) != n.mac[0] {
 				return network{}, errors.New("invalid MAC address: multicast bit is set")
 			}
+		case dhcpField:
+			dhcp, err := strconv.ParseBool(value)
+			if err != nil {
+				return network{}, fmt.Errorf("parsing DHCP field: %w", err)
+			}
+			n.dhcp = dhcp
 		case addrField:
 			addr, err := netip.ParsePrefix(value)
 			if err != nil {
@@ -130,8 +138,8 @@ func parseNetwork(annotation string) (network, error) {
 		}
 	}
 
-	if n.endpoint == "" || n.mode == "" || n.mac == nil || (!n.addr4.IsValid() && !n.addr6.IsValid()) {
-		return network{}, fmt.Errorf("either 'endpoint', 'mode', 'mac' or 'addr' is missing")
+	if n.endpoint == "" || n.mode == "" || n.mac == nil || (!n.dhcp && !n.addr4.IsValid() && !n.addr6.IsValid()) {
+		return network{}, fmt.Errorf("either 'endpoint', 'mode', 'mac', 'dhcp' or 'addr' is missing")
 	}
 
 	return n, nil
@@ -171,6 +179,9 @@ func (p *networksProvider) SetupVM(ctx context.Context, vmi vm.Instance) error {
 func (p *networksProvider) InitArgs() []string {
 	args := make([]string, 0, len(p.nws))
 	for _, nw := range p.nws {
+		if nw.dhcp {
+			args = append(args, fmt.Sprintf("-network=mac=%s,dhcp=true", nw.mac))
+		}
 		if nw.addr4.IsValid() {
 			args = append(args, fmt.Sprintf("-network=mac=%s,addr=%s", nw.mac, nw.addr4))
 		}

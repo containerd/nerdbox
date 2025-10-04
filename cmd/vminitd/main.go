@@ -110,15 +110,22 @@ func main() {
 		}
 	}()
 
-	if err = systemInit(ctx, config); err != nil {
+	ctx, config.Shutdown = shutdown.WithShutdown(ctx)
+	dhcpRenewer, err := systemInit(ctx, config)
+	if err != nil {
 		return
 	}
+
+	go func() {
+		if err := dhcpRenewer(ctx); err != nil {
+			log.G(ctx).WithError(err).Error("failed to renew DHCP leases")
+			config.Shutdown.Shutdown()
+		}
+	}()
 
 	if config.Debug {
 		systools.DumpInfo(ctx)
 	}
-
-	ctx, config.Shutdown = shutdown.WithShutdown(ctx)
 
 	service, err := New(ctx, config)
 	if err != nil {
@@ -166,16 +173,27 @@ func main() {
 
 }
 
-func systemInit(ctx context.Context, config ServiceConfig) error {
+// systemInit initializes the system and returns a function to renew DHCP
+// leases.
+func systemInit(ctx context.Context, config ServiceConfig) (func(context.Context) error, error) {
 	if err := systemMounts(); err != nil {
-		return err
+		return nil, err
 	}
 
 	if err := setupCgroupControl(); err != nil {
-		return err
+		return nil, err
 	}
 
-	return vmnetworking.SetupVM(ctx, config.Networks)
+	dhcpRenewer, dhcpReleaser, err := vmnetworking.SetupVM(ctx, config.Networks, config.Debug)
+	if err != nil {
+		return nil, err
+	}
+
+	config.Shutdown.RegisterCallback(func(ctx context.Context) error {
+		return dhcpReleaser()
+	})
+
+	return dhcpRenewer, nil
 }
 
 func systemMounts() error {

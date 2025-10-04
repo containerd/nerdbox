@@ -58,8 +58,8 @@ func main() {
 	var (
 		config ServiceConfig
 		dev    = flag.Bool("dev", false, "Development mode with graceful exit")
-		debug  = flag.Bool("debug", true, "Debug log level")
 	)
+	flag.BoolVar(&config.Debug, "debug", true, "Debug log level")
 	flag.IntVar(&config.RPCPort, "vsock-rpc-port", 1024, "vsock port to listen for rpc on")
 	flag.IntVar(&config.StreamPort, "vsock-stream-port", 1025, "vsock port to listen for streams on")
 	flag.IntVar(&config.VSockContextID, "vsock-cid", 0, "vsock context ID for vsock listen")
@@ -82,7 +82,7 @@ func main() {
 	*/
 	var err error
 
-	if *dev || *debug {
+	if *dev || config.Debug {
 		log.SetLevel("debug")
 	}
 
@@ -114,7 +114,7 @@ func main() {
 		return
 	}
 
-	if *debug {
+	if config.Debug {
 		systools.DumpInfo(ctx)
 	}
 
@@ -242,6 +242,7 @@ type ServiceConfig struct {
 	StreamPort     int
 	Networks       networks
 	Shutdown       shutdown.Service
+	Debug          bool
 }
 
 func New(ctx context.Context, config ServiceConfig) (Runnable, error) {

@@ -69,7 +69,6 @@ func main() {
 	if len(args) > 0 && args[0] == "tsi_hijack" {
 		args = args[1:]
 	}
-	flag.CommandLine.Parse(args)
 	flag.Parse()
 
 	/*

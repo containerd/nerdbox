@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/containerd/log"
+	"github.com/containerd/nerdbox/internal/sliceutil"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sys/unix"
@@ -121,17 +124,23 @@ func SetupVM(ctx context.Context, nws []Network, debug bool) (func(context.Conte
 
 	// Find the first non-zero gateway address and use it to set up the default
 	// route.
-	firstGw := slices.IndexFunc(gws, func(gw netip.Addr) bool { return gw.IsValid() })
-	if firstGw != -1 {
+	gws = sliceutil.Filter(gws, func(gw netip.Addr) bool { return gw.IsValid() })
+	if len(gws) > 0 {
 		if err := netlink.RouteAdd(&netlink.Route{
 			Scope: unix.RT_SCOPE_UNIVERSE,
-			Gw:    gws[firstGw].AsSlice(),
+			Gw:    gws[0].AsSlice(),
 		}); err != nil {
 			return nil, nil, fmt.Errorf("failed to add default gateway route: %w", err)
 		}
 	}
 
-	// TODO(aker): write resolv.conf
+	nameservers := sliceutil.Map(gws, func(gw netip.Addr) string { return fmt.Sprintf("nameserver %s", gw.String()) })
+	if err := os.WriteFile("/etc/resolv.conf", []byte(strings.Join(nameservers, "\n")), 0644); err != nil {
+		return nil, nil, fmt.Errorf("failed to write resolv.conf: %w", err)
+	}
+	if err := os.WriteFile("/etc/hosts", []byte("127.0.0.1\tlocalhost\n"), 0644); err != nil {
+		return nil, nil, fmt.Errorf("failed to write hosts: %w", err)
+	}
 
 	renewer := func(ctx context.Context) error {
 		eg, ctx := errgroup.WithContext(ctx)

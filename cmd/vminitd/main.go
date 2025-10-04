@@ -184,6 +184,10 @@ func systemInit(ctx context.Context, config ServiceConfig) (func(context.Context
 		return nil, err
 	}
 
+	if err := os.Mkdir("/etc", 0755); err != nil && !os.IsExist(err) {
+		return nil, fmt.Errorf("failed to create /etc: %w", err)
+	}
+
 	dhcpRenewer, dhcpReleaser, err := vmnetworking.SetupVM(ctx, config.Networks, config.Debug)
 	if err != nil {
 		return nil, err

@@ -176,6 +176,17 @@ func (v *vmInstance) AddDisk(ctx context.Context, blockID, mountPath string, opt
 	return nil
 }
 
+func (v *vmInstance) AddNIC(ctx context.Context, endpoint string, mac net.HardwareAddr, mode vm.NetworkMode, features, flags uint32) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	if err := v.vmc.AddNIC(endpoint, mac, mode, features, flags); err != nil {
+		return fmt.Errorf("failed to add nic: %w", err)
+	}
+
+	return nil
+}
+
 func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -190,20 +201,25 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 		return fmt.Errorf("failed to set kernel: %w", err)
 	}
 
-	args := []string{
-		"-debug",
-		"-vsock-rpc-port=1025",    // vsock rpc port number
-		"-vsock-stream-port=1026", // vsock stream port number
-		"-vsock-cid=3",            // vsock guest context id
-	}
-
 	env := []string{
 		"TERM=xterm",
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"LANG=C.UTF-8",
 	}
 
-	if err := v.vmc.SetExec("/sbin/vminitd", args, env); err != nil {
+	startOpts := vm.StartOpts{
+		InitArgs: []string{
+			"-debug",
+			"-vsock-rpc-port=1025",    // vsock rpc port number
+			"-vsock-stream-port=1026", // vsock stream port number
+			"-vsock-cid=3",            // vsock guest context id
+		},
+	}
+	for _, o := range opts {
+		o(&startOpts)
+	}
+
+	if err := v.vmc.SetExec("/sbin/vminitd", startOpts.InitArgs, env); err != nil {
 		return fmt.Errorf("failed to set exec: %w", err)
 	}
 

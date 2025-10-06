@@ -42,6 +42,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/containerd/nerdbox/internal/systools"
+	"github.com/containerd/nerdbox/internal/vminit/vmnetworking"
 	"github.com/containerd/nerdbox/plugins"
 
 	_ "github.com/containerd/nerdbox/plugins/services/bundle"
@@ -57,18 +58,17 @@ func main() {
 	var (
 		config ServiceConfig
 		dev    = flag.Bool("dev", false, "Development mode with graceful exit")
-		debug  = flag.Bool("debug", true, "Debug log level")
 	)
+	flag.BoolVar(&config.Debug, "debug", true, "Debug log level")
 	flag.IntVar(&config.RPCPort, "vsock-rpc-port", 1024, "vsock port to listen for rpc on")
 	flag.IntVar(&config.StreamPort, "vsock-stream-port", 1025, "vsock port to listen for streams on")
 	flag.IntVar(&config.VSockContextID, "vsock-cid", 0, "vsock context ID for vsock listen")
-
+	flag.Var(&config.Networks, "network", "network interfaces to set up")
 	args := os.Args[1:]
 	// Strip "tsi_hijack" added by libkrun
 	if len(args) > 0 && args[0] == "tsi_hijack" {
 		args = args[1:]
 	}
-	flag.CommandLine.Parse(args)
 	flag.Parse()
 
 	/*
@@ -82,7 +82,7 @@ func main() {
 	*/
 	var err error
 
-	if *dev || *debug {
+	if *dev || config.Debug {
 		log.SetLevel("debug")
 	}
 
@@ -110,15 +110,22 @@ func main() {
 		}
 	}()
 
-	if err = systemInit(); err != nil {
+	ctx, config.Shutdown = shutdown.WithShutdown(ctx)
+	dhcpRenewer, err := systemInit(ctx, config)
+	if err != nil {
 		return
 	}
 
-	if *debug {
+	go func() {
+		if err := dhcpRenewer(ctx); err != nil {
+			log.G(ctx).WithError(err).Error("failed to renew DHCP leases")
+			config.Shutdown.Shutdown()
+		}
+	}()
+
+	if config.Debug {
 		systools.DumpInfo(ctx)
 	}
-
-	ctx, config.Shutdown = shutdown.WithShutdown(ctx)
 
 	service, err := New(ctx, config)
 	if err != nil {
@@ -166,12 +173,31 @@ func main() {
 
 }
 
-func systemInit() error {
+// systemInit initializes the system and returns a function to renew DHCP
+// leases.
+func systemInit(ctx context.Context, config ServiceConfig) (func(context.Context) error, error) {
 	if err := systemMounts(); err != nil {
-		return err
+		return nil, err
 	}
 
-	return setupCgroupControl()
+	if err := setupCgroupControl(); err != nil {
+		return nil, err
+	}
+
+	if err := os.Mkdir("/etc", 0755); err != nil && !os.IsExist(err) {
+		return nil, fmt.Errorf("failed to create /etc: %w", err)
+	}
+
+	dhcpRenewer, dhcpReleaser, err := vmnetworking.SetupVM(ctx, config.Networks, config.Debug)
+	if err != nil {
+		return nil, err
+	}
+
+	config.Shutdown.RegisterCallback(func(ctx context.Context) error {
+		return dhcpReleaser()
+	})
+
+	return dhcpRenewer, nil
 }
 
 func systemMounts() error {
@@ -236,7 +262,9 @@ type ServiceConfig struct {
 	VSockContextID int
 	RPCPort        int
 	StreamPort     int
+	Networks       networks
 	Shutdown       shutdown.Service
+	Debug          bool
 }
 
 func New(ctx context.Context, config ServiceConfig) (Runnable, error) {

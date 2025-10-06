@@ -18,11 +18,13 @@ package libkrun
 
 import (
 	"fmt"
+	"net"
 	"reflect"
 	"runtime"
 	"strings"
 	"unsafe"
 
+	"github.com/containerd/nerdbox/internal/vm"
 	"github.com/ebitengine/purego"
 )
 
@@ -153,6 +155,29 @@ func (vm *vmcontext) AddDisk(blockID, path string, readonly bool) error {
 	return nil
 }
 
+func (vmc *vmcontext) AddNIC(endpoint string, mac net.HardwareAddr, mode vm.NetworkMode, features, flags uint32) error {
+	if vmc.lib.AddNetUnixgram == nil || vmc.lib.AddNetUnixstream == nil {
+		return fmt.Errorf("libkrun not loaded")
+	}
+
+	switch mode {
+	case vm.NetworkModeUnixgram:
+		ret := vmc.lib.AddNetUnixgram(vmc.ctxId, endpoint, -1, []uint8(mac), features, flags)
+		if ret != 0 {
+			return fmt.Errorf("krun_add_net_unixgram failed: %d", ret)
+		}
+	case vm.NetworkModeUnixstream:
+		ret := vmc.lib.AddNetUnixstream(vmc.ctxId, endpoint, -1, []uint8(mac), features, flags)
+		if ret != 0 {
+			return fmt.Errorf("krun_add_net_unixstream failed: %d", ret)
+		}
+	default:
+		return fmt.Errorf("invalid network mode: %d", mode)
+	}
+
+	return nil
+}
+
 func (vm *vmcontext) Start() error {
 	if vm.lib.StartEnter == nil {
 		return fmt.Errorf("libkrun not loaded")
@@ -217,6 +242,8 @@ type libkrun struct {
 	SetGvproxyPath     func(ctxId uint32, path string) int32                                                  `C:"krun_set_gvproxy_path"`
 	SetNetMac          func(ctxId uint32, mac []uint8) int32                                                  `C:"krun_set_net_mac"`
 	AddDisk            func(ctxId uint32, blockId, path string, readonly bool) int32                          `C:"krun_add_disk"`
+	AddNetUnixstream   func(ctxId uint32, path string, fd int, mac []uint8, features, flags uint32) int32     `C:"krun_add_net_unixstream"`
+	AddNetUnixgram     func(ctxId uint32, path string, fd int, mac []uint8, features, flags uint32) int32     `C:"krun_add_net_unixgram"`
 
 	/*
 		All functions (As of July 2025)
@@ -260,7 +287,7 @@ type libkrun struct {
 	*/
 }
 
-func openLibkrun(path string) (*libkrun, uintptr, error) {
+func openLibkrun(path string) (_ *libkrun, _ uintptr, retErr error) {
 	f, err := purego.Dlopen(path, purego.RTLD_NOW|purego.RTLD_GLOBAL)
 	if err != nil {
 		return nil, 0, err
@@ -269,12 +296,12 @@ func openLibkrun(path string) (*libkrun, uintptr, error) {
 	defer func() {
 		if p := recover(); p != nil {
 			if e, ok := p.(error); ok {
-				err = e
+				retErr = e
 			} else {
-				err = fmt.Errorf("panic while loading libkrun: %v", p)
+				retErr = fmt.Errorf("panic while loading libkrun: %v", p)
 			}
 		}
-		if err != nil {
+		if retErr != nil {
 			purego.Dlclose(f)
 		}
 	}()

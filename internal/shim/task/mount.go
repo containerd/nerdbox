@@ -70,7 +70,7 @@ func transformMounts(ctx context.Context, vmi vm.Instance, id string, ms []*type
 				Options: filterOptions(m.Options),
 			})
 			disks++
-		case "format/overlay":
+		case "overlay", "format/overlay", "format/mkdir/overlay":
 			var (
 				wdi int = -1
 				udi int = -1

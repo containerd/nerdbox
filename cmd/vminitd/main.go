@@ -69,7 +69,7 @@ func main() {
 	if len(args) > 0 && args[0] == "tsi_hijack" {
 		args = args[1:]
 	}
-	flag.Parse()
+	flag.CommandLine.Parse(args)
 
 	/*
 		c, err := os.OpenFile("/dev/console", os.O_WRONLY, 0644)

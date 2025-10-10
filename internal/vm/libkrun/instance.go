@@ -154,7 +154,7 @@ func (v *vmInstance) AddFS(ctx context.Context, tag, mountPath string, opts ...v
 	// TODO: Cannot be started?
 
 	if err := v.vmc.AddVirtiofs(tag, mountPath); err != nil {
-		return fmt.Errorf("failed to add virtiofs: %w", err)
+		return fmt.Errorf("failed to add virtiofs tag:%s mount:%s: %w", tag, mountPath, err)
 	}
 
 	return nil
@@ -170,7 +170,7 @@ func (v *vmInstance) AddDisk(ctx context.Context, blockID, mountPath string, opt
 	}
 
 	if err := v.vmc.AddDisk(blockID, mountPath, mc.Readonly); err != nil {
-		return fmt.Errorf("failed to add virtiofs: %w", err)
+		return fmt.Errorf("failed to add disk at '%s': %w", mountPath, err)
 	}
 
 	return nil

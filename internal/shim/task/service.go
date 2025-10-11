@@ -198,7 +198,12 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	b, err := bundle.Load(ctx, r.Bundle,
 		transformBindMounts,
 		nwpr.FromBundle,
-		ctrNetCfg.fromBundle)
+		ctrNetCfg.fromBundle,
+		func(ctx context.Context, b *bundle.Bundle) error {
+			// If there are no VM networks, try falling back to host's resolv.conf (for TSI).
+			return addResolvConf(ctx, b, len(nwpr.nws) == 0)
+		},
+	)
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}

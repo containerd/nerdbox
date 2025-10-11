@@ -1,12 +1,16 @@
 package task
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
+	"slices"
 	"strings"
 
+	"github.com/opencontainers/runtime-spec/specs-go"
 	"golang.org/x/sys/unix"
 
 	"github.com/containerd/nerdbox/internal/nwcfg"
@@ -18,6 +22,11 @@ import (
 type ctrNetConfig nwcfg.Config
 
 const (
+	// ctrDNSAnnotation is a CSV-encoded OCI annotation that describes the content
+	// of a container's /etc/resolv.conf. Each key=value field is added directly
+	// to the file (without the '='), separated by newlines.
+	ctrDNSAnnotation = "io.containerd.nerdbox.ctr.dns"
+
 	// ctrNetworkAnnotation is a CSV-encoded OCI annotation that specifies how
 	// networking is configured for a container.
 	ctrNetworkAnnotation = "io.containerd.nerdbox.ctr.network"
@@ -129,4 +138,55 @@ func parseCtrNetwork(annotation string) (nwcfg.Network, error) {
 	}
 
 	return n, nil
+}
+
+// addResolvConf adds a /etc/resolv.conf to the container, unless the
+// bundle already includes one.
+func addResolvConf(ctx context.Context, b *bundle.Bundle, fallbackToHostRC bool) error {
+	// If there's already a resolv.conf mount, don't do anything.
+	if slices.ContainsFunc(b.Spec.Mounts, func(m specs.Mount) bool {
+		return m.Destination == "/etc/resolv.conf"
+	}) {
+		return nil
+	}
+
+	var rcBytes []byte
+	if rcCSV, ok := b.Spec.Annotations[ctrDNSAnnotation]; ok {
+		// Generate a resolv.conf file based on the annotation.
+		// The VM gets the resolv.conf file, it doesn't need the annotation.
+		delete(b.Spec.Annotations, ctrDNSAnnotation)
+
+		rcBuf := bytes.Buffer{}
+		rcBuf.Grow(len(rcCSV) + 64) // Should be enough space.
+		for _, field := range strings.Split(rcCSV, ",") {
+			k, v, found := strings.Cut(field, "=")
+			_, _ = rcBuf.WriteString(k)
+			if found {
+				_, _ = rcBuf.WriteRune(' ')
+				_, _ = rcBuf.WriteString(v)
+			}
+			_, _ = rcBuf.WriteRune('\n')
+		}
+		rcBytes = rcBuf.Bytes()
+	} else if fallbackToHostRC {
+		// Try giving the VM a copy of the host's resolv.conf.
+		if c, err := os.ReadFile("/etc/resolv.conf"); err == nil {
+			rcBytes = c
+		}
+	}
+
+	// Default to the VM's /etc/resolv.conf when there's no explicit config.
+	source := "/etc/resolv.conf"
+	if len(rcBytes) > 0 {
+		b.AddExtraFile("resolv.conf", rcBytes)
+		source = "resolv.conf"
+	}
+
+	b.Spec.Mounts = append(b.Spec.Mounts, specs.Mount{
+		Destination: "/etc/resolv.conf",
+		Type:        "bind",
+		Source:      source,
+		Options:     []string{"rbind", "rprivate"},
+	})
+	return nil
 }

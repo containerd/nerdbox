@@ -224,6 +224,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		return nil, errgrpc.ToGRPC(err)
 	}
 	bootTime := time.Since(prestart)
+	log.G(ctx).WithField("bootTime", bootTime).Debug("VM started")
 
 	vmc, err := s.client()
 	if err != nil {

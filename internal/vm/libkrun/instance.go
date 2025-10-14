@@ -33,12 +33,15 @@ import (
 
 	"github.com/containerd/errdefs"
 	"github.com/containerd/fifo"
+	"github.com/containerd/log"
 	"github.com/containerd/ttrpc"
 	"github.com/ebitengine/purego"
 
 	"github.com/containerd/nerdbox/internal/ttrpcutil"
 	"github.com/containerd/nerdbox/internal/vm"
 )
+
+const vmStartTimeout = 5 * time.Second
 
 var setLogging sync.Once
 
@@ -280,6 +283,7 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 
 	var conn net.Conn
 	d := 2 * time.Millisecond
+	startedAt := time.Now()
 	for {
 		select {
 		case err := <-errC:
@@ -289,6 +293,10 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(time.Millisecond):
+		}
+		if time.Since(startedAt) > vmStartTimeout {
+			log.G(ctx).WithField("timeout", vmStartTimeout).Warn("Timeout while waiting for VM to start")
+			return fmt.Errorf("VM did not start within %s", vmStartTimeout)
 		}
 		if _, err := os.Stat(socketPath); err == nil {
 			conn, err = net.Dial("unix", socketPath)

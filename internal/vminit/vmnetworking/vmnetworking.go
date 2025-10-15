@@ -135,6 +135,7 @@ func SetupVM(ctx context.Context, nws []Network, debug bool) (func(context.Conte
 	}
 
 	nameservers := sliceutil.Map(gws, func(gw netip.Addr) string { return fmt.Sprintf("nameserver %s", gw.String()) })
+	nameservers = append(nameservers, "") // Trailing newline.
 	if err := os.WriteFile("/etc/resolv.conf", []byte(strings.Join(nameservers, "\n")), 0644); err != nil {
 		return nil, nil, fmt.Errorf("failed to write resolv.conf: %w", err)
 	}

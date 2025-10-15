@@ -18,6 +18,7 @@ package task
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -43,6 +44,7 @@ import (
 	bundleAPI "github.com/containerd/nerdbox/api/services/bundle/v1"
 	"github.com/containerd/nerdbox/api/services/vmevents/v1"
 	"github.com/containerd/nerdbox/internal/kvm"
+	"github.com/containerd/nerdbox/internal/nwcfg"
 	"github.com/containerd/nerdbox/internal/shim/task/bundle"
 	"github.com/containerd/nerdbox/internal/vm"
 )
@@ -190,14 +192,27 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	}
 
 	var nwpr networksProvider
+	var ctrNetCfg ctrNetConfig
 	// Load the OCI bundle and apply transformers to get the bundle that'll be
 	// set up on the VM side.
 	b, err := bundle.Load(ctx, r.Bundle,
 		transformBindMounts,
-		nwpr.FromBundle)
+		nwpr.FromBundle,
+		ctrNetCfg.fromBundle,
+		func(ctx context.Context, b *bundle.Bundle) error {
+			// If there are no VM networks, try falling back to host's resolv.conf (for TSI).
+			return addResolvConf(ctx, b, len(nwpr.nws) == 0)
+		},
+	)
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
+
+	nwJSON, err := json.Marshal(ctrNetCfg)
+	if err != nil {
+		return nil, errgrpc.ToGRPC(fmt.Errorf("marshaling container networking config: %w", err))
+	}
+	b.AddExtraFile(nwcfg.Filename, nwJSON)
 
 	vmState := filepath.Join(r.Bundle, "vm")
 	if err := os.Mkdir(vmState, 0700); err != nil {

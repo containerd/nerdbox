@@ -51,7 +51,9 @@ import (
 	"github.com/containerd/typeurl/v2"
 	"github.com/moby/sys/userns"
 
+	"github.com/containerd/nerdbox/internal/nwcfg"
 	"github.com/containerd/nerdbox/internal/systools"
+	"github.com/containerd/nerdbox/internal/vminit/ctrnetworking"
 	"github.com/containerd/nerdbox/internal/vminit/process"
 	"github.com/containerd/nerdbox/internal/vminit/runc"
 	"github.com/containerd/nerdbox/internal/vminit/stream"
@@ -235,12 +237,17 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	defer cleanup()
 
 	systools.DumpFile(ctx, filepath.Join(r.Bundle, "config.json"))
+	systools.DumpFile(ctx, filepath.Join(r.Bundle, nwcfg.Filename))
 
 	container, err := runc.NewContainer(ctx, s.platform, r, s.streams)
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
 	log.G(ctx).Infof("new container %s", container.ID)
+
+	if err := ctrnetworking.Connect(ctx, r.Bundle, container.Pid()); err != nil {
+		return nil, errgrpc.ToGRPC(err)
+	}
 
 	s.containers[r.ID] = container
 

@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/containerd/cgroups/v3"
 	"github.com/containerd/cgroups/v3/cgroup1"
@@ -81,6 +82,7 @@ func NewTaskService(ctx context.Context, bundle string, publisher events.Publish
 		ep:                   ep,
 		streams:              sm,
 		shutdown:             sd,
+		ctrNetConnectWaiters: make(map[string]func() error),
 		containers:           make(map[string]*runc.Container),
 		running:              make(map[int][]containerProcess),
 		runningExecs:         make(map[*runc.Container]int),
@@ -118,6 +120,10 @@ type service struct {
 	ep       oom.Watcher
 
 	streams stream.Manager
+
+	// ctrNetConnectWaiters holds functions to wait for, and collect errors from,
+	// container connect. If there's no entry, there's nothing to wait for.
+	ctrNetConnectWaiters map[string]func() error
 
 	containers map[string]*runc.Container
 
@@ -245,9 +251,11 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	}
 	log.G(ctx).Infof("new container %s", container.ID)
 
-	if err := ctrnetworking.Connect(ctx, r.Bundle, container.Pid()); err != nil {
+	waitForConnect, err := ctrnetworking.Connect(ctx, r.Bundle, container.Pid())
+	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
+	s.ctrNetConnectWaiters[r.ID] = waitForConnect
 
 	s.containers[r.ID] = container
 
@@ -283,6 +291,10 @@ func (s *service) RegisterTTRPC(server *ttrpc.Server) error {
 
 // Start a process
 func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.StartResponse, error) {
+	if err := s.waitForCtrNetConnect(ctx, r.ID); err != nil {
+		return nil, errgrpc.ToGRPC(err)
+	}
+
 	container, err := s.getContainer(r.ID)
 	if err != nil {
 		return nil, err
@@ -364,6 +376,14 @@ func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.
 
 // Delete the initial process and container
 func (s *service) Delete(ctx context.Context, r *taskAPI.DeleteRequest) (*taskAPI.DeleteResponse, error) {
+	// If the task wasn't started, network setup may not have completed yet.
+	// Clear the waiter function.
+	go func() {
+		if err := s.waitForCtrNetConnect(ctx, r.ID); err != nil {
+			log.G(ctx).WithError(err).Error("Networking error reported while deleting container")
+		}
+	}()
+
 	container, err := s.getContainer(r.ID)
 	if err != nil {
 		return nil, err
@@ -830,4 +850,22 @@ func (s *service) initPlatform() error {
 	s.platform = p
 	s.shutdown.RegisterCallback(func(context.Context) error { return s.platform.Close() })
 	return nil
+}
+
+func (s *service) waitForCtrNetConnect(ctx context.Context, id string) error {
+	s.mu.Lock()
+	wait, ok := s.ctrNetConnectWaiters[id]
+	delete(s.ctrNetConnectWaiters, id)
+	s.mu.Unlock()
+	if !ok {
+		return nil
+	}
+
+	ts := time.Now()
+	err := wait()
+	log.G(ctx).WithFields(log.Fields{
+		"error":     err,
+		"waitedFor": time.Since(ts),
+	}).Debug("Container network connects completed")
+	return err
 }

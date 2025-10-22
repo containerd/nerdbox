@@ -16,6 +16,7 @@ import (
 	"github.com/containerd/log"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/sys/unix"
 
 	"github.com/containerd/nerdbox/internal/nwcfg"
@@ -23,58 +24,65 @@ import (
 
 // Connect sets up networking for the container with the given pid, based on
 // the configuration found at configPath.
-func Connect(ctx context.Context, bundleDirname string, pid int) error {
+func Connect(ctx context.Context, bundleDirname string, pid int) (func() error, error) {
 	config, err := loadConfig(filepath.Join(bundleDirname, nwcfg.Filename))
 	if err != nil {
-		return err
+		return nil, err
+	}
+	if len(config.Networks) == 0 {
+		return nil, nil
 	}
 
-	nshCtr, err := netns.GetFromPid(pid)
-	if err != nil {
-		return fmt.Errorf("getting container netns: %w", err)
-	}
-	defer func() {
-		if err := nshCtr.Close(); err != nil {
-			log.G(ctx).WithError(err).Warn("Closing container netns")
-		}
-	}()
-	nlhCtr, err := netlink.NewHandleAt(nshCtr)
-	if err != nil {
-		return fmt.Errorf("creating netlink handle in container netns: %w", err)
-	}
-	defer nlhCtr.Close()
-
+	eg, ctx := errgroup.WithContext(ctx)
 	for _, n := range config.Networks {
-		nc, err := makeNet(n)
-		if err != nil {
-			return err
-		}
+		eg.Go(func() error {
+			nshCtr, err := netns.GetFromPid(pid)
+			if err != nil {
+				return fmt.Errorf("getting container netns: %w", err)
+			}
+			defer func() {
+				if err := nshCtr.Close(); err != nil {
+					log.G(ctx).WithError(err).Warn("Closing container netns")
+				}
+			}()
+			nlhCtr, err := netlink.NewHandleAt(nshCtr)
+			if err != nil {
+				return fmt.Errorf("creating netlink handle in container netns: %w", err)
+			}
+			defer nlhCtr.Close()
 
-		if nc.ctrVethName == "" {
-			nc.ctrVethName = "eth%d" // The kernel will pick a number.
-		}
-		ctrVeth, err := nc.addVeth(nlhCtr, nshCtr)
-		if err != nil {
-			return err
-		}
-		if err := nc.addAddrs(nlhCtr, ctrVeth); err != nil {
-			return err
-		}
-		if err := addDefaultGw(nlhCtr, ctrVeth, n.DefaultGw4); err != nil {
-			return err
-		}
-		if err := addDefaultGw(nlhCtr, ctrVeth, n.DefaultGw6); err != nil {
-			return err
-		}
+			nc, err := makeNet(n)
+			if err != nil {
+				return err
+			}
 
-		log.G(ctx).WithFields(log.Fields{
-			"task":     pid,
-			"bridge":   nc.bridgeName,
-			"hostVeth": nc.hostVethName,
-			"ctrVeth":  nc.ctrVethName,
-		}).Debug("Added veth")
+			if nc.ctrVethName == "" {
+				nc.ctrVethName = "eth%d" // The kernel will pick a number.
+			}
+			ctrVeth, err := nc.addVeth(nlhCtr, nshCtr)
+			if err != nil {
+				return err
+			}
+			if err := nc.addAddrs(nlhCtr, ctrVeth); err != nil {
+				return err
+			}
+			if err := addDefaultGw(nlhCtr, ctrVeth, n.DefaultGw4); err != nil {
+				return err
+			}
+			if err := addDefaultGw(nlhCtr, ctrVeth, n.DefaultGw6); err != nil {
+				return err
+			}
+
+			log.G(ctx).WithFields(log.Fields{
+				"task":     pid,
+				"bridge":   nc.bridgeName,
+				"hostVeth": nc.hostVethName,
+				"ctrVeth":  nc.ctrVethName,
+			}).Debug("Added veth")
+			return nil
+		})
 	}
-	return nil
+	return func() error { return eg.Wait() }, nil
 }
 
 func loadConfig(path string) (*nwcfg.Config, error) {
@@ -136,6 +144,9 @@ func addBridgeNetwork(vmMAC string, bridgeName string) error {
 		return fmt.Errorf("getting host link: %w", err)
 	}
 	if err := netlink.LinkAdd(&netlink.Bridge{LinkAttrs: netlink.LinkAttrs{Name: bridgeName}}); err != nil {
+		if errors.Is(err, unix.EEXIST) {
+			return nil
+		}
 		return fmt.Errorf("adding bridge %s: %w", bridgeName, err)
 	}
 	if err := netlink.LinkSetMaster(hostIf, &netlink.Bridge{LinkAttrs: netlink.LinkAttrs{Name: bridgeName}}); err != nil {

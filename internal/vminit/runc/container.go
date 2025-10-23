@@ -123,7 +123,6 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 			} else {
 				target = rootfs
 			}
-			// TODO: Use mount handlers
 			if t, ok := strings.CutPrefix(m.Type, "format/"); ok {
 				m.Type = t
 				for i, o := range m.Options {
@@ -151,18 +150,44 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 					m.Target = s
 				}
 			}
-			if m.Type == "mkdir" {
-				if !strings.HasPrefix(m.Source, mdir) {
-					return nil, fmt.Errorf("mkdir mount source %q must be under %q", m.Source, mdir)
+			if t, ok := strings.CutPrefix(m.Type, "mkdir/"); ok {
+				m.Type = t
+				var options []string
+				for _, o := range m.Options {
+					if strings.HasPrefix(o, "X-containerd.mkdir.") {
+						prefix := "X-containerd.mkdir.path="
+						if !strings.HasPrefix(o, prefix) {
+							return nil, fmt.Errorf("unknown mkdir mount option %q", o)
+						}
+						part := strings.SplitN(o[len(prefix):], ":", 4)
+						switch len(part) {
+						case 4:
+							// TODO: Support setting uid/gid
+							fallthrough
+						case 3:
+							fallthrough
+						case 2:
+							fallthrough
+						case 1:
+							dir := part[0]
+							if !strings.HasPrefix(dir, mdir) {
+								return nil, fmt.Errorf("mkdir mount source %q must be under %q", dir, mdir)
+							}
+							if err := os.MkdirAll(dir, 0755); err != nil {
+								return nil, err
+							}
+						default:
+							return nil, fmt.Errorf("invalid mkdir mount option %q", o)
+						}
+					} else {
+						options = append(options, o)
+					}
 				}
-				// TODO: Use containerd's mkdir handler
-				if err := os.MkdirAll(m.Source, 0755); err != nil {
-					return nil, err
-				}
-			} else {
-				if err := m.Mount(target); err != nil {
-					return nil, err
-				}
+				m.Options = options
+
+			}
+			if err := m.Mount(target); err != nil {
+				return nil, err
 			}
 			t := time.Now()
 			active = append(active, mount.ActiveMount{

@@ -857,7 +857,7 @@ func (s *service) waitForCtrNetConnect(ctx context.Context, id string) error {
 	wait, ok := s.ctrNetConnectWaiters[id]
 	delete(s.ctrNetConnectWaiters, id)
 	s.mu.Unlock()
-	if !ok {
+	if !ok || wait == nil {
 		return nil
 	}
 

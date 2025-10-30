@@ -1,4 +1,4 @@
-# Nerdbox (contaiNERD sandBOX)
+# nerdbox: containerd runtime shim with VM isolation
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="docs/images/nerdbox.svg">
@@ -6,9 +6,16 @@
   <img alt="logo" src="docs/images/nerdbox.svg">
 </picture>
 
-__(Experimental)__ Nerdbox is a containerd runtime which isolates container
-processes using a virtual machine. It is designed for running containers
-cross platform and with enhanced security.
+___(Experimental)___ nerdbox (contaiNERD sandBOX) is a containerd runtime shim which
+isolates container processes using a virtual machine. It is designed for running
+containers cross platform and with enhanced security.
+
+ - Works with containerd running on native host
+ - Runs Linux containers on Linux, macOS, and soon Windows
+ - EROFS support on all platforms
+ - Rootless by default
+ - Allows one VM per container for maximum isolation
+ - Multiple containers per VM for maximum efficiency ___coming soon___
 
 nerdbox is a _prospective_ **non-core** sub-project of containerd.
 

@@ -85,7 +85,7 @@ Install libkrun, erofs-utils, e2fsprogs on your host
 > 
 > ```
 > brew tap slp/krunkit
-> brew install libkrun-efi erofs-utils e2fsprogs`
+> brew install libkrun-efi erofs-utils e2fsprogs
 > ```
 
 Run containerd with the shim and nerdbox components in the PATH:

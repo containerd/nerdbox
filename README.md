@@ -1,5 +1,11 @@
 # Nerdbox (contaiNERD sandBOX)
 
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/images/nerdbox.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/nerdbox-white.svg">
+  <img alt="logo" src="docs/images/nerdbox.svg">
+</picture>
+
 __(Experimental)__ Nerdbox is a containerd runtime which isolates container
 processes using a virtual machine. It is designed for running containers
 cross platform and with enhanced security.

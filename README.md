@@ -31,7 +31,7 @@ $ make
 
 The results will be in the `_output` directory.
 
-> #### Mac OS Tip
+> #### macOS Tip
 > 
 > On mac, try running with these commands:
 > ```
@@ -42,8 +42,8 @@ The results will be in the `_output` directory.
 ### Configuring containerd
 
 For Linux, the default configuration should work. On Linux, a snapshot could be
-mounted on the host and passed to the VM via virtio-fs. For Mac OS, the erofs
-snapshotter is required. Currently, to run on Mac OS, this requires using a
+mounted on the host and passed to the VM via virtio-fs. For macOS, the erofs
+snapshotter is required. Currently, to run on macOS, this requires using a
 beta version of containerd 2.2. Use containerd v2.2.0-beta.2 or later:
 https://github.com/containerd/containerd/releases/tag/v2.2.0-beta.2
 
@@ -94,7 +94,7 @@ unpacking linux/arm64 images.
 
 Install libkrun, erofs-utils, e2fsprogs on your host
 
-> #### Mac OS Tip
+> #### macOS Tip
 >
 > Brew install libkrun, erofs-utils, and e2fsprogs
 > 
@@ -109,29 +109,29 @@ Run containerd with the shim and nerdbox components in the PATH:
 $ PATH=$(pwd)/_output:$PATH containerd
 ```
 
-> #### Mac OS Tip
+> #### macOS Tip
 >
 > When running containerd, mkfs.ext4 may not be added to path by homebrew
 >
 > `PATH=$(pwd)/_output:/opt/homebrew/opt/e2fsprogs/sbin:$PATH containerd -c ./config.toml`
 >
 
-Pull a container down, select the platform and erofs snapshotter for Mac OS:
+Pull a container down, select the platform and erofs snapshotter for macOS:
 
 ```bash
 $ ctr image pull --platform linux/arm64 --snapshotter erofs docker.io/library/alpine:latest
 ```
 
-Start a containerd with the nerdbox runtime (add snapshotter for Mac OS):
+Start a containerd with the nerdbox runtime (add snapshotter for macOS):
 
 ```bash
 $ ctr run -t --rm --snapshotter erofs --runtime io.containerd.nerdbox.v1 docker.io/library/alpine:latest test /bin/sh
 ```
 
-### Rootless on Mac OS
+### Rootless on macOS
 
-Root is not needed to run this on Mac OS, however, the configuration may need to
-be updated.
+Root is not needed to run this on macOS, however, the containerd configuration
+may need to be updated to run containerd as a non-root user.
 
 By default, ensure `/var/lib/containerd` and `/var/run/containerd` are owned by
 the user. Alternatively, the config can updated to reference any directories.

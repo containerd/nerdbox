@@ -150,3 +150,33 @@ Also ensure that the grpc socket is owned by the non root user.
   uid = 501
   gid = 20
 ```
+
+## How does this compare with other projects?
+
+### Runtimes in Linux virtual machines
+ - **lima** runs containerd in Linux VMs to provide the containerd API from
+   inside the VM to clients, such as nerdctl, running on the host.
+ - **Docker Desktop** runs dockerd in a Linux VM on macOS and Windows,
+   providing the docker API to docker CLIs running on the host.
+
+nerdbox is similar in that it uses a VM for isolation, but nerdbox is designed
+to be a containerd runtime shim with containerd running outside the VM directly
+on the host.
+
+### Low level container runtimes
+ - **Kata Containers** is a project that provides a containerd runtime with VM
+   isolation. It is a mature project with support for multiple hypervisors but
+   limited to running on Linux hosts.
+ - **gVisor** is a project that provides a containerd runtime with
+   enhanced security using a user-space kernel. The user-space kernel is very
+   lightweight but limits gVisor to only running on Linux hosts.
+ - **Apple Containerization** runs Linux containers in a lightweight VM on macOS
+   using Apple Virtualization framework. It is not supported as a containerd
+   runtime and requires using its own tooling to manage containers instead.
+
+nerdbox also uses a lightweight VM for maximum isolation, but nerdbox is
+designed to run on any platform supported by containerd, including both macOS
+and Linux. nerdbox also uses the latest features in containerd such as EROFS,
+mount manager, and the sandbox shim API. Since nerdbox is cross platform by
+design, it avoids both image filesystem operations and container process
+management on the host, allowing a seamless and efficient rootless mode.

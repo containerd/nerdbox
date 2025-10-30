@@ -33,7 +33,7 @@ The results will be in the `_output` directory.
 
 > #### macOS Tip
 > 
-> On mac, try running with these commands:
+> On macOS, use these commands:
 > ```
 > $ make KERNEL_ARCH=arm64 KERNEL_NPROC=12 KERNEL_VERSION=6.12.44
 > $ make _output/containerd-shim-nerdbox-v1 _output/nerdbox-initrd
@@ -57,7 +57,7 @@ $ containerd config default > config.toml
 
 #### Update erofs differ
 
-On mac, the mkfs.erofs tool might use a large block size which will get rejected
+On macOS, the mkfs.erofs tool may use a large block size which will get rejected
 by the kernel running inside the VM. Ensure mkfs.erofs uses a 4k block size
 by adding the mkfs option under the erofs differ.
 
@@ -74,7 +74,7 @@ unpacking linux/arm64 images.
 
 ```toml
   [plugins.'io.containerd.transfer.v1.local']
-    #... ommitted
+    # ... omitted
 
     [[plugins."io.containerd.transfer.v1.local".unpack_config]]
       platform = "linux/arm64"
@@ -96,7 +96,7 @@ Install libkrun, erofs-utils, e2fsprogs on your host
 
 > #### macOS Tip
 >
-> Brew install libkrun, erofs-utils, and e2fsprogs
+> Use brew to install libkrun, erofs-utils, and e2fsprogs
 > 
 > ```
 > brew tap slp/krunkit
@@ -122,7 +122,7 @@ Pull a container down, select the platform and erofs snapshotter for macOS:
 $ ctr image pull --platform linux/arm64 --snapshotter erofs docker.io/library/alpine:latest
 ```
 
-Start a containerd with the nerdbox runtime (add snapshotter for macOS):
+Start a container with the nerdbox runtime (add snapshotter for macOS):
 
 ```bash
 $ ctr run -t --rm --snapshotter erofs --runtime io.containerd.nerdbox.v1 docker.io/library/alpine:latest test /bin/sh
@@ -134,8 +134,8 @@ Root is not needed to run this on macOS, however, the containerd configuration
 may need to be updated to run containerd as a non-root user.
 
 By default, ensure `/var/lib/containerd` and `/var/run/containerd` are owned by
-the user. Alternatively, the config can updated to reference any directories.
-Update the containerd config toml file.
+the user. Alternatively, the config can be updated to reference directories
+writable by the user. Update the containerd config toml file.
 
 ```toml
 root = '/var/lib/containerd'

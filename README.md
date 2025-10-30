@@ -180,3 +180,10 @@ and Linux. nerdbox also uses the latest features in containerd such as EROFS,
 mount manager, and the sandbox shim API. Since nerdbox is cross platform by
 design, it avoids both image filesystem operations and container process
 management on the host, allowing a seamless and efficient rootless mode.
+
+## Acknowledgements
+
+- [**libkrun**](https://github.com/containers/libkrun) - A fast and efficient VMM written in Rust. Thanks to the entire Rust VMM ecosystem for making this possible.
+- [**EROFS**](https://erofs.docs.kernel.org/) - A modern and efficient read-only filesystem in the Linux kernel with a great set of tools for making it easy to use with container images.
+- [**containerd**](https://github.com/containerd/containerd) - Built an amazing ecosystem of container runtimes, interfaces, and tools to make it easy to integrate new innovations in container technology.
+- [**docker**](https://docker.com) - Original developers of containerd and nerdbox with continuous support of the open source container ecosystem.

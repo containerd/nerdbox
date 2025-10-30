@@ -4,6 +4,8 @@ __(Experimental)__ Nerdbox is a containerd runtime which isolates container
 processes using a virtual machine. It is designed for running containers
 cross platform and with enhanced security.
 
+nerdbox is a _prospective_ **non-core** sub-project of containerd.
+
 ## Getting Started
 
 Building requires Docker with buildx installed.

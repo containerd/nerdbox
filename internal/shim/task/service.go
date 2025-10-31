@@ -29,7 +29,6 @@ import (
 
 	taskAPI "github.com/containerd/containerd/api/runtime/task/v3"
 	"github.com/containerd/containerd/api/types"
-	"github.com/containerd/containerd/v2/cmd/containerd-shim-runc-v2/process"
 	"github.com/containerd/containerd/v2/core/runtime"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	ptypes "github.com/containerd/containerd/v2/pkg/protobuf/types"
@@ -59,7 +58,7 @@ func NewTaskService(ctx context.Context, vmm vm.Manager, publisher shim.Publishe
 	s := &service{
 		context:          ctx,
 		vmm:              vmm,
-		events:           make(chan interface{}, 128),
+		events:           make(chan any, 128),
 		containers:       make(map[string]*container),
 		initiateShutdown: sd.Shutdown,
 	}
@@ -94,9 +93,8 @@ type service struct {
 	// vm is the VM instance used to run the container
 	vm vm.Instance
 
-	context  context.Context
-	events   chan interface{}
-	platform stdio.Platform
+	context context.Context
+	events  chan any
 
 	containers map[string]*container
 
@@ -136,11 +134,6 @@ func (s *service) shutdown(ctx context.Context) error {
 	s.events <- nil
 
 	return errors.Join(errs...)
-}
-
-type containerProcess struct {
-	//Container *runc.Container
-	Process process.Process
 }
 
 // transformBindMounts transforms bind mounts
@@ -292,8 +285,8 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		return nil, errgrpc.ToGRPC(err)
 	}
 
-	// setupTime is the total time to setup the VM and everything neeeded
-	// to proxy the create task request. This measures the the overall
+	// setupTime is the total time to setup the VM and everything needed
+	// to proxy the create task request. This measures the overall
 	// overhead of creating the container inside the VM.
 	setupTime := time.Since(presetup)
 
@@ -640,47 +633,6 @@ func (s *service) Stats(ctx context.Context, r *taskAPI.StatsRequest) (*taskAPI.
 	return tc.Stats(ctx, r)
 }
 
-/*
-func (s *service) processExits() {
-	for e := range s.ec {
-		// While unlikely, it is not impossible for a container process to exit
-		// and have its PID be recycled for a new container process before we
-		// have a chance to process the first exit. As we have no way to tell
-		// for sure which of the processes the exit event corresponds to (until
-		// pidfd support is implemented) there is no way for us to handle the
-		// exit correctly in that case.
-
-		s.lifecycleMu.Lock()
-		// Inform any concurrent s.Start() calls so they can handle the exit
-		// if the PID belongs to them.
-		for subscriber := range s.exitSubscribers {
-			(*subscriber)[e.Pid] = append((*subscriber)[e.Pid], e)
-		}
-		// Handle the exit for a created/started process. If there's more than
-		// one, assume they've all exited. One of them will be the correct
-		// process.
-		var cps []containerProcess
-		for _, cp := range s.running[e.Pid] {
-			_, init := cp.Process.(*process.Init)
-			if init {
-				s.containerInitExit[cp.Container] = e
-			}
-			cps = append(cps, cp)
-		}
-		delete(s.running, e.Pid)
-		s.lifecycleMu.Unlock()
-
-		for _, cp := range cps {
-			if ip, ok := cp.Process.(*process.Init); ok {
-				s.handleInitExit(e, cp.Container, ip)
-			} else {
-				s.handleProcessExit(e, cp.Container, cp.Process)
-			}
-		}
-	}
-}
-*/
-
 func (s *service) send(evt interface{}) {
 	s.events <- evt
 }
@@ -710,119 +662,3 @@ func (s *service) forward(ctx context.Context, publisher shim.Publisher) {
 		log.G(ctx).WithField("event", e).Error("ignored event after shutdown")
 	}
 }
-
-/*
-// handleInitExit processes container init process exits.
-// This is handled separately from non-init exits, because there
-// are some extra invariants we want to ensure in this case, namely:
-// - for a given container, the init process exit MUST be the last exit published
-// This is achieved by:
-// - killing all running container processes (if the container has a shared pid
-// namespace, otherwise all other processes have been reaped already).
-// - waiting for the container's running exec counter to reach 0.
-// - finally, publishing the init exit.
-func (s *service) handleInitExit(e runcC.Exit, c *runc.Container, p *process.Init) {
-	// kill all running container processes
-	if runc.ShouldKillAllOnExit(s.context, c.Bundle) {
-		if err := p.KillAll(s.context); err != nil {
-			log.G(s.context).WithError(err).WithField("id", p.ID()).
-				Error("failed to kill init's children")
-		}
-	}
-
-	s.lifecycleMu.Lock()
-	numRunningExecs := s.runningExecs[c]
-	if numRunningExecs == 0 {
-		delete(s.runningExecs, c)
-		s.lifecycleMu.Unlock()
-		s.handleProcessExit(e, c, p)
-		return
-	}
-
-	events := make(chan int, numRunningExecs)
-	s.execCountSubscribers[c] = events
-
-	s.lifecycleMu.Unlock()
-
-	go func() {
-		defer func() {
-			s.lifecycleMu.Lock()
-			defer s.lifecycleMu.Unlock()
-			delete(s.execCountSubscribers, c)
-			delete(s.runningExecs, c)
-		}()
-
-		// wait for running processes to exit
-		for {
-			if runningExecs := <-events; runningExecs == 0 {
-				break
-			}
-		}
-
-		// all running processes have exited now, and no new
-		// ones can start, so we can publish the init exit
-		s.handleProcessExit(e, c, p)
-	}()
-}
-
-func (s *service) handleProcessExit(e runcC.Exit, c *runc.Container, p process.Process) {
-	p.SetExited(e.Status)
-	s.send(&eventstypes.TaskExit{
-		ContainerID: c.ID,
-		ID:          p.ID(),
-		Pid:         uint32(e.Pid),
-		ExitStatus:  uint32(e.Status),
-		ExitedAt:    protobuf.ToTimestamp(p.ExitedAt()),
-	})
-	if _, init := p.(*process.Init); !init {
-		s.lifecycleMu.Lock()
-		s.runningExecs[c]--
-		if ch, ok := s.execCountSubscribers[c]; ok {
-			ch <- s.runningExecs[c]
-		}
-		s.lifecycleMu.Unlock()
-	}
-}
-
-func (s *service) getContainerPids(ctx context.Context, container *runc.Container) ([]uint32, error) {
-	p, err := container.Process("")
-	if err != nil {
-		return nil, errgrpc.ToGRPC(err)
-	}
-	ps, err := p.(*process.Init).Runtime().Ps(ctx, container.ID)
-	if err != nil {
-		return nil, err
-	}
-	pids := make([]uint32, 0, len(ps))
-	for _, pid := range ps {
-		pids = append(pids, uint32(pid))
-	}
-	return pids, nil
-}
-
-
-func (s *service) getContainer(id string) (*runc.Container, error) {
-	s.mu.Lock()
-	container := s.containers[id]
-	s.mu.Unlock()
-	if container == nil {
-		return nil, errgrpc.ToGRPCf(errdefs.ErrNotFound, "container not created")
-	}
-	return container, nil
-}
-
-// initialize a single epoll fd to manage our consoles. `initPlatform` should
-// only be called once.
-func (s *service) initPlatform() error {
-	if s.platform != nil {
-		return nil
-	}
-	p, err := runc.NewPlatform()
-	if err != nil {
-		return err
-	}
-	s.platform = p
-	s.shutdown.RegisterCallback(func(context.Context) error { return s.platform.Close() })
-	return nil
-}
-*/

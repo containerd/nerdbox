@@ -72,8 +72,8 @@ func transformMounts(ctx context.Context, vmi vm.Instance, id string, ms []*type
 			disks++
 		case "overlay", "format/overlay", "format/mkdir/overlay":
 			var (
-				wdi int = -1
-				udi int = -1
+				wdi = -1
+				udi = -1
 			)
 			for i, opt := range m.Options {
 				if strings.Contains(opt, "{{") {

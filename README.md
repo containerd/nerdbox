@@ -32,7 +32,7 @@ $ make
 The results will be in the `_output` directory.
 
 > #### macOS Tip
-> 
+>
 > On macOS, use these commands:
 > ```
 > $ make KERNEL_ARCH=arm64 KERNEL_NPROC=12 KERNEL_VERSION=6.12.44
@@ -117,7 +117,7 @@ Install libkrun, erofs-utils, e2fsprogs on your host
 > #### macOS Tip
 >
 > Use brew to install libkrun, erofs-utils, and e2fsprogs
-> 
+>
 > ```
 > brew tap slp/krunkit
 > brew install libkrun-efi erofs-utils e2fsprogs

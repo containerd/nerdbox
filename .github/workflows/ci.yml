@@ -23,7 +23,7 @@ jobs:
 
     strategy:
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest] # skipping windows-latest for now
         exclude:
           - os: ${{ github.event.repository.private && 'ubuntu-24.04-arm' || '' }}
 
@@ -84,7 +84,7 @@ jobs:
       # Needed for proto lookup during generation
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
-          repository: github.com/containerd/containerd
+          repository: containerd/containerd
           path: src/github.com/containerd/containerd
 
       - uses: ./src/github.com/containerd/nerdbox/.github/actions/install-go

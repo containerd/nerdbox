@@ -359,9 +359,3 @@ func New(ctx context.Context, config ServiceConfig) (Runnable, error) {
 func (s *service) Run(ctx context.Context) error {
 	return s.server.Serve(ctx, s.l)
 }
-
-func newTTRPCServer() (*ttrpc.Server, error) {
-	return ttrpc.NewServer(
-		ttrpc.WithUnaryServerInterceptor(otelttrpc.UnaryServerInterceptor()),
-	)
-}

@@ -201,11 +201,11 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 			if retErr != nil {
 				for i := len(active) - 1; i >= 0; i-- {
 					// TODO: delegate custom types to handlers
-					if active[i].Mount.Type == "mkdir" {
+					if active[i].Type == "mkdir" {
 						continue
 					}
 					if err := mount.UnmountAll(active[i].MountPoint, 0); err != nil {
-						log.G(ctx).WithError(err).WithField("mountpoint", active[i].MountPoint).Warn("failed to cleanup mount mount")
+						log.G(ctx).WithError(err).WithField("mountpoint", active[i].MountPoint).Warn("failed to cleanup mount")
 					}
 				}
 			}

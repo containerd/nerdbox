@@ -1,24 +1,6 @@
 file {
-  name: "google/protobuf/empty.proto"
-  package: "google.protobuf"
-  message_type {
-    name: "Empty"
-  }
-  options {
-    java_package: "com.google.protobuf"
-    java_outer_classname: "EmptyProto"
-    java_multiple_files: true
-    go_package: "google.golang.org/protobuf/types/known/emptypb"
-    cc_enable_arenas: true
-    objc_class_prefix: "GPB"
-    csharp_namespace: "Google.Protobuf.WellKnownTypes"
-  }
-  syntax: "proto3"
-}
-file {
   name: "github.com/containerd/nerdbox/api/services/bundle/v1/bundle.proto"
   package: "containerd.vminitd.services.bundle.v1"
-  dependency: "google/protobuf/empty.proto"
   message_type {
     name: "CreateRequest"
     field {
@@ -77,6 +59,23 @@ file {
   }
   options {
     go_package: "github.com/containerd/nerdbox/api/services/bundle/v1;bundle"
+  }
+  syntax: "proto3"
+}
+file {
+  name: "google/protobuf/empty.proto"
+  package: "google.protobuf"
+  message_type {
+    name: "Empty"
+  }
+  options {
+    java_package: "com.google.protobuf"
+    java_outer_classname: "EmptyProto"
+    java_multiple_files: true
+    go_package: "google.golang.org/protobuf/types/known/emptypb"
+    cc_enable_arenas: true
+    objc_class_prefix: "GPB"
+    csharp_namespace: "Google.Protobuf.WellKnownTypes"
   }
   syntax: "proto3"
 }

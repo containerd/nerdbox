@@ -59,7 +59,7 @@ func init() {
 				return nil, err
 			}
 			config := ic.Config.(*serviceConfig)
-			l, err := vsock.ListenContextID(uint32(config.ContextID), uint32(config.Port), &vsock.Config{})
+			l, err := vsock.ListenContextID(config.ContextID, config.Port, &vsock.Config{})
 			if err != nil {
 				return nil, fmt.Errorf("failed to listen on vsock port %d with context id %d: %w", config.Port, config.ContextID, err)
 			}

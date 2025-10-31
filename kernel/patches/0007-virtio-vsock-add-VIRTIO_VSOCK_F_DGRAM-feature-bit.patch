@@ -16,13 +16,13 @@ index 64738838bee5..9c25f267bbc0 100644
 --- a/include/uapi/linux/virtio_vsock.h
 +++ b/include/uapi/linux/virtio_vsock.h
 @@ -40,6 +40,7 @@
- 
+
  /* The feature bitmap for virtio vsock */
  #define VIRTIO_VSOCK_F_SEQPACKET	1	/* SOCK_SEQPACKET supported */
 +#define VIRTIO_VSOCK_F_DGRAM		3	/* SOCK_DGRAM supported */
- 
+
  struct virtio_vsock_config {
  	__le64 guest_cid;
--- 
+--
 2.50.0
 

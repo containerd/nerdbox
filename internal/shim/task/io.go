@@ -34,14 +34,6 @@ import (
 	"github.com/containerd/log"
 )
 
-type processIO struct {
-	//io runc.IO
-
-	uri   *url.URL
-	copy  bool
-	stdio stdio.Stdio
-}
-
 type streamCreator interface {
 	StartStream(ctx context.Context) (uint32, net.Conn, error)
 }

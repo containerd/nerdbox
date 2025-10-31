@@ -1,3 +1,5 @@
+//go:build linux
+
 package vmnetworking
 
 import (
@@ -12,10 +14,11 @@ import (
 	"sync"
 
 	"github.com/containerd/log"
-	"github.com/containerd/nerdbox/internal/sliceutil"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sys/unix"
+
+	"github.com/containerd/nerdbox/internal/sliceutil"
 )
 
 type Network struct {

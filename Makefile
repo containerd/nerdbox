@@ -2,7 +2,7 @@ GO ?= go
 DOCKER ?= docker
 BUILDX ?= $(DOCKER) buildx
 
-ROOTDIR=$(dir $(abspath $(lastword $(MAKEFILE_LIST))))
+ROOTDIR=$(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 
 WHALE = "🇩"
 ONI = "👹"
@@ -100,7 +100,7 @@ check-api-descriptors: protos ## check that protobuf changes aren't present.
 
 proto-fmt: ## check format of proto files
 	@echo "$(WHALE) $@"
-	@test -z "$$(find . -path ./vendor -prune -o -path ./protobuf/google/rpc -prune -o -name '*.proto' -type f -exec grep -Hn -e "^ " {} \; | tee /dev/stderr)" || \
+	@test -z "$$(find . -name '*.proto' -type f -exec grep -Hn -e "^ " {} \; | tee /dev/stderr)" || \
 		(echo "$(ONI) please indent proto files with tabs only" && false)
 
 menuconfig:
@@ -136,3 +136,12 @@ shell:
 		-e KERNEL_NPROC \
 		$(DOCKER_EXTRA_ARGS) \
 		nerdbox-dev
+
+verify-vendor: ## verify if all the go.mod/go.sum files are up-to-date
+	@echo "$(WHALE) $@"
+	$(eval TMPDIR := $(shell mktemp -d))
+	@cp -R ${ROOTDIR} ${TMPDIR}
+	@(cd ${TMPDIR}/nerdbox && ${GO} mod tidy)
+	@(cd ${TMPDIR}/nerdbox && ${GO} mod verify)
+	diff -r -u ${ROOTDIR} ${TMPDIR}/nerdbox
+	@rm -rf ${TMPDIR}

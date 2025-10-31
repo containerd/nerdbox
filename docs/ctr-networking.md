@@ -8,7 +8,7 @@ Containers can be connected to networks the VM that have been defined via the
 Each `io.containerd.nerdbox.ctr.network` annotation describes a single network
 connection.
 
-- `vmmac` (required): MAC address of the VM's interface, identifies the network. 
+- `vmmac` (required): MAC address of the VM's interface, identifies the network.
 - `mac` (optional): A MAC address to assign to the container's network interface.
 - `addr` (optional, can be repeated): IP address with subnet mask (CIDR notation)
   for the container's interface.

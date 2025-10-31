@@ -1,0 +1,94 @@
+version: "2"
+linters:
+  enable:
+    - copyloopvar # Checks for loop variable copies in Go 1.22+
+    - depguard # Checks for dependencies that should not be (re)introduced. See "settings" for further details.
+    - dupword # Checks for duplicate words in the source code
+    - gosec
+    - misspell
+    - nolintlint
+    - revive
+    - unconvert
+    - usetesting
+  disable:
+    - errcheck
+  settings:
+    depguard:
+      rules:
+        main:
+          deny:
+            - pkg: github.com/opencontainers/runc
+              desc: We don't want to depend on runc (libcontainer), unless there is no other option; see https://github.com/opencontainers/runc/issues/3028.
+    gosec:
+      # The following issues surfaced when `gosec` linter
+      # was enabled. They are temporarily excluded to unblock
+      # the existing workflow, but still to be addressed by
+      # future works.
+      excludes:
+        - G204
+        - G305
+        - G306
+        - G402
+        - G404
+        - G115
+        - G103
+        - G104
+        - G301
+        - G302
+        - G304
+    staticcheck:
+      checks:
+        - all
+        - -QF1008 # Excludes QF1008 from staticcheck
+        - -ST1000
+        - -ST1003
+        - -ST1020
+        - -ST1021
+    revive:
+      rules:
+        - name: package-comments
+          severity: warning
+          disabled: true
+          exclude: [ "" ]
+    nolintlint:
+      allow-unused: true
+  exclusions:
+    generated: lax
+    rules:
+      - linters:
+          - revive
+        text: if-return
+      - linters:
+          - revive
+        text: empty-block
+      - linters:
+          - revive
+        text: superfluous-else
+      - linters:
+          - revive
+        text: unused-parameter
+      - linters:
+          - revive
+        text: unreachable-code
+      - linters:
+          - revive
+        text: redefines-builtin-id
+    paths:
+      - api
+      - docs
+      - releases
+      - test
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: strict
+    paths:
+      - api
+      - docs
+      - releases
+      - test

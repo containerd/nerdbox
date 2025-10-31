@@ -18,8 +18,6 @@ syntax = "proto3";
 
 package containerd.vminitd.services.bundle.v1;
 
-import "google/protobuf/empty.proto";
-
 option go_package = "github.com/containerd/nerdbox/api/services/bundle/v1;bundle";
 
 service Bundle {

@@ -20,7 +20,7 @@ index 784139c2717d..e6222a505390 100644
 @@ -432,6 +432,22 @@ static void vsock_deassign_transport(struct vsock_sock *vsk)
  	vsk->transport = NULL;
  }
- 
+
 +static const struct vsock_transport *
 +vsock_connectible_lookup_transport(unsigned int cid, __u8 flags)
 +{
@@ -56,6 +56,6 @@ index 784139c2717d..e6222a505390 100644
  		break;
  	default:
  		ret = -ESOCKTNOSUPPORT;
--- 
+--
 2.50.0
 

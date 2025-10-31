@@ -47,10 +47,10 @@ index c3322eb3d686..77b7e8246102 100644
  				 * transport protocol
  				 */
 +#define AF_TSI		46	/* TSI sockets			*/
- 
+
 -#define AF_MAX		46	/* For now.. */
 +#define AF_MAX		47	/* For now.. */
- 
+
  /* Protocol families, same as address families. */
  #define PF_UNSPEC	AF_UNSPEC
 @@ -292,6 +293,7 @@ struct ucred {
@@ -59,7 +59,7 @@ index c3322eb3d686..77b7e8246102 100644
  #define PF_MCTP		AF_MCTP
 +#define PF_TSI		AF_TSI
  #define PF_MAX		AF_MAX
- 
+
  /* Maximum queue length specifiable by listen.  */
 diff --git a/net/Kconfig b/net/Kconfig
 index a629f92dc86b..91dfb9152b5b 100644
@@ -70,7 +70,7 @@ index a629f92dc86b..91dfb9152b5b 100644
  source "net/qrtr/Kconfig"
  source "net/ncsi/Kconfig"
 +source "net/tsi/Kconfig"
- 
+
  config PCPU_DEV_REFCNT
  	bool "Use percpu variables to maintain network device refcount"
 diff --git a/net/Makefile b/net/Makefile
@@ -92,7 +92,7 @@ index 042451f01c65..5ad75d15e1ad 100644
  	[PF_MCTP]	= "PF_MCTP",
 +	[PF_TSI]	= "PF_TSI",
  };
- 
+
  /*
 diff --git a/net/tsi/Kconfig b/net/tsi/Kconfig
 new file mode 100644
@@ -1539,11 +1539,11 @@ index 7229c9bf6c27..065d9b85693f 100644
 @@ -181,6 +182,6 @@ const struct security_class_mapping secclass_map[] = {
  	{ NULL }
  };
- 
+
 -#if PF_MAX > 46
 +#if PF_MAX > 47
  #error New address family defined, please update secclass_map.
  #endif
--- 
+--
 2.50.0
 

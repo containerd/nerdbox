@@ -20,7 +20,7 @@ index 5ad75d15e1ad..bf8818423454 100644
 @@ -115,6 +115,10 @@ unsigned int sysctl_net_busy_read __read_mostly;
  unsigned int sysctl_net_busy_poll __read_mostly;
  #endif
- 
+
 +#ifdef CONFIG_TSI
 +bool tsi_hijack = false;
 +#endif
@@ -31,7 +31,7 @@ index 5ad75d15e1ad..bf8818423454 100644
 @@ -1488,6 +1492,10 @@ int sock_wake_async(struct socket_wq *wq, int how, int band)
  }
  EXPORT_SYMBOL(sock_wake_async);
- 
+
 +#ifdef CONFIG_TSI
 +core_param(tsi_hijack, tsi_hijack, bool, 0644);
 +#endif
@@ -42,7 +42,7 @@ index 5ad75d15e1ad..bf8818423454 100644
 @@ -1558,6 +1566,15 @@ int __sock_create(struct net *net, int family, int type, int protocol,
  		request_module("net-pf-%d", family);
  #endif
- 
+
 +#ifdef CONFIG_TSI
 +	if (tsi_hijack && !kern && family == AF_INET &&
 +	    (type == SOCK_STREAM || type == SOCK_DGRAM)) {
@@ -67,7 +67,7 @@ index f43a17cff3a3..ef1552862253 100644
 +	struct socket *nsock = NULL;
  	struct sock *sk;
  	int err;
- 
--- 
+
+--
 2.50.0
 

@@ -62,7 +62,7 @@ index d49a46b421ae..4659a74078bd 100644
 +++ b/drivers/vhost/vsock.c
 @@ -421,7 +421,6 @@ static struct virtio_transport vhost_transport = {
  		.cancel_pkt               = vhost_transport_cancel_pkt,
- 
+
  		.dgram_enqueue            = virtio_transport_dgram_enqueue,
 -		.dgram_bind               = virtio_transport_dgram_bind,
  		.dgram_allow              = virtio_transport_dgram_allow,
@@ -88,7 +88,7 @@ index e6222a505390..9d853e1c1824 100644
 @@ -448,6 +448,18 @@ vsock_connectible_lookup_transport(unsigned int cid, __u8 flags)
  	return transport;
  }
- 
+
 +static const struct vsock_transport *
 +vsock_dgram_lookup_transport(unsigned int cid, __u8 flags)
 +{
@@ -105,7 +105,7 @@ index e6222a505390..9d853e1c1824 100644
   *
   * Note: for connection oriented socket this must be called when vsk->remote_addr
 @@ -486,7 +498,8 @@ int vsock_assign_transport(struct vsock_sock *vsk, struct vsock_sock *psk)
- 
+
  	switch (sk->sk_type) {
  	case SOCK_DGRAM:
 -		new_transport = transport_dgram;
@@ -123,11 +123,11 @@ index e6222a505390..9d853e1c1824 100644
 +
  	return vsk->transport->dgram_bind(vsk, addr);
  }
- 
+
 @@ -1260,19 +1276,24 @@ static int vsock_dgram_sendmsg(struct socket *sock, struct msghdr *msg,
- 
+
  	lock_sock(sk);
- 
+
 -	transport = vsk->transport;
 -
 -	err = vsock_auto_bind(vsk);
@@ -158,7 +158,7 @@ index e6222a505390..9d853e1c1824 100644
  		 */
 @@ -1281,11 +1302,27 @@ static int vsock_dgram_sendmsg(struct socket *sock, struct msghdr *msg,
  			remote_addr->svm_cid = transport->get_local_cid();
- 
+
  		if (!vsock_addr_bound(remote_addr)) {
 +			module_put(transport->module);
 +			err = -EINVAL;
@@ -181,7 +181,7 @@ index e6222a505390..9d853e1c1824 100644
 +		err = vsock_auto_bind(vsk);
 +		if (err)
 +			goto out;
- 
+
  		if (remote_addr->svm_cid == VMADDR_CID_ANY)
  			remote_addr->svm_cid = transport->get_local_cid();
 @@ -1293,23 +1330,23 @@ static int vsock_dgram_sendmsg(struct socket *sock, struct msghdr *msg,
@@ -197,7 +197,7 @@ index e6222a505390..9d853e1c1824 100644
 -		err = -EINVAL;
 -		goto out;
 -	}
- 
+
 -	if (!transport->dgram_allow(remote_addr->svm_cid,
 -				    remote_addr->svm_port)) {
 +		if (!transport->dgram_allow(remote_addr->svm_cid,
@@ -211,7 +211,7 @@ index e6222a505390..9d853e1c1824 100644
  		err = -EINVAL;
  		goto out;
  	}
- 
+
 -	err = transport->dgram_enqueue(vsk, remote_addr, msg, len);
 -
  out:
@@ -220,7 +220,7 @@ index e6222a505390..9d853e1c1824 100644
 @@ -1343,13 +1380,18 @@ static int vsock_dgram_connect(struct socket *sock,
  	if (err)
  		goto out;
- 
+
 +	memcpy(&vsk->remote_addr, remote_addr, sizeof(vsk->remote_addr));
 +
 +	err = vsock_assign_transport(vsk, NULL);
@@ -232,10 +232,10 @@ index e6222a505390..9d853e1c1824 100644
  		err = -EINVAL;
  		goto out;
  	}
- 
+
 -	memcpy(&vsk->remote_addr, remote_addr, sizeof(vsk->remote_addr));
  	sock->state = SS_CONNECTED;
- 
+
  	/* sock map disallows redirection of non-TCP sockets with sk_state !=
 diff --git a/net/vmw_vsock/hyperv_transport.c b/net/vmw_vsock/hyperv_transport.c
 index cc0a6c3401d3..4c6d705cc9e6 100644
@@ -244,7 +244,7 @@ index cc0a6c3401d3..4c6d705cc9e6 100644
 @@ -552,11 +552,6 @@ static void hvs_destruct(struct vsock_sock *vsk)
  	vsk->trans = NULL;
  }
- 
+
 -static int hvs_dgram_bind(struct vsock_sock *vsk, struct sockaddr_vm *addr)
 -{
 -	return -EOPNOTSUPP;
@@ -256,7 +256,7 @@ index cc0a6c3401d3..4c6d705cc9e6 100644
 @@ -842,7 +837,6 @@ static struct vsock_transport hvs_transport = {
  	.connect                  = hvs_connect,
  	.shutdown                 = hvs_shutdown,
- 
+
 -	.dgram_bind               = hvs_dgram_bind,
  	.dgram_get_cid		  = hvs_dgram_get_cid,
  	.dgram_get_port		  = hvs_dgram_get_port,
@@ -268,7 +268,7 @@ index 4751acddd117..359775d55685 100644
 @@ -551,7 +551,6 @@ static struct virtio_transport virtio_transport = {
  		.shutdown                 = virtio_transport_shutdown,
  		.cancel_pkt               = virtio_transport_cancel_pkt,
- 
+
 -		.dgram_bind               = virtio_transport_dgram_bind,
  		.dgram_enqueue            = virtio_transport_dgram_enqueue,
  		.dgram_allow              = virtio_transport_dgram_allow,
@@ -280,7 +280,7 @@ index ad4dedcfa320..96b6303b24c2 100644
 @@ -1047,13 +1047,6 @@ bool virtio_transport_stream_allow(u32 cid, u32 port)
  }
  EXPORT_SYMBOL_GPL(virtio_transport_stream_allow);
- 
+
 -int virtio_transport_dgram_bind(struct vsock_sock *vsk,
 -				struct sockaddr_vm *addr)
 -{
@@ -298,11 +298,11 @@ index 3d5e05d8950f..9e9e124f8d2b 100644
 @@ -65,7 +65,6 @@ static struct virtio_transport loopback_transport = {
  		.shutdown                 = virtio_transport_shutdown,
  		.cancel_pkt               = vsock_loopback_cancel_pkt,
- 
+
 -		.dgram_bind               = virtio_transport_dgram_bind,
  		.dgram_enqueue            = virtio_transport_dgram_enqueue,
  		.dgram_allow              = virtio_transport_dgram_allow,
  		.dgram_get_cid		  = virtio_transport_dgram_get_cid,
--- 
+--
 2.50.0
 

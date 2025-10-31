@@ -1,0 +1,20 @@
+# nerdbox maintainers
+#
+# See https://github.com/containerd/project/blob/main/GOVERNANCE.md for description of maintainer role
+#
+# COMMITTERS
+# GitHub ID, Name, Email address, GPG fingerprint
+"akerouanton","Albin Kerouanton","albinker@gmail.com",""
+
+# REVIEWERS
+# GitHub ID, Name, Email address, GPG fingerprint
+"robmry","Rob Murray","rob.murray@docker.com",""
+
+# As a containerd sub-project, containerd maintainers are also included from https://github.com/containerd/project/blob/main/MAINTAINERS.
+# Below are the containerd maintainers who contribute to nerdbox and copied here for ease of reference.
+#
+# CORE MAINTAINERS
+# GitHub ID, Name, Email address, GPG fingerprint
+"dmcgowan","Derek McGowan","derek@mcgstyle.net","8C7A 111C 2110 5794 B0E8 A27B F58C 5D0A 4405 ACDB"
+"fuweid","Fu Wei","fuweid89@gmail.com",""
+"hsiangkao","Gao Xiang","hsiangkao@linux.alibaba.com",""

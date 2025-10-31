@@ -154,14 +154,18 @@ Also ensure that the grpc socket is owned by the non root user.
 ## How does this compare with other projects?
 
 ### Runtimes in Linux virtual machines
- - **lima** runs containerd in Linux VMs to provide the containerd API from
-   inside the VM to clients, such as nerdctl, running on the host.
+ - **Lima** runs containerd in Linux VMs to provide the containerd API from
+   inside the VM to clients, such as nerdctl. Lima supports non-containerd
+   workloads too.
  - **Docker Desktop** runs dockerd in a Linux VM on macOS and Windows,
    providing the docker API to docker CLIs running on the host.
 
 nerdbox is similar in that it uses a VM for isolation, but nerdbox is designed
 to be a containerd runtime shim with containerd running outside the VM directly
 on the host.
+
+Also, while those projects only use a single VM for all the containers, nerdbox
+allows allocating a dedicated VM for each container.
 
 ### Low level container runtimes
  - **Kata Containers** is a project that provides a containerd runtime with VM

@@ -155,12 +155,8 @@ may need to be updated to run containerd as a non-root user.
 
 By default, ensure `/var/lib/containerd` and `/var/run/containerd` are owned by
 the user. Alternatively, the config can be updated to reference directories
-writable by the user. Update the containerd config toml file.
-
-```toml
-root = '/var/lib/containerd'
-state = '/var/run/containerd'
-```
+writable by the user, but updating the config to use user-writable directories is
+currently not functional due to the issue [containerd#12444](https://github.com/containerd/containerd/issues/12444).
 
 Also ensure that the grpc socket is owned by the non root user.
 

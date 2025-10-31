@@ -1,0 +1,34 @@
+# An example config.toml for running containerd on macOS hosts.
+# Assumes UID 501 and GID 20.
+
+# Usage:
+#
+#   sudo mkdir -p /var/lib/containerd /var/run/containerd
+#   sudo chown 501:20 /var/lib/containerd /var/run/containerd
+#   PATH=/opt/homebrew/opt/e2fsprogs/sbin:$PATH containerd -c config.toml
+
+version = 3
+[grpc]
+  # The path of /var/run/containerd is still not changeable
+  # https://github.com/containerd/containerd/issues/12444
+  address = '/var/run/containerd/containerd.sock'
+  uid = 501
+  gid = 20
+
+[plugins.'io.containerd.snapshotter.v1.erofs']
+  default_size = "64M"
+
+[plugins.'io.containerd.differ.v1.erofs']
+  mkfs_options = ['-b4096']
+
+[plugins.'io.containerd.transfer.v1.local']
+  [[plugins."io.containerd.transfer.v1.local".unpack_config]]
+    platform = "linux/arm64"
+    snapshotter = "erofs"
+    differ = "erofs"
+
+# needed for nerdctl
+# https://github.com/containerd/nerdctl/issues/4570#issuecomment-3474216920
+[plugins.'io.containerd.service.v1.diff-service']
+  default = ['erofs', 'walking']
+  sync_fs = false

@@ -47,6 +47,12 @@ snapshotter is required. Currently, to run on macOS, this requires using
 containerd 2.2. Use containerd v2.2.0-rc.0 or later:
 https://github.com/containerd/containerd/releases/tag/v2.2.0-rc.0
 
+See [`./examples/macos/config.toml`](./examples/macos/config.toml) for
+how to configure containerd on macOS.
+
+<details>
+<summary>Manual configuration</summary>
+
 #### Enabling erofs in containerd config toml
 
 If you don't have a containerd config file yet, generate one with:
@@ -82,6 +88,18 @@ unpacking linux/arm64 images.
       differ = "erofs"
 ```
 
+#### Add differ options
+
+nerdctl needs the following configuration, as it does not use the transfer service yet.
+
+<!-- https://github.com/containerd/nerdctl/issues/4570#issuecomment-3474216920 -->
+
+```toml
+  [plugins.'io.containerd.service.v1.diff-service']
+    default = ['erofs', 'walking']
+    sync_fs = false
+```
+
 #### Add default size to snapshotter
 
 ```toml
@@ -89,6 +107,8 @@ unpacking linux/arm64 images.
     default_size = "64M"
 
 ```
+
+</details>
 
 ### Running
 

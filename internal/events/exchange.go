@@ -129,9 +129,9 @@ func (e *Exchange) Subscribe(ctx context.Context, fs ...string) (ch <-chan *even
 	)
 
 	closeAll := func() {
-		channel.Close()
-		queue.Close()
-		e.broadcaster.Remove(dst)
+		_ = channel.Close()
+		_ = queue.Close()
+		_ = e.broadcaster.Remove(dst)
 		close(errq)
 	}
 
@@ -151,7 +151,11 @@ func (e *Exchange) Subscribe(ctx context.Context, fs ...string) (ch <-chan *even
 		}))
 	}
 
-	e.broadcaster.Add(dst)
+	if err := e.broadcaster.Add(dst); err != nil {
+		errq <- fmt.Errorf("add sink to broadcaster: %w", err)
+		closeAll()
+		return
+	}
 
 	go func() {
 		defer closeAll()

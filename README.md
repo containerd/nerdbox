@@ -43,9 +43,9 @@ The results will be in the `_output` directory.
 
 For Linux, the default configuration should work. On Linux, a snapshot could be
 mounted on the host and passed to the VM via virtio-fs. For macOS, the erofs
-snapshotter is required. Currently, to run on macOS, this requires using a
-beta version of containerd 2.2. Use containerd v2.2.0-beta.2 or later:
-https://github.com/containerd/containerd/releases/tag/v2.2.0-beta.2
+snapshotter is required. Currently, to run on macOS, this requires using
+containerd 2.2. Use containerd v2.2.0-rc.0 or later:
+https://github.com/containerd/containerd/releases/tag/v2.2.0-rc.0
 
 #### Enabling erofs in containerd config toml
 

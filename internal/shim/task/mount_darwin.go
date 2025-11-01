@@ -20,20 +20,10 @@ import (
 	"context"
 
 	"github.com/containerd/containerd/api/types"
-	"github.com/containerd/errdefs"
-	"github.com/containerd/log"
 
 	"github.com/containerd/nerdbox/internal/vm"
 )
 
 func setupMounts(ctx context.Context, vmi vm.Instance, id string, ms []*types.Mount, _, _ string) ([]*types.Mount, error) {
-	mounts, err := transformMounts(ctx, vmi, id, ms)
-	if err != nil {
-		if errdefs.IsNotImplemented(err) {
-			log.G(ctx).WithField("mounts", ms).Warnf("mount transformation was not allowed, passing mounts through")
-		} else {
-			return nil, err
-		}
-	}
-	return mounts, nil
+	return transformMounts(ctx, vmi, id, ms)
 }

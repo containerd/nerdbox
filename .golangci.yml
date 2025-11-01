@@ -1,9 +1,9 @@
 version: "2"
 linters:
   enable:
-    - copyloopvar # Checks for loop variable copies in Go 1.22+
-    - depguard # Checks for dependencies that should not be (re)introduced. See "settings" for further details.
-    - dupword # Checks for duplicate words in the source code
+    - copyloopvar  # Checks for loop variable copies in Go 1.22+
+    - depguard  # Checks for dependencies that should not be (re)introduced. See "settings" for further details.
+    - dupword  # Checks for duplicate words in the source code
     - gosec
     - misspell
     - nolintlint
@@ -39,7 +39,7 @@ linters:
     staticcheck:
       checks:
         - all
-        - -QF1008 # Excludes QF1008 from staticcheck
+        - -QF1008  # Excludes QF1008 from staticcheck
         - -ST1000
         - -ST1003
         - -ST1020
@@ -49,7 +49,7 @@ linters:
         - name: package-comments
           severity: warning
           disabled: true
-          exclude: [ "" ]
+          exclude: [""]
     nolintlint:
       allow-unused: true
   exclusions:

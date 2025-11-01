@@ -13,4 +13,4 @@ runs:
       uses: actions/setup-go@v5
       with:
         go-version: ${{ inputs.go-version }}
-        cache: false # see actions/setup-go#368
+        cache: false  # see actions/setup-go#368

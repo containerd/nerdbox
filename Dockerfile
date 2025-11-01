@@ -13,17 +13,24 @@
 #   limitations under the License.
 
 # -----------------------------------------------------------------------------
+# syntax=docker/dockerfile:1
 
 # Build the Linux kernel, initrd ,and containerd shim for running nerbox
 
+ARG XX_VERSION=1.6.1
 ARG GO_VERSION=1.25.1
 ARG BASE_DEBIAN_DISTRO="bookworm"
 ARG GOLANG_IMAGE="golang:${GO_VERSION}-${BASE_DEBIAN_DISTRO}"
+ARG GOLANGCI_LINT_VERSION=2.5.0
+ARG GOLANGCI_FROM_SOURCE=false
 ARG DOCKER_VERSION=28.4.0
 ARG DOCKER_IMAGE="docker:${DOCKER_VERSION}-cli"
 ARG RUST_IMAGE="rust:1.89.0-slim-${BASE_DEBIAN_DISTRO}"
 
-FROM ${GOLANG_IMAGE} AS base
+# xx is a helper for cross-compilation
+FROM --platform=$BUILDPLATFORM tonistiigi/xx:${XX_VERSION} AS xx
+
+FROM --platform=$BUILDPLATFORM ${GOLANG_IMAGE} AS base
 
 RUN echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/keep-cache
 RUN apt-get update && apt-get install --no-install-recommends -y file
@@ -221,3 +228,68 @@ COPY --from=libkrun /libkrun.so /usr/local/lib64/libkrun.so
 ENV LIBKRUN_PATH=/go/src/github.com/containerd/nerdbox/_output
 
 VOLUME /var/lib/containerd
+
+
+FROM base AS golangci-build
+WORKDIR /src
+ARG GOLANGCI_LINT_VERSION
+ADD https://github.com/golangci/golangci-lint.git#v${GOLANGCI_LINT_VERSION} .
+COPY --link --from=xx / /
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/ \
+  xx-go --wrap && \
+  go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/ \
+  xx-go --wrap && \
+  mkdir -p out && \
+  go build -o /out/golangci-lint ./cmd/golangci-lint
+
+FROM scratch AS golangci-binary-false
+FROM scratch AS golangci-binary-true
+COPY --from=golangci-build /out/golangci-lint golangci-lint
+FROM golangci-binary-${GOLANGCI_FROM_SOURCE} AS golangci-binary
+
+FROM base AS lint-base
+ENV GOFLAGS="-buildvcs=false"
+RUN <<EOT
+apt-get update
+apt-get install -y --no-install-recommends gcc libc6-dev yamllint
+rm -rf /var/lib/apt/lists/*
+EOT
+ARG GOLANGCI_LINT_VERSION
+ARG GOLANGCI_FROM_SOURCE
+COPY --link --from=golangci-binary / /usr/bin/
+RUN [ "${GOLANGCI_FROM_SOURCE}" = "true" ] && exit 0; wget -O- -nv https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s v${GOLANGCI_LINT_VERSION}
+COPY --link --from=xx / /
+WORKDIR /go/src/github.com/containerd/nerdbox
+
+FROM lint-base AS golangci-lint
+ARG TARGETNAME
+ARG TARGETPLATFORM
+RUN --mount=target=/go/src/github.com/containerd/nerdbox \
+    --mount=target=/root/.cache,type=cache,id=lint-cache-${TARGETNAME}-${TARGETPLATFORM} \
+  xx-go --wrap && \
+  golangci-lint run -c .golangci.yml && \
+  touch /golangci-lint.done
+
+FROM lint-base AS golangci-verify-false
+RUN --mount=target=/go/src/github.com/containerd/nerdbox \
+  golangci-lint config verify && \
+  touch /golangci-verify.done
+
+FROM scratch AS golangci-verify-true
+COPY <<EOF /golangci-verify.done
+EOF
+
+FROM golangci-verify-${GOLANGCI_FROM_SOURCE} AS golangci-verify
+
+FROM lint-base AS yamllint
+RUN --mount=target=/go/src/github.com/containerd/nerdbox \
+  yamllint -c .yamllint.yml --strict . && \
+  touch /yamllint.done
+
+FROM scratch AS lint
+COPY --link --from=golangci-lint /golangci-lint.done /
+COPY --link --from=golangci-verify /golangci-verify.done /
+COPY --link --from=yamllint /yamllint.done /

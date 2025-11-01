@@ -52,7 +52,7 @@ GO_STATIC_LDFLAGS := -ldflags '-extldflags "-static" $(LDFLAGS) $(EXTRA_LDFLAGS)
 MODULE_NAME=$(shell go list -m)
 API_PACKAGES=$(shell ($(GO) list ${GO_TAGS} ./... | grep /api/ ))
 
-.PHONY: clean all generate protos check-protos check-api-descriptors proto-fmt shell
+.PHONY: clean all validate lint generate protos check-protos check-api-descriptors proto-fmt shell
 
 all:
 	$(BUILDX) bake
@@ -134,6 +134,12 @@ endif
 		make menuconfig
 
 FORCE:
+
+validate:
+	@$(BUILDX) bake validate
+
+lint:
+	@$(BUILDX) bake lint
 
 clean:
 	rm -rf _output

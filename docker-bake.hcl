@@ -26,6 +26,10 @@ variable "GO_LDFLAGS" {
   default = ""
 }
 
+variable "GOLANGCI_LINT_MULTIPLATFORM" {
+  default = ""
+}
+
 target "_common" {
   args = {
     KERNEL_VERSION = KERNEL_VERSION
@@ -80,4 +84,55 @@ target "dev" {
   inherits = ["_common"]
   target = "dev"
   output = ["type=image,name=nerdbox-dev"]
+}
+
+group "validate" {
+  targets = ["lint", "validate-dockerfile"]
+}
+
+target "lint" {
+    name = "lint-${build.name}"
+    inherits = ["_common"]
+    output = ["type=cacheonly"]
+    target = build.target
+    args = {
+        TARGETNAME = build.name
+        GOLANGCI_FROM_SOURCE = "true"
+    }
+    platforms = (build.target == "golangci-lint") && (GOLANGCI_LINT_MULTIPLATFORM != null) ? [
+        "linux/amd64",
+        "linux/arm64",
+        "darwin/amd64",
+        "darwin/arm64",
+        // "windows/amd64",
+        // "windows/arm64",
+    ] : []
+    matrix = {
+        build = [
+            {
+                name = "default",
+                target = "golangci-lint",
+            },
+            {
+                name = "golangci-verify",
+                target = "golangci-verify",
+            },
+            {
+                name = "yaml",
+                target = "yamllint",
+            },
+        ]
+    }
+}
+
+target "validate-dockerfile" {
+    matrix = {
+        dockerfile = [
+            "Dockerfile",
+        ]
+    }
+    name = "validate-dockerfile-${md5(dockerfile)}"
+    inherits = ["_common"]
+    dockerfile = dockerfile
+    call = "check"
 }

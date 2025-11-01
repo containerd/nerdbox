@@ -19,21 +19,29 @@ package task
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/containerd/containerd/api/types"
+	"github.com/containerd/errdefs"
 	"github.com/containerd/log"
 
 	"github.com/containerd/nerdbox/internal/vm"
 )
 
+type diskOptions struct {
+	name     string
+	source   string
+	readOnly bool
+}
+
 // transformMounts does not perform any local mounts but transforms
 // the mounts to be used inside the VM via virtio
 func transformMounts(ctx context.Context, vmi vm.Instance, id string, ms []*types.Mount) ([]*types.Mount, error) {
 	var (
-		disks byte = 'a'
-		am    []*types.Mount
+		disks    byte = 'a'
+		addDisks []diskOptions
+		am       []*types.Mount
+		err      error
 	)
 
 	for _, m := range ms {
@@ -44,9 +52,11 @@ func transformMounts(ctx context.Context, vmi vm.Instance, id string, ms []*type
 			if len(disk) > 36 {
 				disk = disk[:36]
 			}
-			if err := vmi.AddDisk(ctx, disk, m.Source, vm.WithReadOnly()); err != nil {
-				return nil, err
-			}
+			addDisks = append(addDisks, diskOptions{
+				name:     disk,
+				source:   m.Source,
+				readOnly: true,
+			})
 			am = append(am, &types.Mount{
 				Type:    "erofs",
 				Source:  fmt.Sprintf("/dev/vd%c", disks),
@@ -60,9 +70,12 @@ func transformMounts(ctx context.Context, vmi vm.Instance, id string, ms []*type
 			if len(disk) > 36 {
 				disk = disk[:36]
 			}
-			if err := vmi.AddDisk(ctx, disk, m.Source); err != nil {
-				return nil, err
-			}
+			// TODO: Check read only option
+			addDisks = append(addDisks, diskOptions{
+				name:     disk,
+				source:   m.Source,
+				readOnly: false,
+			})
 			am = append(am, &types.Mount{
 				Type:    "ext4",
 				Source:  fmt.Sprintf("/dev/vd%c", disks),
@@ -87,35 +100,11 @@ func transformMounts(ctx context.Context, vmi vm.Instance, id string, ms []*type
 				// TODO: Handle virtio for lowers?
 			}
 			if wdi > -1 && udi > -1 {
-				udir, uname := filepath.Split(m.Options[udi][len("upperdir="):])
-
-				wdir, wname := filepath.Split(m.Options[wdi][len("workdir="):])
-				if udir == wdir {
-					tag := fmt.Sprintf("overlayfs-upper-%s", id)
-					// virtiofs implementation has a limit of 36 characters for the tag
-					if len(tag) > 36 {
-						tag = tag[:36]
-					}
-					if err := vmi.AddFS(ctx, tag, udir); err != nil {
-						return nil, err
-					}
-					m.Options[udi] = fmt.Sprintf("upperdir={{ mount %d }}/%s", len(am), uname)
-					m.Options[wdi] = fmt.Sprintf("workdir={{ mount %d }}/%s", len(am), wname)
-					am = append(am, &types.Mount{
-						Type:   "virtiofs",
-						Source: tag,
-					})
-					log.G(ctx).WithFields(log.Fields{
-						"workdir":  m.Options[wdi],
-						"upperdir": m.Options[udi],
-					}).Warnf("transformed upper and work")
-				} else {
-					log.G(ctx).WithFields(log.Fields{
-						"workdir":  m.Options[wdi],
-						"upperdir": m.Options[udi],
-					}).Warnf("overlayfs workdir and upperdir should be in the same directory")
-				}
-			} else {
+				// Having the upper as virtiofs may return invalid argument, avoid
+				// transforming and attempt to perform the mounts on the host if
+				// supported.
+				return nil, fmt.Errorf("cannot use virtiofs for upper dir in overlay: %w", errdefs.ErrNotImplemented)
+			} else if wdi == -1 || udi == -1 {
 				log.G(ctx).WithField("options", m.Options).Warnf("overlayfs missing workdir or upperdir")
 			}
 
@@ -125,7 +114,21 @@ func transformMounts(ctx context.Context, vmi vm.Instance, id string, ms []*type
 		}
 	}
 
-	return am, nil
+	if len(addDisks) > 10 {
+		return nil, fmt.Errorf("exceeded maximum virtio disk count: %d > 10: %w", len(addDisks), errdefs.ErrNotImplemented)
+	}
+
+	for _, do := range addDisks {
+		var opts []vm.MountOpt
+		if do.readOnly {
+			opts = append(opts, vm.WithReadOnly())
+		}
+		if err := vmi.AddDisk(ctx, do.name, do.source, opts...); err != nil {
+			return nil, err
+		}
+	}
+
+	return am, err
 }
 
 func filterOptions(options []string) []string {

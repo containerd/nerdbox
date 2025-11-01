@@ -24,6 +24,6 @@ import (
 	"github.com/containerd/nerdbox/internal/vm"
 )
 
-func setupMounts(ctx context.Context, vmi vm.Instance, id string, ms []*types.Mount, _ string) ([]*types.Mount, error) {
+func setupMounts(ctx context.Context, vmi vm.Instance, id string, ms []*types.Mount, _, _ string) ([]*types.Mount, error) {
 	return transformMounts(ctx, vmi, id, ms)
 }

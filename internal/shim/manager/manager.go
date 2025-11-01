@@ -333,7 +333,7 @@ func (m manager) Info(ctx context.Context, optionsR io.Reader) (*types.RuntimeIn
 			//Revision: version.Revision,
 		},
 		Annotations: map[string]string{
-			"containerd.io/runtime-allow-mounts": "mkdir/*,format/*",
+			"containerd.io/runtime-allow-mounts": "mkdir/*,format/*,erofs",
 		},
 	}
 	// TODO: Get features list from run_vminitd

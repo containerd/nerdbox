@@ -216,7 +216,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		return nil, errgrpc.ToGRPC(err)
 	}
 
-	m, err := setupMounts(ctx, vmi, r.ID, r.Rootfs, b.Rootfs)
+	m, err := setupMounts(ctx, vmi, r.ID, r.Rootfs, b.Rootfs, filepath.Join(r.Bundle, "mounts"))
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}

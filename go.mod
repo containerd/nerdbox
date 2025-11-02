@@ -28,7 +28,7 @@ require (
 	github.com/vishvananda/netns v0.0.5
 	golang.org/x/sync v0.17.0
 	golang.org/x/sys v0.37.0
-	google.golang.org/protobuf v1.36.9
+	google.golang.org/protobuf v1.36.10
 )
 
 require (

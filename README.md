@@ -17,7 +17,7 @@ containers cross platform and with enhanced security.
  - Allows one VM per container for maximum isolation
  - Multiple containers per VM for maximum efficiency ___coming soon___
 
-nerdbox is a _prospective_ **non-core** sub-project of containerd.
+nerdbox is a **non-core** sub-project of containerd.
 
 ## Getting Started
 

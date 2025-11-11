@@ -17,7 +17,7 @@ containers cross platform and with enhanced security.
  - Allows one VM per container for maximum isolation
  - Multiple containers per VM for maximum efficiency ___coming soon___
 
-nerdbox is a _prospective_ **non-core** sub-project of containerd.
+nerdbox is a **non-core** sub-project of containerd.
 
 ## Getting Started
 
@@ -146,6 +146,12 @@ Start a container with the nerdbox runtime (add snapshotter for macOS):
 ```bash
 ctr run -t --rm --snapshotter erofs --runtime io.containerd.nerdbox.v1 docker.io/library/alpine:latest test /bin/sh
 ```
+
+> #### macOS Tip
+>
+> Both erofs and nerdbox are defaults on macOS in containerd 2.2. They can be omitted
+> from the command line but are included here for consistency with Linux.
+>
 
 ### Rootless on macOS
 

@@ -26,7 +26,7 @@ Building requires Docker with buildx installed.
 Run `make` to build the shim, kernel, and nerdbox image:
 
 ```bash
-$ make
+make
 ```
 
 The results will be in the `_output` directory.
@@ -34,9 +34,9 @@ The results will be in the `_output` directory.
 > #### macOS Tip
 >
 > On macOS, use these commands:
-> ```
-> $ make KERNEL_ARCH=arm64 KERNEL_NPROC=12 KERNEL_VERSION=6.12.44
-> $ make _output/containerd-shim-nerdbox-v1 _output/nerdbox-initrd
+> ```bash
+> make KERNEL_ARCH=arm64 KERNEL_NPROC=12 KERNEL_VERSION=6.12.44
+> make _output/containerd-shim-nerdbox-v1 _output/nerdbox-initrd
 > ```
 
 ### Configuring containerd
@@ -44,8 +44,8 @@ The results will be in the `_output` directory.
 For Linux, the default configuration should work. On Linux, a snapshot could be
 mounted on the host and passed to the VM via virtio-fs. For macOS, the erofs
 snapshotter is required. Currently, to run on macOS, this requires using
-containerd 2.2. Use containerd v2.2.0-rc.0 or later:
-https://github.com/containerd/containerd/releases/tag/v2.2.0-rc.0
+containerd 2.2 or later:
+https://github.com/containerd/containerd/releases
 
 See [`./examples/macos/config.toml`](./examples/macos/config.toml) for
 how to configure containerd on macOS.
@@ -58,7 +58,7 @@ how to configure containerd on macOS.
 If you don't have a containerd config file yet, generate one with:
 
 ```bash
-$ containerd config default > config.toml
+containerd config default > config.toml
 ```
 
 #### Update erofs differ
@@ -105,7 +105,6 @@ nerdctl needs the following configuration, as it does not use the transfer servi
 ```toml
   [plugins.'io.containerd.snapshotter.v1.erofs']
     default_size = "64M"
-
 ```
 
 </details>
@@ -126,7 +125,7 @@ Install libkrun, erofs-utils, e2fsprogs on your host
 Run containerd with the shim and nerdbox components in the PATH:
 
 ```bash
-$ PATH=$(pwd)/_output:$PATH containerd
+PATH=$(pwd)/_output:$PATH containerd
 ```
 
 > #### macOS Tip
@@ -139,13 +138,13 @@ $ PATH=$(pwd)/_output:$PATH containerd
 Pull a container down, select the platform and erofs snapshotter for macOS:
 
 ```bash
-$ ctr image pull --platform linux/arm64 --snapshotter erofs docker.io/library/alpine:latest
+ctr image pull --platform linux/arm64 --snapshotter erofs docker.io/library/alpine:latest
 ```
 
 Start a container with the nerdbox runtime (add snapshotter for macOS):
 
 ```bash
-$ ctr run -t --rm --snapshotter erofs --runtime io.containerd.nerdbox.v1 docker.io/library/alpine:latest test /bin/sh
+ctr run -t --rm --snapshotter erofs --runtime io.containerd.nerdbox.v1 docker.io/library/alpine:latest test /bin/sh
 ```
 
 ### Rootless on macOS

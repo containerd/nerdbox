@@ -147,6 +147,12 @@ Start a container with the nerdbox runtime (add snapshotter for macOS):
 ctr run -t --rm --snapshotter erofs --runtime io.containerd.nerdbox.v1 docker.io/library/alpine:latest test /bin/sh
 ```
 
+> #### macOS Tip
+>
+> Both erofs and nerdbox are defaults on macOS in containerd 2.2. They can be omitted
+> from the command line but are included here for consistency with Linux.
+>
+
 ### Rootless on macOS
 
 Root is not needed to run this on macOS, however, the containerd configuration

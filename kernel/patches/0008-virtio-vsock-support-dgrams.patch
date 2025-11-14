@@ -1,4 +1,4 @@
-From 8e01b14892ef313342b0e738b65f6486f07aab26 Mon Sep 17 00:00:00 2001
+From 6c72954d95d84fbe85766ffeb5ba9070f52d7dbe Mon Sep 17 00:00:00 2001
 From: Bobby Eshleman <bobby.eshleman () bytedance ! com>
 Date: Sat, 10 Jun 2023 00:58:33 +0000
 Subject: [PATCH 08/21] virtio/vsock: support dgrams
@@ -29,11 +29,11 @@ Signed-off-by: Bobby Eshleman <bobby.eshleman@bytedance.com>
  include/linux/virtio_vsock.h            |   5 +-
  include/net/af_vsock.h                  |   1 +
  include/uapi/linux/virtio_vsock.h       |   1 +
- net/vmw_vsock/af_vsock.c                |  62 +++++++--
+ net/vmw_vsock/af_vsock.c                |  48 +++++--
  net/vmw_vsock/virtio_transport.c        |  23 +++-
  net/vmw_vsock/virtio_transport_common.c | 175 ++++++++++++++++++------
  net/vmw_vsock/vsock_loopback.c          |   8 +-
- 8 files changed, 242 insertions(+), 60 deletions(-)
+ 8 files changed, 229 insertions(+), 59 deletions(-)
 
 diff --git a/drivers/vhost/vsock.c b/drivers/vhost/vsock.c
 index 4659a74078bd..eb088aa1afc1 100644
@@ -157,7 +157,7 @@ index 9c25f267bbc0..27b4b2b8bf13 100644
 
  enum virtio_vsock_op {
 diff --git a/net/vmw_vsock/af_vsock.c b/net/vmw_vsock/af_vsock.c
-index b0bdb9d1f816..6b5526047973 100644
+index b0bdb9d1f816..6418b8fa98c5 100644
 --- a/net/vmw_vsock/af_vsock.c
 +++ b/net/vmw_vsock/af_vsock.c
 @@ -118,6 +118,7 @@ static int __vsock_bind(struct sock *sk, struct sockaddr_vm *addr);
@@ -168,16 +168,15 @@ index b0bdb9d1f816..6b5526047973 100644
 
  /* Protocol family. */
  struct proto vsock_proto = {
-@@ -185,6 +186,8 @@ struct list_head vsock_connected_table[VSOCK_HASH_SIZE];
+@@ -185,6 +186,7 @@ struct list_head vsock_connected_table[VSOCK_HASH_SIZE];
  EXPORT_SYMBOL_GPL(vsock_connected_table);
  DEFINE_SPINLOCK(vsock_table_lock);
  EXPORT_SYMBOL_GPL(vsock_table_lock);
 +static struct list_head vsock_dgram_bind_table[VSOCK_HASH_SIZE];
-+static DEFINE_SPINLOCK(vsock_dgram_table_lock);
 
  /* Autobind this socket to the local address if necessary. */
  static int vsock_auto_bind(struct vsock_sock *vsk)
-@@ -207,6 +210,9 @@ static void vsock_init_tables(void)
+@@ -207,6 +209,9 @@ static void vsock_init_tables(void)
 
  	for (i = 0; i < ARRAY_SIZE(vsock_connected_table); i++)
  		INIT_LIST_HEAD(&vsock_connected_table[i]);
@@ -187,7 +186,7 @@ index b0bdb9d1f816..6b5526047973 100644
  }
 
  static void __vsock_insert_bound(struct list_head *list,
-@@ -235,8 +241,8 @@ static void __vsock_remove_connected(struct vsock_sock *vsk)
+@@ -235,8 +240,8 @@ static void __vsock_remove_connected(struct vsock_sock *vsk)
  	sock_put(&vsk->sk);
  }
 
@@ -198,7 +197,7 @@ index b0bdb9d1f816..6b5526047973 100644
  {
  	struct vsock_sock *vsk;
 
-@@ -253,6 +259,23 @@ struct sock *vsock_find_bound_socket_common(struct sockaddr_vm *addr,
+@@ -253,6 +258,23 @@ struct sock *vsock_find_bound_socket_common(struct sockaddr_vm *addr,
  	return NULL;
  }
 
@@ -207,13 +206,13 @@ index b0bdb9d1f816..6b5526047973 100644
 +{
 +	struct sock *sk;
 +
-+	spin_lock_bh(&vsock_dgram_table_lock);
++	spin_lock_bh(&vsock_table_lock);
 +	sk = vsock_find_bound_socket_common(addr,
 +					    &vsock_dgram_bind_table[VSOCK_HASH(addr)]);
 +	if (sk)
 +		sock_hold(sk);
 +
-+	spin_unlock_bh(&vsock_dgram_table_lock);
++	spin_unlock_bh(&vsock_table_lock);
 +
 +	return sk;
 +}
@@ -222,38 +221,19 @@ index b0bdb9d1f816..6b5526047973 100644
  static struct sock *__vsock_find_bound_socket(struct sockaddr_vm *addr)
  {
  	return vsock_find_bound_socket_common(addr, vsock_bound_sockets(addr));
-@@ -292,6 +315,14 @@ void vsock_insert_connected(struct vsock_sock *vsk)
- }
- EXPORT_SYMBOL_GPL(vsock_insert_connected);
-
-+static void vsock_remove_dgram_bound(struct vsock_sock *vsk)
-+{
-+	spin_lock_bh(&vsock_dgram_table_lock);
-+	if (__vsock_in_bound_table(vsk))
-+		__vsock_remove_bound(vsk);
-+	spin_unlock_bh(&vsock_dgram_table_lock);
-+}
-+
- void vsock_remove_bound(struct vsock_sock *vsk)
- {
- 	spin_lock_bh(&vsock_table_lock);
-@@ -344,9 +375,12 @@ EXPORT_SYMBOL_GPL(vsock_find_connected_socket);
+@@ -344,9 +366,9 @@ EXPORT_SYMBOL_GPL(vsock_find_connected_socket);
  void vsock_remove_sock(struct vsock_sock *vsk)
  {
  	/* Transport reassignment must not remove the binding. */
 -	if (sock_flag(sk_vsock(vsk), SOCK_DEAD))
--		vsock_remove_bound(vsk);
--
 +	if (sock_flag(sk_vsock(vsk), SOCK_DEAD)) {
-+		if (sock_type_connectible(sk_vsock(vsk)->sk_type))
-+			vsock_remove_bound(vsk);
-+		else
-+			vsock_remove_dgram_bound(vsk);
+		vsock_remove_bound(vsk);
+-
 +	}
  	vsock_remove_connected(vsk);
  }
  EXPORT_SYMBOL_GPL(vsock_remove_sock);
-@@ -772,11 +806,19 @@ static int __vsock_bind_connectible(struct vsock_sock *vsk,
+@@ -772,11 +794,19 @@ static int __vsock_bind_connectible(struct vsock_sock *vsk,
  	return vsock_bind_common(vsk, addr, vsock_bind_table, VSOCK_HASH_SIZE + 1);
  }
 
@@ -267,17 +247,17 @@ index b0bdb9d1f816..6b5526047973 100644
 +	if (!vsk->transport || !vsk->transport->dgram_bind) {
 +		int retval;
 +
-+		spin_lock_bh(&vsock_dgram_table_lock);
++		spin_lock_bh(&vsock_table_lock);
 +		retval = vsock_bind_common(vsk, addr, vsock_dgram_bind_table,
 +					   VSOCK_HASH_SIZE);
-+		spin_unlock_bh(&vsock_dgram_table_lock);
++		spin_unlock_bh(&vsock_table_lock);
 +
 +		return retval;
 +	}
 
  	return vsk->transport->dgram_bind(vsk, addr);
  }
-@@ -807,7 +849,7 @@ static int __vsock_bind(struct sock *sk, struct sockaddr_vm *addr)
+@@ -807,7 +837,7 @@ static int __vsock_bind(struct sock *sk, struct sockaddr_vm *addr)
  		break;
 
  	case SOCK_DGRAM:
@@ -677,4 +657,3 @@ index 9e9e124f8d2b..b3066c854bb9 100644
  	return true;
 --
 2.50.0
-

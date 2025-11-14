@@ -35,7 +35,7 @@ The results will be in the `_output` directory.
 >
 > On macOS, use these commands:
 > ```bash
-> make KERNEL_ARCH=arm64 KERNEL_NPROC=12 KERNEL_VERSION=6.12.44
+> make KERNEL_ARCH=arm64 KERNEL_NPROC=12
 > make _output/containerd-shim-nerdbox-v1 _output/nerdbox-initrd
 > ```
 

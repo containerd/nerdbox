@@ -1,16 +1,16 @@
-From 8b6e0c7550ba7f4c11e6df61c48ed0783dc38513 Mon Sep 17 00:00:00 2001
+From 0b8e9adbefbdf73b25160e7fb5c47f3749136cca Mon Sep 17 00:00:00 2001
 From: Sergio Lopez <slp@redhat.com>
 Date: Thu, 19 May 2022 22:38:26 +0200
 Subject: [PATCH 09/21] Transparent Socket Impersonation implementation
 
 Transparent Socket Impersonation (AF_TSI) is an address family that
-provides sockets presenting two simultaneous personalities, AF_INET
-and AF_VSOCK.
+provides sockets presenting two simultaneous personalities, one of
+AF_INET, AF_INET6 or AF_UNIX, and AF_VSOCK.
 
-By using this an AF_TSI socket, the kernel can impersonate an AF_INET
-socket (only SOCK_STREAM and SOCK_DGRAM are supported at the moment)
-with an AF_VSOCK one, allowing all communications to happen through a
-vsock device.
+By using this an AF_TSI socket, the kernel can impersonate an
+AF_INET, AF_INET6 or AF_UNIX socket (only SOCK_STREAM and SOCK_DGRAM
+are supported at the moment) with an AF_VSOCK one, allowing all
+communications to happen through a vsock device.
 
 This strategy is specially useful for microVMs, as it allows the
 VMM (Virtual Machine Monitor) to provide network connectivity to the
@@ -22,42 +22,46 @@ TODO - implement remote [get|set]sockopt
 
 Signed-off-by: Sergio Lopez <slp@redhat.com>
 ---
- include/linux/socket.h              |    4 +-
+ include/linux/socket.h              |    8 +-
  net/Kconfig                         |    1 +
  net/Makefile                        |    1 +
- net/socket.c                        |    1 +
+ net/socket.c                        |    3 +
  net/tsi/Kconfig                     |    7 +
  net/tsi/Makefile                    |    4 +
- net/tsi/af_tsi.c                    | 1280 +++++++++++++++++++++++++++
- net/tsi/af_tsi.h                    |  100 +++
- security/selinux/hooks.c            |    4 +-
+ net/tsi/af_tsi.c                    | 1451 +++++++++++++++++++++++++++
+ net/tsi/af_tsi.h                    |  107 ++
+ security/selinux/hooks.c            |    8 +-
  security/selinux/include/classmap.h |    3 +-
- 10 files changed, 1402 insertions(+), 3 deletions(-)
+ 10 files changed, 1590 insertions(+), 3 deletions(-)
  create mode 100644 net/tsi/Kconfig
  create mode 100644 net/tsi/Makefile
  create mode 100644 net/tsi/af_tsi.c
  create mode 100644 net/tsi/af_tsi.h
 
 diff --git a/include/linux/socket.h b/include/linux/socket.h
-index c3322eb3d686..77b7e8246102 100644
+index c3322eb3d686..5ae7f94b3abc 100644
 --- a/include/linux/socket.h
 +++ b/include/linux/socket.h
-@@ -240,8 +240,9 @@ struct ucred {
+@@ -240,8 +240,11 @@ struct ucred {
  #define AF_MCTP		45	/* Management component
  				 * transport protocol
  				 */
-+#define AF_TSI		46	/* TSI sockets			*/
++#define AF_TSI		46	/* TSI for IPv4 sockets		*/
++#define AF_TSI6  	47	/* TSI for IPv6 sockets		*/
++#define AF_TSIU  	48	/* TSI for UNIX sockets		*/
 
 -#define AF_MAX		46	/* For now.. */
-+#define AF_MAX		47	/* For now.. */
++#define AF_MAX		49	/* For now.. */
 
  /* Protocol families, same as address families. */
  #define PF_UNSPEC	AF_UNSPEC
-@@ -292,6 +293,7 @@ struct ucred {
+@@ -292,6 +295,9 @@ struct ucred {
  #define PF_SMC		AF_SMC
  #define PF_XDP		AF_XDP
  #define PF_MCTP		AF_MCTP
 +#define PF_TSI		AF_TSI
++#define PF_TSI6		AF_TSI6
++#define PF_TSIU		AF_TSIU
  #define PF_MAX		AF_MAX
 
  /* Maximum queue length specifiable by listen.  */
@@ -83,14 +87,16 @@ index 65bb8c72a35e..c1db937f3212 100644
  obj-$(CONFIG_NET_HANDSHAKE)	+= handshake/
 +obj-$(CONFIG_TSI)		+= tsi/
 diff --git a/net/socket.c b/net/socket.c
-index 042451f01c65..5ad75d15e1ad 100644
+index 042451f01c65..4e1ec38c2434 100644
 --- a/net/socket.c
 +++ b/net/socket.c
-@@ -217,6 +217,7 @@ static const char * const pf_family_names[] = {
+@@ -217,6 +217,9 @@ static const char * const pf_family_names[] = {
  	[PF_SMC]	= "PF_SMC",
  	[PF_XDP]	= "PF_XDP",
  	[PF_MCTP]	= "PF_MCTP",
 +	[PF_TSI]	= "PF_TSI",
++	[PF_TSI6]	= "PF_TSI6",
++	[PF_TSIU]	= "PF_TSIU",
  };
 
  /*
@@ -119,10 +125,10 @@ index 000000000000..8b3cf74116a5
 +tsi-y := af_tsi.o
 diff --git a/net/tsi/af_tsi.c b/net/tsi/af_tsi.c
 new file mode 100644
-index 000000000000..f43a17cff3a3
+index 000000000000..07a3fd60321b
 --- /dev/null
 +++ b/net/tsi/af_tsi.c
-@@ -0,0 +1,1280 @@
+@@ -0,0 +1,1451 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +/*
 + * Transparent Socket Impersonation Driver
@@ -136,29 +142,65 @@ index 000000000000..f43a17cff3a3
 +#include <linux/types.h>
 +#include <linux/poll.h>
 +#include <net/sock.h>
++#include <net/af_unix.h>
 +#include <net/af_vsock.h>
 +#include "af_tsi.h"
 +
-+/* Protocol family. */
-+static struct proto tsi_proto = {
++/* TSI for IPv4 family. */
++static struct proto tsi_in4_proto = {
 +	.name = "AF_TSI",
 +	.owner = THIS_MODULE,
 +	.obj_size = sizeof(struct tsi_sock),
 +};
 +
-+#define tsi_sk(__sk)    ((struct tsi_sock *)__sk)
-+#define sk_tsi(__tsk)   (&(__tsk)->sk)
++/* TSI for IPv6 family. */
++static struct proto tsi_in6_proto = {
++	.name = "AF_TSI6",
++	.owner = THIS_MODULE,
++	.obj_size = sizeof(struct tsi_sock),
++};
++
++/* TSI for UNIX family. */
++static struct proto tsi_un_proto = {
++	.name = "AF_TSIU",
++	.owner = THIS_MODULE,
++	.obj_size = sizeof(struct tsi_sock),
++};
++
++#define tsi_sk(__sk) ((struct tsi_sock *)__sk)
++#define sk_tsi(__tsk) (&(__tsk)->sk)
++
++static int tsi_check_addr_len(struct tsi_sock *tsk, int addr_len)
++{
++	if (tsk->family == PF_INET) {
++		if (addr_len != sizeof(struct sockaddr_in)) {
++			return -EINVAL;
++		}
++	} else if (tsk->family == PF_INET6) {
++		if (addr_len != sizeof(struct sockaddr_in6)) {
++			return -EINVAL;
++		}
++	} else if (tsk->family == PF_UNIX) {
++		if (addr_len > TSI_ADDR_LEN) {
++			return -EINVAL;
++		}
++	} else {
++		panic("Unsupported family in tsk->family=%d", tsk->family);
++	}
++
++	return 0;
++}
 +
 +static int tsi_create_control_socket(struct socket **csocket)
 +{
 +	struct sockaddr_vm vm_addr;
 +	int err;
 +
-+	err = __sock_create(current->nsproxy->net_ns, PF_VSOCK,
-+			    SOCK_DGRAM, 0, csocket, 1);
++	err = __sock_create(current->nsproxy->net_ns, PF_VSOCK, SOCK_DGRAM, 0,
++			    csocket, 1);
 +	if (err) {
 +		pr_debug("%s: error creating control socket\n", __func__);
-+		goto release;
++		return err;
 +	}
 +
 +	memset(&vm_addr, 0, sizeof(struct sockaddr_vm));
@@ -170,21 +212,18 @@ index 000000000000..f43a17cff3a3
 +			  sizeof(struct sockaddr_vm));
 +	if (err) {
 +		pr_debug("%s: error binding port\n", __func__);
-+		goto release;
++		sock_release(*csocket);
++		return err;
 +	}
 +
 +	return 0;
-+
-+release:
-+	(*csocket)->ops->release(*csocket);
-+	return err;
 +}
 +
 +static int tsi_control_sendrecv_msg(struct socket *csocket, int port,
 +				    void *data, int data_len, bool recv)
 +{
 +	struct sockaddr_vm vm_addr;
-+	struct msghdr msg = {.msg_flags = 0 };
++	struct msghdr msg = { .msg_flags = 0 };
 +	struct kvec iov = {
 +		.iov_base = data,
 +		.iov_len = data_len,
@@ -204,14 +243,14 @@ index 000000000000..f43a17cff3a3
 +		return kernel_sendmsg(csocket, &msg, &iov, 1, iov.iov_len);
 +}
 +
-+static int tsi_control_sendmsg(struct socket *csocket, int port,
-+			       void *data, int data_len)
++static int tsi_control_sendmsg(struct socket *csocket, int port, void *data,
++			       int data_len)
 +{
 +	return tsi_control_sendrecv_msg(csocket, port, data, data_len, 0);
 +}
 +
-+static int tsi_control_recvmsg(struct socket *csocket, int port,
-+			       void *data, int data_len)
++static int tsi_control_recvmsg(struct socket *csocket, int port, void *data,
++			       int data_len)
 +{
 +	return tsi_control_sendrecv_msg(csocket, port, data, data_len, 1);
 +}
@@ -241,6 +280,8 @@ index 000000000000..f43a17cff3a3
 +	vsocket = tsk->vsocket;
 +	sk = sock->sk;
 +
++	lock_sock(sk);
++
 +	pr_debug("%s: tsk=%p vsocket=%p isocket=%p\n", __func__, tsk, vsocket,
 +		 isocket);
 +
@@ -252,26 +293,17 @@ index 000000000000..f43a17cff3a3
 +		tpr.svm_port = tsk->svm_port;
 +		tpr.svm_peer_port = tsk->svm_peer_port;
 +
-+		err = tsi_control_sendmsg(tsk->csocket,
-+					  TSI_PROXY_RELEASE,
++		err = tsi_control_sendmsg(tsk->csocket, TSI_PROXY_RELEASE,
 +					  (void *)&tpr,
 +					  sizeof(struct tsi_proxy_release));
 +
-+		err = vsocket->ops->release(vsocket);
-+		if (err != 0) {
-+			pr_debug("%s: error releasing vsock socket\n",
-+				 __func__);
-+		}
++		sock_release(vsocket);
 +	}
 +
 +	if (!isocket) {
 +		pr_debug("%s: no isocket\n", __func__);
 +	} else {
-+		err = isocket->ops->release(isocket);
-+		if (err != 0) {
-+			pr_debug("%s: error releasing inner socket\n",
-+				 __func__);
-+		}
++		sock_release(isocket);
 +	}
 +
 +	sock_orphan(sk);
@@ -301,6 +333,13 @@ index 000000000000..f43a17cff3a3
 +
 +	pr_debug("%s: vsocket=%p\n", __func__, vsocket);
 +
++	err = tsi_check_addr_len(tsk, addr_len);
++	if (err != 0) {
++		pr_debug("%s: invalid addr_len: %d\n", __func__, addr_len);
++		err = -EINVAL;
++		goto release;
++	}
++
 +	if (!isocket) {
 +		pr_debug("%s: no isocket\n", __func__);
 +		err = -EINVAL;
@@ -329,13 +368,14 @@ index 000000000000..f43a17cff3a3
 +	if (err) {
 +		pr_debug("%s: error setting up vsock listener: %d\n", __func__,
 +			 err);
-+	} else if (addr_len >= sizeof(struct sockaddr_in)) {
-+		if (!tsk->bound_addr) {
-+			tsk->bound_addr =
-+			    kmalloc(sizeof(struct sockaddr_in), GFP_KERNEL);
-+		}
-+		memcpy(tsk->bound_addr, addr, sizeof(struct sockaddr_in));
++		goto release;
 +	}
++
++	if (!tsk->bound_addr) {
++		tsk->bound_addr = kmalloc(addr_len, GFP_KERNEL);
++		tsk->bound_addr_len = addr_len;
++	}
++	memcpy(tsk->bound_addr, addr, addr_len);
 +
 +release:
 +	release_sock(sk);
@@ -367,13 +407,12 @@ index 000000000000..f43a17cff3a3
 +	}
 +
 +	tpc.svm_port = tsk->svm_port = vm_addr.svm_port;
++	tpc.family = tsk->family;
 +	tpc.type = type;
 +
 +	pr_debug("%s: type=%d\n", __func__, tpc.type);
 +
-+	err = tsi_control_sendmsg(tsk->csocket,
-+				  TSI_PROXY_CREATE,
-+				  (void *)&tpc,
++	err = tsi_control_sendmsg(tsk->csocket, TSI_PROXY_CREATE, (void *)&tpc,
 +				  sizeof(struct tsi_proxy_create));
 +	if (err < 0) {
 +		pr_debug("%s: error sending proxy request\n", __func__);
@@ -383,20 +422,14 @@ index 000000000000..f43a17cff3a3
 +	return 0;
 +}
 +
-+static int tsi_connect(struct socket *sock, struct sockaddr *addr,
-+		       int addr_len, int flags)
++static int tsi_connect(struct socket *sock, struct sockaddr *addr, int addr_len,
++		       int flags)
 +{
-+	DECLARE_SOCKADDR(struct sockaddr_in *, sin, addr);
 +	struct sock *sk = sock->sk;
 +	struct tsi_sock *tsk;
 +	struct socket *isocket;
 +	struct socket *vsocket;
 +	int err;
-+
-+	if (sin->sin_family != AF_INET) {
-+		pr_debug("%s: rejecting unknown family\n", __func__);
-+		return -EINVAL;
-+	}
 +
 +	lock_sock(sk);
 +	tsk = tsi_sk(sock->sk);
@@ -405,15 +438,28 @@ index 000000000000..f43a17cff3a3
 +
 +	pr_debug("%s: vsocket=%p isocket=%p\n", __func__, vsocket, isocket);
 +
++	if (addr->sa_family != tsk->family) {
++		pr_debug(
++			"%s: rejecting mismatched family addr->sa_family=%d tsk->family=%d\n",
++			__func__, addr->sa_family, tsk->family);
++		err = -EINVAL;
++		goto release;
++	}
++
++	err = tsi_check_addr_len(tsk, addr_len);
++	if (err != 0) {
++		pr_debug("%s: invalid addr_len: %d\n", __func__, addr_len);
++		err = -EINVAL;
++		goto release;
++	}
++
 +	if (isocket) {
 +		/* We can't honor O_NONBLOCK semantics here as we need to know
 +		 * whether this request can be fulfilled from INET or we need
 +		 * to fall back to VSOCK.
 +		 */
-+		err =
-+		    isocket->ops->connect(isocket, addr, addr_len,
-+					  flags & ~O_NONBLOCK);
-+		pr_debug("%s: returned=%d\n", __func__, err);
++		err = isocket->ops->connect(isocket, addr, addr_len,
++					    flags & ~O_NONBLOCK);
 +		if (err == 0 || err == -EALREADY) {
 +			tsk->status = S_INET;
 +			pr_debug("%s: switching to CONNECTED_INET\n", __func__);
@@ -440,14 +486,13 @@ index 000000000000..f43a17cff3a3
 +		}
 +
 +		tc_req.svm_port = tsk->svm_port;
-+		tc_req.addr = sin->sin_addr.s_addr;
-+		tc_req.port = sin->sin_port;
++		tc_req.addr_len = addr_len;
++		memcpy(&tc_req.addr, addr, addr_len);
 +
 +		pr_debug("%s: sending connection request id=%u\n", __func__,
 +			 tc_req.svm_port);
 +
-+		err = tsi_control_sendmsg(tsk->csocket,
-+					  TSI_CONNECT,
++		err = tsi_control_sendmsg(tsk->csocket, TSI_CONNECT,
 +					  (void *)&tc_req,
 +					  sizeof(struct tsi_connect_req));
 +		if (err < 0) {
@@ -456,14 +501,13 @@ index 000000000000..f43a17cff3a3
 +			goto release;
 +		}
 +
-+		err = tsi_control_recvmsg(tsk->csocket,
-+					  TSI_CONNECT,
++		err = tsi_control_recvmsg(tsk->csocket, TSI_CONNECT,
 +					  (void *)&tc_rsp,
 +					  sizeof(struct tsi_connect_rsp));
 +		if (err < 0) {
-+			pr_debug
-+			    ("%s: error receiving connection request answer\n",
-+			     __func__);
++			pr_debug(
++				"%s: error receiving connection request answer\n",
++				__func__);
 +			goto release;
 +		}
 +
@@ -491,16 +535,50 @@ index 000000000000..f43a17cff3a3
 +		}
 +
 +		if (!tsk->sendto_addr) {
-+			tsk->sendto_addr =
-+			    kmalloc(sizeof(struct sockaddr_in), GFP_KERNEL);
++			tsk->sendto_addr = kmalloc(addr_len, GFP_KERNEL);
++			tsk->sendto_addr_len = addr_len;
 +		}
-+		memcpy(tsk->sendto_addr, addr, sizeof(struct sockaddr_in));
++		memcpy(tsk->sendto_addr, addr, addr_len);
 +
 +		tsk->status = S_VSOCK;
 +	}
 +
 +release:
 +	release_sock(sk);
++	return err;
++}
++
++static int tsi_socketpair(struct socket *socka, struct socket *sockb)
++{
++	struct sock *ska = socka->sk;
++	struct sock *skb = sockb->sk;
++	struct tsi_sock *tska;
++	struct tsi_sock *tskb;
++	struct socket *isocketa;
++	struct socket *isocketb;
++	int err;
++
++	lock_sock(ska);
++	lock_sock(skb);
++	tska = tsi_sk(ska);
++	tskb = tsi_sk(skb);
++	isocketa = tska->isocket;
++	isocketb = tskb->isocket;
++
++	if (tska->family != PF_UNIX || tskb->family != PF_UNIX) {
++		err = -EOPNOTSUPP;
++		goto release;
++	}
++
++	err = isocketa->ops->socketpair(isocketa, isocketb);
++	if (err == 0) {
++		pr_debug("%s: switching to S_INET\n", __func__);
++		tska->status = tskb->status = S_INET;
++	}
++
++release:
++	release_sock(ska);
++	release_sock(skb);
 +	return err;
 +}
 +
@@ -546,18 +624,14 @@ index 000000000000..f43a17cff3a3
 +	pr_debug("%s: sending accept request id=%u\n", __func__,
 +		 ta_req.svm_port);
 +
-+	err = tsi_control_sendmsg(tsk->csocket,
-+				  TSI_ACCEPT,
-+				  (void *)&ta_req,
++	err = tsi_control_sendmsg(tsk->csocket, TSI_ACCEPT, (void *)&ta_req,
 +				  sizeof(struct tsi_accept_req));
 +	if (err < 0) {
 +		pr_debug("%s: error sending accept request\n", __func__);
 +		return err;
 +	}
 +
-+	err = tsi_control_recvmsg(tsk->csocket,
-+				  TSI_ACCEPT,
-+				  (void *)&ta_rsp,
++	err = tsi_control_recvmsg(tsk->csocket, TSI_ACCEPT, (void *)&ta_rsp,
 +				  sizeof(struct tsi_accept_rsp));
 +	if (err < 0) {
 +		pr_debug("%s: error receiving accept response\n", __func__);
@@ -610,15 +684,29 @@ index 000000000000..f43a17cff3a3
 +	pr_debug("%s: socket=%p newsock=%p st=%d\n", __func__, sock, newsock,
 +		 tsk->status);
 +
-+	sk = sk_alloc(current->nsproxy->net_ns, AF_TSI, GFP_KERNEL,
-+		      &tsi_proto, 0);
++	if (tsk->family == PF_INET) {
++		sk = sk_alloc(current->nsproxy->net_ns, AF_TSI, GFP_KERNEL,
++			      &tsi_in4_proto, 0);
++	} else if (tsk->family == PF_INET6) {
++		sk = sk_alloc(current->nsproxy->net_ns, AF_TSI6, GFP_KERNEL,
++			      &tsi_in6_proto, 0);
++	} else if (tsk->family == PF_UNIX) {
++		sk = sk_alloc(current->nsproxy->net_ns, AF_TSIU, GFP_KERNEL,
++			      &tsi_un_proto, 0);
++	} else {
++		panic("Unsupported family in tsk->family=%d", tsk->family);
++	}
 +	if (!sk) {
 +		err = -ENOMEM;
 +		goto release;
 +	}
 +
 +	sock_init_data(newsock, sk);
++	/* We need to use our own setsockopt functions */
++	set_bit(SOCK_CUSTOM_SOCKOPT, &sk->sk_socket->flags);
++
 +	newtsk = tsi_sk(newsock->sk);
++	newtsk->family = tsk->family;
 +
 +	if (tsk->status == S_INET) {
 +		err = tsi_accept_inet(tsk, &nsock, arg);
@@ -633,15 +721,15 @@ index 000000000000..f43a17cff3a3
 +			goto error;
 +		}
 +
-+		err =
-+		    nsock->ops->getname(nsock, (struct sockaddr *)&vm_addr, 0);
++		err = nsock->ops->getname(nsock, (struct sockaddr *)&vm_addr,
++					  0);
 +		if (err < 0) {
 +			pr_debug("%s: error in getname: %d\n", __func__, err);
 +			goto error;
 +		}
 +		newtsk->svm_port = vm_addr.svm_port;
-+		err =
-+		    nsock->ops->getname(nsock, (struct sockaddr *)&vm_addr, 1);
++		err = nsock->ops->getname(nsock, (struct sockaddr *)&vm_addr,
++					  1);
 +		if (err < 0) {
 +			pr_debug("%s: error in peer getname: %d\n", __func__,
 +				 err);
@@ -667,50 +755,50 @@ index 000000000000..f43a17cff3a3
 +
 +error:
 +	if (nsock)
-+		nsock->ops->release(nsock);
++		sock_release(nsock);
 +	release_sock(listener);
 +	return err;
 +}
 +
-+static int vsock_proxy_getname(struct tsi_sock *tsk,
-+			       struct sockaddr *addr, int peer)
++static int vsock_proxy_getname(struct tsi_sock *tsk, struct sockaddr *addr,
++			       int peer)
 +{
 +	struct tsi_getname_req gn_req;
 +	struct tsi_getname_rsp gn_rsp;
-+	int addr_len;
 +	int err;
-+	DECLARE_SOCKADDR(struct sockaddr_in *, sin, addr);
 +
 +	gn_req.svm_port = tsk->svm_port;
 +	gn_req.svm_peer_port = tsk->svm_peer_port;
 +	gn_req.peer = peer;
 +
-+	err = tsi_control_sendmsg(tsk->csocket,
-+				  TSI_GETNAME,
-+				  (void *)&gn_req,
++	err = tsi_control_sendmsg(tsk->csocket, TSI_GETNAME, (void *)&gn_req,
 +				  sizeof(struct tsi_getname_req));
 +	if (err < 0) {
 +		pr_debug("%s: error sending getname request\n", __func__);
 +		return err;
 +	}
 +
-+	err = tsi_control_recvmsg(tsk->csocket,
-+				  TSI_GETNAME,
-+				  (void *)&gn_rsp,
++	err = tsi_control_recvmsg(tsk->csocket, TSI_GETNAME, (void *)&gn_rsp,
 +				  sizeof(struct tsi_getname_rsp));
 +	if (err < 0) {
 +		pr_debug("%s: error receiving getname answer\n", __func__);
 +		return err;
 +	}
 +
-+	sin->sin_family = AF_INET;
-+	sin->sin_port = gn_rsp.port;
-+	sin->sin_addr.s_addr = gn_rsp.addr;
-+	addr_len = sizeof(struct sockaddr_in);
++	if (gn_rsp.result != 0) {
++		return gn_rsp.result;
++	}
 +
-+	memcpy(addr, sin, addr_len);
++	err = tsi_check_addr_len(tsk, gn_rsp.addr_len);
++	if (err != 0) {
++		pr_debug("%s: invalid addr_len: %d\n", __func__,
++			 gn_rsp.addr_len);
++		return -EINVAL;
++	}
 +
-+	return addr_len;
++	memcpy(addr, gn_rsp.addr, gn_rsp.addr_len);
++
++	return gn_rsp.addr_len;
 +}
 +
 +static int tsi_getname(struct socket *sock, struct sockaddr *addr, int peer)
@@ -719,6 +807,8 @@ index 000000000000..f43a17cff3a3
 +	struct tsi_sock *tsk;
 +	struct socket *isocket;
 +	DECLARE_SOCKADDR(struct sockaddr_in *, sin, addr);
++	DECLARE_SOCKADDR(struct sockaddr_in6 *, sin6, addr);
++	DECLARE_SOCKADDR(struct sockaddr_un *, sun, addr);
 +	int err;
 +
 +	lock_sock(sk);
@@ -739,11 +829,27 @@ index 000000000000..f43a17cff3a3
 +		} else if (isocket) {
 +			err = isocket->ops->getname(isocket, addr, peer);
 +		} else {
-+			sin->sin_family = AF_INET;
-+			sin->sin_port = htons(1234);
-+			sin->sin_addr.s_addr = htonl(2130706433);
-+			memset(sin->sin_zero, 0, sizeof(sin->sin_zero));
-+			err = sizeof(*sin);
++			if (tsk->family == PF_INET) {
++				sin->sin_family = AF_INET;
++				sin->sin_port = htons(1234);
++				sin->sin_addr.s_addr = htonl(2130706433);
++				memset(sin->sin_zero, 0, sizeof(sin->sin_zero));
++				err = sizeof(*sin);
++			} else if (tsk->family == PF_INET6) {
++				sin6->sin6_family = AF_INET6;
++				sin6->sin6_port = htons(1234);
++				sin6->sin6_flowinfo = 0;
++				memset(sin6->sin6_addr.s6_addr, 0, sizeof(sin6->sin6_addr.s6_addr));
++				sin6->sin6_addr.s6_addr[15] = 1;
++				sin6->sin6_scope_id = 0;
++				err = sizeof(*sin6);
++			} else if (tsk->family == PF_UNIX) {
++				sun->sun_family = AF_UNIX;
++				sun->sun_path[0] = 0;
++				err = 2;
++			} else {
++				err = -EPROTONOSUPPORT;
++			}
 +		}
 +		break;
 +	}
@@ -753,7 +859,7 @@ index 000000000000..f43a17cff3a3
 +}
 +
 +static __poll_t tsi_poll(struct file *file, struct socket *sock,
-+			 poll_table * wait)
++			 poll_table *wait)
 +{
 +	struct sock *sk = sock->sk;
 +	struct tsi_sock *tsk;
@@ -766,8 +872,8 @@ index 000000000000..f43a17cff3a3
 +	isocket = tsk->isocket;
 +	vsocket = tsk->vsocket;
 +
-+	pr_debug("%s: s=%p vs=%p is=%p st=%d\n", __func__, sock,
-+		 vsocket, isocket, tsk->status);
++	pr_debug("%s: s=%p vs=%p is=%p st=%d\n", __func__, sock, vsocket,
++		 isocket, tsk->status);
 +
 +	switch (tsk->status) {
 +	case S_INET:
@@ -825,7 +931,6 @@ index 000000000000..f43a17cff3a3
 +	struct socket *isocket;
 +	struct socket *vsocket;
 +	struct sockaddr_vm vm_addr;
-+	struct sockaddr_in *sin;
 +	struct tsi_listen_req lreq;
 +	struct tsi_listen_rsp lrsp;
 +	int err;
@@ -854,7 +959,6 @@ index 000000000000..f43a17cff3a3
 +		err = -EINVAL;
 +		goto release;
 +	}
-+	sin = tsk->bound_addr;
 +
 +	if (!tsk->svm_port) {
 +		if (tsi_create_proxy(tsk, SOCK_STREAM) != 0) {
@@ -864,25 +968,21 @@ index 000000000000..f43a17cff3a3
 +	}
 +
 +	lreq.svm_port = tsk->svm_port;
-+	lreq.addr = sin->sin_addr.s_addr;
-+	lreq.port = sin->sin_port;
++	lreq.addr_len = tsk->bound_addr_len;
++	memcpy(&lreq.addr, tsk->bound_addr, tsk->bound_addr_len);
 +	lreq.vm_port = vm_addr.svm_port;
 +	lreq.backlog = backlog;
 +
-+	pr_debug("%s: requesting to listen on port=%d\n", __func__, lreq.port);
-+
-+	err = tsi_control_sendmsg(tsk->csocket,
-+				  TSI_LISTEN,
-+				  (void *)&lreq, sizeof(struct tsi_listen_req));
++	err = tsi_control_sendmsg(tsk->csocket, TSI_LISTEN, (void *)&lreq,
++				  sizeof(struct tsi_listen_req));
 +	if (err < 0) {
 +		pr_debug("%s: error sending listen request: %d\n", __func__,
 +			 err);
 +		goto release;
 +	}
 +
-+	err = tsi_control_recvmsg(tsk->csocket,
-+				  TSI_LISTEN,
-+				  (void *)&lrsp, sizeof(struct tsi_listen_rsp));
++	err = tsi_control_recvmsg(tsk->csocket, TSI_LISTEN, (void *)&lrsp,
++				  sizeof(struct tsi_listen_rsp));
 +	if (err < 0) {
 +		pr_debug("%s: error receiving listen request answer\n",
 +			 __func__);
@@ -895,7 +995,7 @@ index 000000000000..f43a17cff3a3
 +
 +	if (err == 0) {
 +		tsk->svm_peer_port = TSI_DEFAULT_PORT;
-+	} else if (err == -EPERM) {
++	} else if (err == -EPERM || err == -EADDRINUSE || err == -EADDRNOTAVAIL) {
 +		/* Our peer is telling us we're not allowed to expose this
 +		 * port. Switch to the INET personality.
 +		 */
@@ -926,8 +1026,8 @@ index 000000000000..f43a17cff3a3
 +	isocket = tsk->isocket;
 +	vsocket = tsk->vsocket;
 +
-+	pr_debug("%s: s=%p vs=%p is=%p st=%d\n", __func__, sock,
-+		 vsocket, isocket, tsk->status);
++	pr_debug("%s: s=%p vs=%p is=%p st=%d\n", __func__, sock, vsocket,
++		 isocket, tsk->status);
 +
 +	switch (tsk->status) {
 +	case S_HYBRID:
@@ -945,9 +1045,7 @@ index 000000000000..f43a17cff3a3
 +	return err;
 +}
 +
-+static int tsi_stream_setsockopt(struct socket *sock,
-+				 int level,
-+				 int optname,
++static int tsi_stream_setsockopt(struct socket *sock, int level, int optname,
 +				 sockptr_t optval, unsigned int optlen)
 +{
 +	struct sock *sk = sock->sk;
@@ -959,14 +1057,19 @@ index 000000000000..f43a17cff3a3
 +	tsk = tsi_sk(sock->sk);
 +	isocket = tsk->isocket;
 +
-+	pr_debug("%s: s=%p is=%p st=%d\n", __func__, sock,
-+		 isocket, tsk->status);
++	pr_debug("%s: s=%p is=%p st=%d family=%d\n", __func__, sock, isocket,
++		 tsk->status, tsk->family);
 +
 +	switch (tsk->status) {
 +	case S_HYBRID:
 +	case S_INET:
-+		err = isocket->ops->setsockopt(isocket, level, optname, optval,
-+					       optlen);
++		if (level == SOL_SOCKET) {
++			err = sock_setsockopt(isocket, level, optname, optval,
++					      optlen);
++		} else {
++			err = isocket->ops->setsockopt(isocket, level, optname,
++						       optval, optlen);
++		}
 +		break;
 +	case S_VSOCK:
 +		// TODO implement remote setsockopt
@@ -978,9 +1081,7 @@ index 000000000000..f43a17cff3a3
 +	return err;
 +}
 +
-+static int tsi_dgram_setsockopt(struct socket *sock,
-+				int level,
-+				int optname,
++static int tsi_dgram_setsockopt(struct socket *sock, int level, int optname,
 +				sockptr_t optval, unsigned int optlen)
 +{
 +	struct sock *sk = sock->sk;
@@ -992,8 +1093,8 @@ index 000000000000..f43a17cff3a3
 +	tsk = tsi_sk(sock->sk);
 +	isocket = tsk->isocket;
 +
-+	pr_debug("%s: s=%p is=%p st=%d\n", __func__, sock,
-+		 isocket, tsk->status);
++	pr_debug("%s: s=%p is=%p st=%d\n", __func__, sock, isocket,
++		 tsk->status);
 +
 +	switch (tsk->status) {
 +	case S_HYBRID:
@@ -1011,9 +1112,8 @@ index 000000000000..f43a17cff3a3
 +	return err;
 +}
 +
-+static int tsi_stream_getsockopt(struct socket *sock,
-+				 int level, int optname,
-+				 char *optval, int __user * optlen)
++static int tsi_stream_getsockopt(struct socket *sock, int level, int optname,
++				 char *optval, int __user *optlen)
 +{
 +	struct sock *sk = sock->sk;
 +	struct tsi_sock *tsk;
@@ -1026,8 +1126,8 @@ index 000000000000..f43a17cff3a3
 +	isocket = tsk->isocket;
 +	vsocket = tsk->vsocket;
 +
-+	pr_debug("%s: s=%p vs=%p is=%p st=%d\n", __func__, sock,
-+		 vsocket, isocket, tsk->status);
++	pr_debug("%s: s=%p vs=%p is=%p st=%d\n", __func__, sock, vsocket,
++		 isocket, tsk->status);
 +
 +	switch (tsk->status) {
 +	case S_HYBRID:
@@ -1060,8 +1160,8 @@ index 000000000000..f43a17cff3a3
 +	isocket = tsk->isocket;
 +	vsocket = tsk->vsocket;
 +
-+	pr_debug("%s: s=%p vs=%p is=%p st=%d\n", __func__, sock,
-+		 vsocket, isocket, tsk->status);
++	pr_debug("%s: s=%p vs=%p is=%p st=%d\n", __func__, sock, vsocket,
++		 isocket, tsk->status);
 +
 +	switch (tsk->status) {
 +	case S_HYBRID:
@@ -1086,7 +1186,6 @@ index 000000000000..f43a17cff3a3
 +{
 +	struct sock *sk = sock->sk;
 +	struct tsi_sendto_addr sa_req;
-+	struct sockaddr_in *sin;
 +	struct sockaddr_vm *svm;
 +	struct tsi_sock *tsk;
 +	struct socket *isocket;
@@ -1098,8 +1197,8 @@ index 000000000000..f43a17cff3a3
 +	isocket = tsk->isocket;
 +	vsocket = tsk->vsocket;
 +
-+	pr_debug("%s: s=%p vs=%p is=%p st=%d\n", __func__, sock,
-+		 vsocket, isocket, tsk->status);
++	pr_debug("%s: s=%p vs=%p is=%p st=%d\n", __func__, sock, vsocket,
++		 isocket, tsk->status);
 +
 +	switch (tsk->status) {
 +	case S_INET:
@@ -1114,13 +1213,19 @@ index 000000000000..f43a17cff3a3
 +		if (msg->msg_name) {
 +			pr_debug("%s: fixing msg_name for vsock proxy\n",
 +				 __func__);
++
++			err = tsi_check_addr_len(tsk, msg->msg_namelen);
++			if (err != 0) {
++				goto release;
++			}
++
 +			if (!tsk->sendto_addr) {
 +				tsk->sendto_addr =
-+				    kmalloc(sizeof(struct sockaddr_in),
-+					    GFP_KERNEL);
++					kmalloc(msg->msg_namelen, GFP_KERNEL);
++				tsk->sendto_addr_len = msg->msg_namelen;
 +			}
 +			memcpy(tsk->sendto_addr, msg->msg_name,
-+			       sizeof(struct sockaddr_in));
++			       msg->msg_namelen);
 +
 +			if (tsk->svm_port == 0) {
 +				if (tsi_create_proxy(tsk, SOCK_DGRAM) != 0) {
@@ -1129,20 +1234,17 @@ index 000000000000..f43a17cff3a3
 +				}
 +			}
 +
-+			sin = (struct sockaddr_in *)msg->msg_name;
 +			sa_req.svm_port = tsk->svm_port;
-+			sa_req.addr = sin->sin_addr.s_addr;
-+			sa_req.port = sin->sin_port;
++			sa_req.addr_len = msg->msg_namelen;
++			memcpy(&sa_req.addr, msg->msg_name, msg->msg_namelen);
 +
-+			err = tsi_control_sendmsg(tsk->csocket,
-+						  TSI_SENDTO_ADDR,
-+						  (void *)&sa_req,
-+						  sizeof(struct
-+							 tsi_sendto_addr));
++			err = tsi_control_sendmsg(
++				tsk->csocket, TSI_SENDTO_ADDR, (void *)&sa_req,
++				sizeof(struct tsi_sendto_addr));
 +			if (err < 0) {
-+				pr_debug
-+				    ("%s: error sending connection request: %d\n",
-+				     __func__, err);
++				pr_debug(
++					"%s: error sending connection request: %d\n",
++					__func__, err);
 +				goto release;
 +			}
 +
@@ -1179,8 +1281,8 @@ index 000000000000..f43a17cff3a3
 +	isocket = tsk->isocket;
 +	vsocket = tsk->vsocket;
 +
-+	pr_debug("%s: s=%p vs=%p is=%p st=%d\n", __func__, sock,
-+		 vsocket, isocket, tsk->status);
++	pr_debug("%s: s=%p vs=%p is=%p st=%d\n", __func__, sock, vsocket,
++		 isocket, tsk->status);
 +
 +	switch (tsk->status) {
 +	case S_HYBRID:
@@ -1212,8 +1314,8 @@ index 000000000000..f43a17cff3a3
 +	isocket = tsk->isocket;
 +	vsocket = tsk->vsocket;
 +
-+	pr_debug("%s: s=%p vs=%p is=%p st=%d\n", __func__, sock,
-+		 vsocket, isocket, tsk->status);
++	pr_debug("%s: s=%p vs=%p is=%p st=%d\n", __func__, sock, vsocket,
++		 isocket, tsk->status);
 +
 +	switch (tsk->status) {
 +	case S_HYBRID:
@@ -1225,12 +1327,12 @@ index 000000000000..f43a17cff3a3
 +	case S_VSOCK:
 +		err = vsocket->ops->recvmsg(vsocket, msg, len, flags);
 +		if (err > 0 && msg && msg->msg_name && tsk->sendto_addr) {
-+			pr_debug
-+			    ("%s: msg_name=%p sin_sendto=%p, msg_len=%d sin_len=%ld\n",
-+			     __func__, msg->msg_name, tsk->sendto_addr,
-+			     msg->msg_namelen, sizeof(struct sockaddr_in));
++			pr_debug(
++				"%s: msg_name=%p sendto_addr=%p, msg_len=%d addr_len=%d\n",
++				__func__, msg->msg_name, tsk->sendto_addr,
++				msg->msg_namelen, tsk->sendto_addr_len);
 +			memcpy(msg->msg_name, tsk->sendto_addr,
-+			       sizeof(struct sockaddr_in));
++			       tsk->sendto_addr_len);
 +		}
 +		break;
 +	}
@@ -1245,7 +1347,7 @@ index 000000000000..f43a17cff3a3
 +	.release = tsi_release,
 +	.bind = tsi_bind,
 +	.connect = tsi_connect,
-+	.socketpair = sock_no_socketpair,
++	.socketpair = tsi_socketpair,
 +	.accept = tsi_accept,
 +	.getname = tsi_getname,
 +	.poll = tsi_poll,
@@ -1265,7 +1367,7 @@ index 000000000000..f43a17cff3a3
 +	.release = tsi_release,
 +	.bind = tsi_bind,
 +	.connect = tsi_connect,
-+	.socketpair = sock_no_socketpair,
++	.socketpair = tsi_socketpair,
 +	.accept = tsi_accept,
 +	.getname = tsi_getname,
 +	.poll = tsi_poll,
@@ -1279,8 +1381,8 @@ index 000000000000..f43a17cff3a3
 +	.mmap = sock_no_mmap,
 +};
 +
-+static int tsi_create(struct net *net, struct socket *sock,
-+		      int protocol, int kern)
++static int tsi_create_common(struct net *net, struct socket *sock, int protocol,
++			     int kern, int family)
 +{
 +	struct tsi_sock *tsk;
 +	struct socket *isocket;
@@ -1289,7 +1391,7 @@ index 000000000000..f43a17cff3a3
 +	struct sock *sk;
 +	int err;
 +
-+	pr_debug("%s: socket=%p\n", __func__, sock);
++	pr_debug("%s: socket=%p family=%d\n", __func__, sock, family);
 +
 +	if (!sock)
 +		return -EINVAL;
@@ -1305,37 +1407,47 @@ index 000000000000..f43a17cff3a3
 +		return -ESOCKTNOSUPPORT;
 +	}
 +
-+	sk = sk_alloc(net, AF_TSI, GFP_KERNEL, &tsi_proto, kern);
++	if (family == PF_INET) {
++		sk = sk_alloc(net, AF_TSI, GFP_KERNEL, &tsi_in4_proto, kern);
++	} else if (family == PF_INET6) {
++		sk = sk_alloc(net, AF_TSI6, GFP_KERNEL, &tsi_in6_proto, kern);
++	} else if (family == PF_UNIX) {
++		sk = sk_alloc(net, AF_TSIU, GFP_KERNEL, &tsi_un_proto, kern);
++	} else {
++		return -EPROTONOSUPPORT;
++	}
 +	if (!sk)
 +		return -ENOMEM;
 +
 +	sock_init_data(sock, sk);
++	/* We need to use our own setsockopt functions */
++	set_bit(SOCK_CUSTOM_SOCKOPT, &sk->sk_socket->flags);
 +
 +	tsk = tsi_sk(sk);
 +
 +	isocket = NULL;
-+	err = __sock_create(current->nsproxy->net_ns, PF_INET,
-+			    sock->type, protocol, &isocket, 1);
++	err = __sock_create(current->nsproxy->net_ns, family, sock->type,
++			    protocol, &isocket, 1);
 +	if (err) {
-+		pr_err("%s (%d): problem creating inet socket\n",
-+		       __func__, task_pid_nr(current));
-+		goto release_isocket;
++		pr_debug("%s (%d): problem creating inet socket\n", __func__,
++			 task_pid_nr(current));
++		return err;
 +	}
 +
 +	vsocket = NULL;
-+	err = __sock_create(current->nsproxy->net_ns, PF_VSOCK,
-+			    sock->type, PF_VSOCK, &vsocket, 1);
++	err = __sock_create(current->nsproxy->net_ns, PF_VSOCK, sock->type,
++			    PF_VSOCK, &vsocket, 1);
 +	if (err) {
-+		pr_err("%s (%d): problem creating vsock socket\n",
-+		       __func__, task_pid_nr(current));
-+		goto release_vsocket;
++		pr_debug("%s (%d): problem creating vsock socket\n", __func__,
++			 task_pid_nr(current));
++		goto free_isocket;
 +	}
 +
 +	err = tsi_create_control_socket(&csocket);
 +	if (err) {
-+		pr_err("%s (%d): problem creating control socket\n",
-+		       __func__, task_pid_nr(current));
-+		goto release_vsocket;
++		pr_debug("%s (%d): problem creating control socket\n", __func__,
++			 task_pid_nr(current));
++		goto free_vsocket;
 +	}
 +
 +	pr_debug("isocket: %p\n", isocket);
@@ -1348,19 +1460,50 @@ index 000000000000..f43a17cff3a3
 +	tsk->svm_peer_port = TSI_DEFAULT_PORT;
 +	tsk->sendto_addr = NULL;
 +	tsk->bound_addr = NULL;
++	tsk->family = family;
 +
 +	return 0;
 +
-+release_vsocket:
-+	vsocket->ops->release(vsocket);
-+release_isocket:
-+	isocket->ops->release(isocket);
++free_vsocket:
++	sock_release(vsocket);
++free_isocket:
++	sock_release(isocket);
 +	return err;
 +}
 +
-+static const struct net_proto_family tsi_family_ops = {
++static int tsi_create_in4(struct net *net, struct socket *sock, int protocol,
++			  int kern)
++{
++	return tsi_create_common(net, sock, protocol, kern, AF_INET);
++}
++
++static int tsi_create_in6(struct net *net, struct socket *sock, int protocol,
++			  int kern)
++{
++	return tsi_create_common(net, sock, protocol, kern, AF_INET6);
++}
++
++static int tsi_create_un(struct net *net, struct socket *sock, int protocol,
++			 int kern)
++{
++	return tsi_create_common(net, sock, protocol, kern, AF_UNIX);
++}
++
++static const struct net_proto_family tsi_family_in4_ops = {
 +	.family = AF_TSI,
-+	.create = tsi_create,
++	.create = tsi_create_in4,
++	.owner = THIS_MODULE,
++};
++
++static const struct net_proto_family tsi_family_in6_ops = {
++	.family = AF_TSI6,
++	.create = tsi_create_in6,
++	.owner = THIS_MODULE,
++};
++
++static const struct net_proto_family tsi_family_un_ops = {
++	.family = AF_TSIU,
++	.create = tsi_create_un,
 +	.owner = THIS_MODULE,
 +};
 +
@@ -1368,24 +1511,56 @@ index 000000000000..f43a17cff3a3
 +{
 +	int err;
 +
-+	tsi_proto.owner = THIS_MODULE;
-+
-+	err = proto_register(&tsi_proto, 1);
++	err = proto_register(&tsi_in4_proto, 1);
 +	if (err) {
 +		pr_err("Could not register tsi protocol\n");
 +		goto err_do_nothing;
 +	}
-+	err = sock_register(&tsi_family_ops);
++	err = sock_register(&tsi_family_in4_ops);
 +	if (err) {
-+		pr_err("could not register af_tsi (%d) address family: %d\n",
++		pr_err("Could not register af_tsi (%d) address family: %d\n",
 +		       AF_TSI, err);
-+		goto err_unregister_proto;
++		goto err_unregister_in4_proto;
++	}
++
++	err = proto_register(&tsi_in6_proto, 1);
++	if (err) {
++		pr_err("Could not register tsi6 protocol\n");
++		goto err_unregister_in4_sock;
++	}
++
++	err = sock_register(&tsi_family_in6_ops);
++	if (err) {
++		pr_err("Could not register af_tsi6 (%d) address family: %d\n",
++		       AF_TSI6, err);
++		goto err_unregister_in6_proto;
++	}
++
++	err = proto_register(&tsi_un_proto, 1);
++	if (err) {
++		pr_debug("Could not register tsiu protocol\n");
++		goto err_unregister_in6_sock;
++	}
++
++	err = sock_register(&tsi_family_un_ops);
++	if (err) {
++		pr_debug("Could not register af_tsiu (%d) address family: %d\n",
++			 AF_TSIU, err);
++		goto err_unregister_un_proto;
 +	}
 +
 +	return 0;
 +
-+err_unregister_proto:
-+	proto_unregister(&tsi_proto);
++err_unregister_un_proto:
++	proto_unregister(&tsi_un_proto);
++err_unregister_in6_sock:
++	sock_unregister(AF_TSI6);
++err_unregister_in6_proto:
++	proto_unregister(&tsi_in6_proto);
++err_unregister_in4_sock:
++	sock_unregister(AF_TSI);
++err_unregister_in4_proto:
++	proto_unregister(&tsi_in4_proto);
 +err_do_nothing:
 +	return err;
 +}
@@ -1393,7 +1568,9 @@ index 000000000000..f43a17cff3a3
 +static void __exit tsi_exit(void)
 +{
 +	sock_unregister(AF_TSI);
-+	proto_unregister(&tsi_proto);
++	proto_unregister(&tsi_in4_proto);
++	sock_unregister(AF_TSI6);
++	proto_unregister(&tsi_in6_proto);
 +}
 +
 +module_init(tsi_init);
@@ -1405,10 +1582,10 @@ index 000000000000..f43a17cff3a3
 +MODULE_LICENSE("GPL v2");
 diff --git a/net/tsi/af_tsi.h b/net/tsi/af_tsi.h
 new file mode 100644
-index 000000000000..cf381734bebe
+index 000000000000..b74966fd7ae3
 --- /dev/null
 +++ b/net/tsi/af_tsi.h
-@@ -0,0 +1,100 @@
+@@ -0,0 +1,107 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +/*
 + * Transparent Socket Impersonation Driver
@@ -1437,15 +1614,18 @@ index 000000000000..cf381734bebe
 +#define TSI_ACCEPT         1030
 +#define TSI_PROXY_RELEASE  1031
 +
++#define TSI_ADDR_LEN       128
++
 +struct tsi_proxy_create {
 +	u32 svm_port;
++	u16 family;
 +	u16 type;
 +} __attribute__((packed));
 +
 +struct tsi_connect_req {
 +	u32 svm_port;
-+	u32 addr;
-+	u16 port;
++	u32 addr_len;
++	char addr[TSI_ADDR_LEN];
 +} __attribute__((packed));
 +
 +struct tsi_connect_rsp {
@@ -1454,16 +1634,16 @@ index 000000000000..cf381734bebe
 +
 +struct tsi_sendto_addr {
 +	u32 svm_port;
-+	u32 addr;
-+	u16 port;
++	u32 addr_len;
++	char addr[TSI_ADDR_LEN];
 +} __attribute__((packed));
 +
 +struct tsi_listen_req {
 +	u32 svm_port;
-+	u32 addr;
-+	u16 port;
 +	u32 vm_port;
-+	int backlog;
++	u32 backlog;
++	u32 addr_len;
++	char addr[TSI_ADDR_LEN];
 +} __attribute__((packed));
 +
 +struct tsi_listen_rsp {
@@ -1486,8 +1666,9 @@ index 000000000000..cf381734bebe
 +} __attribute__((packed));
 +
 +struct tsi_getname_rsp {
-+	u32 addr;
-+	u16 port;
++	int result;
++	u32 addr_len;
++	char addr[TSI_ADDR_LEN];
 +} __attribute__((packed));
 +
 +struct tsi_sock {
@@ -1499,8 +1680,11 @@ index 000000000000..cf381734bebe
 +	unsigned int status;
 +	u32 svm_port;
 +	u32 svm_peer_port;
-+	struct sockaddr_in *bound_addr;
-+	struct sockaddr_in *sendto_addr;
++	struct sockaddr *bound_addr;
++	struct sockaddr *sendto_addr;
++	int bound_addr_len;
++	int sendto_addr_len;
++	u16 family;
 +};
 +
 +struct tsi_proxy_release {
@@ -1510,22 +1694,26 @@ index 000000000000..cf381734bebe
 +
 +#endif
 diff --git a/security/selinux/hooks.c b/security/selinux/hooks.c
-index fc926d3cac6e..486be0734a6c 100644
+index fc926d3cac6e..6e81037192c8 100644
 --- a/security/selinux/hooks.c
 +++ b/security/selinux/hooks.c
-@@ -1302,7 +1302,9 @@ static inline u16 socket_type_to_security_class(int family, int type, int protoc
+@@ -1302,7 +1302,13 @@ static inline u16 socket_type_to_security_class(int family, int type, int protoc
  			return SECCLASS_XDP_SOCKET;
  		case PF_MCTP:
  			return SECCLASS_MCTP_SOCKET;
 -#if PF_MAX > 46
 +		case PF_TSI:
 +			return SECCLASS_TSI_SOCKET;
-+#if PF_MAX > 47
++		case PF_TSI6:
++			return SECCLASS_TSI_SOCKET;
++		case PF_TSIU:
++			return SECCLASS_TSI_SOCKET;
++#if PF_MAX > 49
  #error New address family defined, please update this function.
  #endif
  		}
 diff --git a/security/selinux/include/classmap.h b/security/selinux/include/classmap.h
-index 7229c9bf6c27..065d9b85693f 100644
+index 7229c9bf6c27..f08d24321603 100644
 --- a/security/selinux/include/classmap.h
 +++ b/security/selinux/include/classmap.h
 @@ -173,6 +173,7 @@ const struct security_class_mapping secclass_map[] = {
@@ -1541,9 +1729,8 @@ index 7229c9bf6c27..065d9b85693f 100644
  };
 
 -#if PF_MAX > 46
-+#if PF_MAX > 47
++#if PF_MAX > 49
  #error New address family defined, please update secclass_map.
  #endif
 --
 2.50.0
-

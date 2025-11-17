@@ -60,7 +60,7 @@ func (*vmManager) NewInstance(ctx context.Context, state string) (vm.Instance, e
 		initrdPath string
 	)
 	if len(p2) == 0 {
-		p2 = []string{"/usr/local/lib", "/usr/lib", "/lib"}
+		p2 = []string{"/usr/local/lib", "/usr/local/lib64", "/usr/lib", "/lib"}
 	}
 	sharedName := "libkrun.so"
 	if runtime.GOOS == "darwin" {

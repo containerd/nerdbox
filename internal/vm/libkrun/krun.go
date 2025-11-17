@@ -47,7 +47,7 @@ const (
 type logLevel uint32
 
 const (
-	debugLevel logLevel = 1
+	warnLevel logLevel = 2
 )
 
 type vmcontext struct {

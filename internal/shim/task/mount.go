@@ -89,9 +89,6 @@ func transformMounts(ctx context.Context, vmi vm.Instance, id string, ms []*type
 				udi = -1
 			)
 			for i, opt := range m.Options {
-				if strings.Contains(opt, "{{") {
-					continue
-				}
 				if strings.HasPrefix(opt, "upperdir=") {
 					udi = i
 				} else if strings.HasPrefix(opt, "workdir=") {
@@ -100,11 +97,18 @@ func transformMounts(ctx context.Context, vmi vm.Instance, id string, ms []*type
 				// TODO: Handle virtio for lowers?
 			}
 			if wdi > -1 && udi > -1 {
-				// Having the upper as virtiofs may return invalid argument, avoid
-				// transforming and attempt to perform the mounts on the host if
-				// supported.
-				return nil, fmt.Errorf("cannot use virtiofs for upper dir in overlay: %w", errdefs.ErrNotImplemented)
-			} else if wdi == -1 || udi == -1 {
+				//
+				// If any upperdir or workdir isn't transformed, they both
+				// should fall back to virtiofs passthroughfs.  But...
+				//
+				if !strings.Contains(m.Options[wdi], "{{") ||
+					!strings.Contains(m.Options[udi], "{{") {
+					// Having the upper as virtiofs may return invalid argument, avoid
+					// transforming and attempt to perform the mounts on the host if
+					// supported.
+					return nil, fmt.Errorf("cannot use virtiofs for upper dir in overlay: %w", errdefs.ErrNotImplemented)
+				}
+			} else {
 				log.G(ctx).WithField("options", m.Options).Warnf("overlayfs missing workdir or upperdir")
 			}
 

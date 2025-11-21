@@ -223,8 +223,8 @@ func (p *linuxPlatform) CopyConsole(ctx context.Context, console console.Console
 	}
 	if cstdin != nil {
 		cons = &closingConsole{
-			Console:    epollConsole,
-			closeStdin: cstdin,
+			EpollConsole: epollConsole,
+			closeStdin:   cstdin,
 		}
 	} else {
 		cons = epollConsole
@@ -237,7 +237,9 @@ func (p *linuxPlatform) ShutdownConsole(ctx context.Context, cons console.Consol
 	if p.epoller == nil {
 		return errors.New("uninitialized epoller")
 	}
-	epollConsole, ok := cons.(*console.EpollConsole)
+	epollConsole, ok := cons.(interface {
+		Shutdown(close func(int) error) error
+	})
 	if !ok {
 		return fmt.Errorf("expected EpollConsole, got %#v", cons)
 	}
@@ -249,7 +251,7 @@ func (p *linuxPlatform) Close() error {
 }
 
 type closingConsole struct {
-	console.Console
+	*console.EpollConsole
 
 	closeStdin io.Closer
 }

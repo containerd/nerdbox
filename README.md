@@ -118,9 +118,12 @@ Install libkrun, erofs-utils, e2fsprogs on your host
 > Use brew to install libkrun, erofs-utils, and e2fsprogs
 >
 > ```
-> brew tap slp/krunkit
-> brew install libkrun-efi erofs-utils e2fsprogs
+> brew tap slp/krun
+> brew install libkrun erofs-utils e2fsprogs
 > ```
+>
+> `libkrun-efi` fails to load with the 1.16.0 release. Both `libkrun` and `libkrun-efi`
+> may be installed at the same time, but you may need to run `brew link libkrun`.
 
 Run containerd with the shim and nerdbox components in the PATH:
 

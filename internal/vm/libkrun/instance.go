@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -62,9 +63,9 @@ func (*vmManager) NewInstance(ctx context.Context, state string) (vm.Instance, e
 	if len(p2) == 0 {
 		p2 = []string{"/usr/local/lib", "/usr/local/lib64", "/usr/lib", "/lib"}
 	}
-	sharedName := "libkrun.so"
+	sharedNames := []string{"libkrun.so"}
 	if runtime.GOOS == "darwin" {
-		sharedName = "libkrun-efi.dylib"
+		sharedNames = []string{"libkrun.dylib", "libkrun-efi.dylib"}
 		p2 = append(p2, "/opt/homebrew/lib")
 	}
 
@@ -75,9 +76,12 @@ func (*vmManager) NewInstance(ctx context.Context, state string) (vm.Instance, e
 		}
 		var path string
 		if krunPath == "" {
-			path = filepath.Join(dir, sharedName)
-			if _, err := os.Stat(path); err == nil {
-				krunPath = path
+			for _, sharedName := range sharedNames {
+				path = filepath.Join(dir, sharedName)
+				if _, err := os.Stat(path); err == nil {
+					krunPath = path
+					break
+				}
 			}
 		}
 		if kernelPath == "" {
@@ -94,7 +98,7 @@ func (*vmManager) NewInstance(ctx context.Context, state string) (vm.Instance, e
 		}
 	}
 	if krunPath == "" {
-		return nil, fmt.Errorf("%s not found in PATH or LIBKRUN_PATH", sharedName)
+		return nil, fmt.Errorf("%s not found in PATH or LIBKRUN_PATH", strings.Join(sharedNames, " or "))
 	}
 	if kernelPath == "" {
 		return nil, fmt.Errorf("nerdbox-kernel not found in PATH or LIBKRUN_PATH")

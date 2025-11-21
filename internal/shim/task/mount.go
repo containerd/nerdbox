@@ -19,12 +19,15 @@ package task
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/containerd/containerd/api/types"
 	"github.com/containerd/errdefs"
 	"github.com/containerd/log"
 
+	"github.com/containerd/nerdbox/internal/erofs"
 	"github.com/containerd/nerdbox/internal/vm"
 )
 
@@ -32,6 +35,7 @@ type diskOptions struct {
 	name     string
 	source   string
 	readOnly bool
+	vmdk     bool
 }
 
 // transformMounts does not perform any local mounts but transforms
@@ -44,25 +48,63 @@ func transformMounts(ctx context.Context, vmi vm.Instance, id string, ms []*type
 		err      error
 	)
 
+	log.G(ctx).Trace("transformMounts", ms)
 	for _, m := range ms {
 		switch m.Type {
 		case "erofs":
+
 			disk := fmt.Sprintf("disk-%d-%s", disks, id)
 			// virtiofs implementation has a limit of 36 characters for the tag
 			if len(disk) > 36 {
 				disk = disk[:36]
 			}
-			addDisks = append(addDisks, diskOptions{
-				name:     disk,
-				source:   m.Source,
-				readOnly: true,
-			})
+
+			var Options []string
+
+			devices := []string{m.Source}
+			for _, o := range m.Options {
+				if d, f := strings.CutPrefix(o, "device="); f {
+					devices = append(devices, d)
+					continue
+				}
+				Options = append(Options, o)
+			}
+
+			if len(devices) > 1 {
+				// generate VMDK desc for the EROFS flattened fs if it does not exist
+				mergedfsPath := filepath.Dir(m.Source) + "/merged_fs.vmdk"
+				if _, err := os.Stat(mergedfsPath); err != nil {
+					if !os.IsNotExist(err) {
+						log.G(ctx).Warnf("failed to stat %v: %v", mergedfsPath, err)
+						return nil, errdefs.ErrNotImplemented
+					}
+					err = erofs.DumpVMDKDescriptorToFile(mergedfsPath, 0xfffffffe, devices)
+					if err != nil {
+						log.G(ctx).Warnf("failed to generate %v: %v", mergedfsPath, err)
+						return nil, errdefs.ErrNotImplemented
+					}
+				}
+				addDisks = append(addDisks, diskOptions{
+					name:     disk,
+					source:   mergedfsPath,
+					readOnly: true,
+					vmdk:     true,
+				})
+			} else {
+				addDisks = append(addDisks, diskOptions{
+					name:     disk,
+					source:   m.Source,
+					readOnly: true,
+					vmdk:     false,
+				})
+			}
 			am = append(am, &types.Mount{
 				Type:    "erofs",
 				Source:  fmt.Sprintf("/dev/vd%c", disks),
 				Target:  m.Target,
-				Options: filterOptions(m.Options),
+				Options: filterOptions(Options),
 			})
+
 			disks++
 		case "ext4":
 			disk := fmt.Sprintf("disk-%d-%s", disks, id)
@@ -75,6 +117,7 @@ func transformMounts(ctx context.Context, vmi vm.Instance, id string, ms []*type
 				name:     disk,
 				source:   m.Source,
 				readOnly: false,
+				vmdk:     false,
 			})
 			am = append(am, &types.Mount{
 				Type:    "ext4",
@@ -127,6 +170,10 @@ func transformMounts(ctx context.Context, vmi vm.Instance, id string, ms []*type
 		if do.readOnly {
 			opts = append(opts, vm.WithReadOnly())
 		}
+		if do.vmdk {
+			opts = append(opts, vm.WithVmdk())
+		}
+
 		if err := vmi.AddDisk(ctx, do.name, do.source, opts...); err != nil {
 			return nil, err
 		}

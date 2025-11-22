@@ -1,4 +1,4 @@
-From 0935e6b153ffeecfbe5509971805ad2bf5b53bb0 Mon Sep 17 00:00:00 2001
+From e25f8d8cc856be6b342a20093a43eda95ce8fc35 Mon Sep 17 00:00:00 2001
 From: Sergio Lopez <slp@redhat.com>
 Date: Thu, 19 May 2022 22:42:01 +0200
 Subject: [PATCH 10/21] tsi: allow hijacking sockets (tsi_hijack)
@@ -9,12 +9,12 @@ sockets to turn them into TSI sockets.
 
 Signed-off-by: Sergio Lopez <slp@redhat.com>
 ---
- net/socket.c     | 17 +++++++++++++++++
+ net/socket.c     | 27 +++++++++++++++++++++++++++
  net/tsi/af_tsi.c |  2 +-
- 2 files changed, 18 insertions(+), 1 deletion(-)
+ 2 files changed, 28 insertions(+), 1 deletion(-)
 
 diff --git a/net/socket.c b/net/socket.c
-index 5ad75d15e1ad..bf8818423454 100644
+index 4e1ec38c2434..37b39d75c93c 100644
 --- a/net/socket.c
 +++ b/net/socket.c
 @@ -115,6 +115,10 @@ unsigned int sysctl_net_busy_read __read_mostly;
@@ -28,7 +28,7 @@ index 5ad75d15e1ad..bf8818423454 100644
  static ssize_t sock_read_iter(struct kiocb *iocb, struct iov_iter *to);
  static ssize_t sock_write_iter(struct kiocb *iocb, struct iov_iter *from);
  static int sock_mmap(struct file *file, struct vm_area_struct *vma);
-@@ -1488,6 +1492,10 @@ int sock_wake_async(struct socket_wq *wq, int how, int band)
+@@ -1490,6 +1494,10 @@ int sock_wake_async(struct socket_wq *wq, int how, int band)
  }
  EXPORT_SYMBOL(sock_wake_async);
 
@@ -39,16 +39,26 @@ index 5ad75d15e1ad..bf8818423454 100644
  /**
   *	__sock_create - creates a socket
   *	@net: net namespace
-@@ -1558,6 +1566,15 @@ int __sock_create(struct net *net, int family, int type, int protocol,
+@@ -1560,6 +1568,25 @@ int __sock_create(struct net *net, int family, int type, int protocol,
  		request_module("net-pf-%d", family);
  #endif
 
 +#ifdef CONFIG_TSI
-+	if (tsi_hijack && !kern && family == AF_INET &&
++	if (tsi_hijack && !kern &&
 +	    (type == SOCK_STREAM || type == SOCK_DGRAM)) {
-+		pr_debug("%s - tsi: hijacking AF_INET socket\n",
-+			current->comm);
-+		family = AF_TSI;
++		if (family == AF_INET) {
++			pr_debug("%s - tsi: hijacking AF_INET socket\n",
++				current->comm);
++			family = AF_TSI;
++		} else if (family == AF_INET6) {
++			pr_debug("%s - tsi: hijacking AF_INET6 socket\n",
++				current->comm);
++			family = AF_TSI6;
++		} else if (family == AF_UNIX) {
++			pr_debug("%s - tsi: hijacking AF_UNIX socket\n",
++				current->comm);
++			family = AF_TSIU;
++		}
 +	}
 +#endif
 +
@@ -56,10 +66,10 @@ index 5ad75d15e1ad..bf8818423454 100644
  	pf = rcu_dereference(net_families[family]);
  	err = -EAFNOSUPPORT;
 diff --git a/net/tsi/af_tsi.c b/net/tsi/af_tsi.c
-index f43a17cff3a3..ef1552862253 100644
+index 07a3fd60321b..efa0066cb7a5 100644
 --- a/net/tsi/af_tsi.c
 +++ b/net/tsi/af_tsi.c
-@@ -474,7 +474,7 @@ static int tsi_accept(struct socket *sock, struct socket *newsock,
+@@ -542,7 +542,7 @@ static int tsi_accept(struct socket *sock, struct socket *newsock,
  	struct socket *csocket;
  	struct tsi_sock *tsk;
  	struct tsi_sock *newtsk;
@@ -70,4 +80,3 @@ index f43a17cff3a3..ef1552862253 100644
 
 --
 2.50.0
-

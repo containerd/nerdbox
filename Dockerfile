@@ -63,7 +63,7 @@ RUN wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KERNEL_VERSION}.ta
 COPY kernel/config-${KERNEL_VERSION}-${KERNEL_ARCH} /usr/src/linux/.config
 
 COPY kernel/patches /usr/src/linux/patches
-RUN << EOT
+RUN <<EOT
     for patch in $(ls -d /usr/src/linux/patches/*.patch); do
         patch -p1 -d /usr/src/linux < "$patch";
     done
@@ -76,7 +76,7 @@ FROM kernel-build-base AS kernel-build
 # Compile the kernel
 RUN cd linux && make -j${KERNEL_NPROC}
 
-RUN << EOT
+RUN <<EOT
     set -e
     cd linux
     mkdir /build
@@ -148,7 +148,7 @@ RUN --mount=type=bind,target=.,rw \
 FROM base AS crun-build
 WORKDIR /usr/src/crun
 
-RUN << EOT
+RUN <<EOT
     mkdir /build
     case $(uname -m) in
         x86_64) ARCH=amd64 ;;
@@ -170,7 +170,7 @@ RUN mkdir sbin proc sys tmp run
 COPY --from=vminit-build /build/vminitd ./init
 COPY --from=crun-build /build/crun ./sbin/crun
 
-RUN << EOT
+RUN <<EOT
     set -e
     chmod +x sbin/crun
     mkdir /build

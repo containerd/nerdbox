@@ -156,6 +156,17 @@ func (vmc *vmcontext) AddDisk(blockID, path string, readonly bool) error {
 	return nil
 }
 
+func (vmc *vmcontext) AddDisk2(blockID, path string, diskFmt uint32, readonly bool) error {
+	if vmc.lib.AddDisk2 == nil {
+		return fmt.Errorf("libkrun not loaded")
+	}
+	ret := vmc.lib.AddDisk2(vmc.ctxID, blockID, path, diskFmt, readonly)
+	if ret != 0 {
+		return fmt.Errorf("krun_add_disk2 failed: %d", ret)
+	}
+	return nil
+}
+
 func (vmc *vmcontext) AddNIC(endpoint string, mac net.HardwareAddr, mode vm.NetworkMode, features, flags uint32) error {
 	if vmc.lib.AddNetUnixgram == nil || vmc.lib.AddNetUnixstream == nil {
 		return fmt.Errorf("libkrun not loaded")
@@ -243,6 +254,7 @@ type libkrun struct {
 	SetGvproxyPath     func(ctxID uint32, path string) int32                                                  `C:"krun_set_gvproxy_path"`
 	SetNetMac          func(ctxID uint32, mac []uint8) int32                                                  `C:"krun_set_net_mac"`
 	AddDisk            func(ctxID uint32, blockId, path string, readonly bool) int32                          `C:"krun_add_disk"`
+	AddDisk2           func(ctxID uint32, blockId, path string, diskFmt uint32, readonly bool) int32          `C:"krun_add_disk2"`
 	AddNetUnixstream   func(ctxID uint32, path string, fd int, mac []uint8, features, flags uint32) int32     `C:"krun_add_net_unixstream"`
 	AddNetUnixgram     func(ctxID uint32, path string, fd int, mac []uint8, features, flags uint32) int32     `C:"krun_add_net_unixgram"`
 

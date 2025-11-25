@@ -176,7 +176,11 @@ func (v *vmInstance) AddDisk(ctx context.Context, blockID, mountPath string, opt
 		o(&mc)
 	}
 
-	if err := v.vmc.AddDisk(blockID, mountPath, mc.Readonly); err != nil {
+	var dskFmt uint32 = 0
+	if mc.Vmdk {
+		dskFmt = 2
+	}
+	if err := v.vmc.AddDisk2(blockID, mountPath, dskFmt, mc.Readonly); err != nil {
 		return fmt.Errorf("failed to add disk at '%s': %w", mountPath, err)
 	}
 

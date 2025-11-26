@@ -305,4 +305,3 @@ index 3d5e05d8950f..9e9e124f8d2b 100644
  		.dgram_get_cid		  = virtio_transport_dgram_get_cid,
 --
 2.50.0
-

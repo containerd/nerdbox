@@ -349,4 +349,3 @@ index 6e78927a598e..3d5e05d8950f 100644
  		.stream_enqueue           = virtio_transport_stream_enqueue,
 --
 2.50.0
-

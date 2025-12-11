@@ -2,8 +2,6 @@ module github.com/containerd/nerdbox
 
 go 1.24.3
 
-toolchain go1.24.4
-
 require (
 	github.com/containerd/cgroups/v3 v3.1.2
 	github.com/containerd/console v1.0.5

@@ -92,3 +92,24 @@ jobs:
       - run: script/install-proto-tools
       - run: make proto-fmt
       - run: make check-protos check-api-descriptors
+
+  #
+  # Integration tests
+  #
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+
+      - uses: ./.github/actions/install-go
+
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435  # v3.11.1
+
+      - name: Build project
+        run: make all
+
+      - name: Run integration tests
+        run: go test -v ./integration/...

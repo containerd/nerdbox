@@ -1,0 +1,120 @@
+name: "Build Kernel"
+description: "Reusable workflow to build Linux kernels"
+inputs:
+  kernel_version:
+    description: 'Kernel version to build'
+    required: true
+    default: '6.12.46'
+  kernel_arch:
+    description: 'Kernel architecture to build'
+    required: true
+    default: 'x86_64'
+  kernel_nproc:
+    description: 'Number of parallel build processes'
+    required: false
+    # Public runners provide 4 cores; default to that to avoid overloading
+    # https://docs.github.com/en/actions/reference/runners/github-hosted-runners#standard-github-hosted-runners-for-public-repositories
+    default: '4'
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout code
+      uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435  # v3.11.1
+
+    - name: Calculate kernel cache key
+      id: cache-key
+      shell: bash
+      run: |
+          # Hash the kernel config and patches to create a unique cache key
+          CONFIG_FILE="kernel/config-${{ inputs.kernel_version }}-${{ inputs.kernel_arch }}"
+
+          if [ ! -f "$CONFIG_FILE" ]; then
+            echo "Error: Kernel config file $CONFIG_FILE not found"
+            exit 1
+          fi
+
+          # Calculate hash of config file and all patches
+          CONFIG_HASH=$(sha256sum "$CONFIG_FILE" | cut -d' ' -f1)
+          PATCHES_HASH=$(find kernel/patches -type f -name "*.patch" -exec sha256sum {} \; | sort | sha256sum | cut -d' ' -f1)
+
+          # Combine version, arch, config hash, and patches hash
+          CACHE_KEY="kernel-${{ inputs.kernel_version }}-${{ inputs.kernel_arch }}-${CONFIG_HASH:0:8}-${PATCHES_HASH:0:8}"
+
+          echo "cache-key=${CACHE_KEY}" >> $GITHUB_OUTPUT
+          echo "config-hash=${CONFIG_HASH:0:8}" >> $GITHUB_OUTPUT
+          echo "patches-hash=${PATCHES_HASH:0:8}" >> $GITHUB_OUTPUT
+
+          echo "Kernel cache key: ${CACHE_KEY}"
+          echo "Config hash: ${CONFIG_HASH:0:8}"
+          echo "Patches hash: ${PATCHES_HASH:0:8}"
+
+    - name: Check cache for existing kernel
+      id: cache-kernel
+      uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57  # v4.2.0
+      with:
+        path: _output/nerdbox-kernel-${{ inputs.kernel_arch }}
+        key: ${{ steps.cache-key.outputs.cache-key }}
+        lookup-only: true
+
+    - name: Build kernel
+      if: steps.cache-kernel.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        docker buildx bake kernel \
+          --set kernel.args.KERNEL_VERSION=${{ inputs.kernel_version }} \
+          --set kernel.args.KERNEL_ARCH=${{ inputs.kernel_arch }} \
+          --set kernel.args.KERNEL_NPROC=${{ inputs.kernel_nproc }}
+
+    - name: Verify kernel artifact
+      if: steps.cache-kernel.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        kernel_file="_output/nerdbox-kernel-${{ inputs.kernel_arch }}"
+        if [ ! -f "$kernel_file" ]; then
+          echo "Error: Kernel file $kernel_file not found after build"
+          exit 1
+        fi
+
+        echo "Kernel built successfully:"
+        ls -lh "$kernel_file"
+        file "$kernel_file"
+
+    - name: Save kernel to cache
+      if: steps.cache-kernel.outputs.cache-hit != 'true'
+      uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57  # v4.2.0
+      with:
+        path: _output/nerdbox-kernel-${{ inputs.kernel_arch }}
+        key: ${{ steps.cache-key.outputs.cache-key }}
+
+    - name: Upload kernel artifact
+      if: steps.cache-kernel.outputs.cache-hit != 'true'
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+      with:
+        name: nerdbox-kernel-${{ inputs.kernel_version }}-${{ inputs.kernel_arch }}
+        path: _output/nerdbox-kernel-${{ inputs.kernel_arch }}
+        retention-days: 90
+        if-no-files-found: error
+
+    - name: Cache summary
+      shell: bash
+      run: |
+        echo "## Kernel Build Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "- **Version**: ${{ inputs.kernel_version }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Architecture**: ${{ inputs.kernel_arch }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Cache Key**: \`${{ steps.cache-key.outputs.cache-key }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "- **Config Hash**: ${{ steps.cache-key.outputs.config-hash }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Patches Hash**: ${{ steps.cache-key.outputs.patches-hash }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Cache Hit**: ${{ steps.cache-kernel.outputs.cache-hit == 'true' && '✅ Yes (reused existing)' || '❌ No (built from scratch)' }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        if [ -f "_output/nerdbox-kernel-${{ inputs.kernel_arch }}" ]; then
+          echo "### Kernel Details" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          ls -lh "_output/nerdbox-kernel-${{ inputs.kernel_arch }}" >> $GITHUB_STEP_SUMMARY
+          file "_output/nerdbox-kernel-${{ inputs.kernel_arch }}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        fi

@@ -97,10 +97,9 @@ ARG GO_BUILD_FLAGS
 ARG GO_LDFLAGS
 ARG TARGETOS
 ARG TARGETARCH
-ARG TARGETPLATFORM
 
 RUN --mount=type=bind,target=.,rw \
-    --mount=type=cache,target=/root/.cache/go-build,id=shim-build-$TARGETPLATFORM \
+    --mount=type=cache,target=/root/.cache/go-build,id=shim-build-${TARGETOS}/${TARGETARCH} \
     GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build ${GO_DEBUG_GCFLAGS} ${GO_GCFLAGS} ${GO_BUILD_FLAGS} -o /build/containerd-shim-nerdbox-v1 ${GO_LDFLAGS} -tags 'no_grpc' ./cmd/containerd-shim-nerdbox-v1
 
 FROM base AS vminit-build

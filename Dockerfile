@@ -17,7 +17,7 @@
 
 # Build the Linux kernel, initrd ,and containerd shim for running nerbox
 
-ARG XX_VERSION=1.6.1
+ARG XX_VERSION=1.9.0
 ARG GO_VERSION=1.25.1
 ARG BASE_DEBIAN_DISTRO="bookworm"
 ARG GOLANG_IMAGE="golang:${GO_VERSION}-${BASE_DEBIAN_DISTRO}"

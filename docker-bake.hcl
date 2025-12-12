@@ -1,3 +1,8 @@
+# The host and guest OS may be different; set the host OS here.
+variable "HOST_OS" {
+  default = "linux"
+}
+
 variable "KERNEL_VERSION" {
   default = "6.12.46"
 }
@@ -42,8 +47,34 @@ target "_common" {
   }
 }
 
+target "_host_common" {
+  inherits = ["_common"]
+  args = {
+    TARGETOS = HOST_OS
+  }
+}
+
+target "_guest_common" {
+  inherits = ["_common"]
+  args = {
+    TARGETOS = "linux"
+  }
+}
+
 variable "DESTDIR" {
   default = "_output"
+}
+
+group "default" {
+  targets = ["host-binaries", "guest-binaries", "kernel"]
+}
+
+group "host-binaries" {
+  targets = ["shim"]
+}
+
+group "guest-binaries" {
+  targets = ["initrd", "libkrun"]
 }
 
 target "menuconfig" {
@@ -53,19 +84,19 @@ target "menuconfig" {
 }
 
 target "kernel" {
-  inherits = ["_common"]
+  inherits = ["_guest_common"]
   target = "kernel"
   output = ["${DESTDIR}"]
 }
 
 target "initrd" {
-  inherits = ["_common"]
+  inherits = ["_guest_common"]
   target = "initrd"
   output = ["${DESTDIR}"]
 }
 
 target "shim" {
-  inherits = ["_common"]
+  inherits = ["_host_common"]
   target = "shim"
   output = ["${DESTDIR}"]
 }
@@ -74,10 +105,6 @@ target "libkrun" {
   inherits = ["_common"]
   target = "libkrun"
   output = ["${DESTDIR}"]
-}
-
-group "default" {
-    targets = ["kernel", "initrd", "shim"]
 }
 
 target "dev" {

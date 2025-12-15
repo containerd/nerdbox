@@ -1,9 +1,14 @@
-variable "KERNEL_VERSION" {
-  default = "6.12.46"
+# The host and guest OS may differ; set the host OS here.
+variable "HOST_OS" {
+  default = "linux"
 }
 
-variable "KERNEL_ARCH" {
-  default = "x86_64"
+variable "ARCH" {
+  default = "amd64"
+}
+
+variable "KERNEL_VERSION" {
+  default = "6.12.46"
 }
 
 variable "KERNEL_NPROC" {
@@ -30,10 +35,16 @@ variable "GOLANGCI_LINT_MULTIPLATFORM" {
   default = ""
 }
 
+function "kernelArch" {
+  params = []
+  result = ARCH == "amd64" ? "x86_64" : (ARCH == "arm64" ? "arm64" : "unknown")
+}
+
 target "_common" {
   args = {
+    TARGETARCH = ARCH
     KERNEL_VERSION = KERNEL_VERSION
-    KERNEL_ARCH = KERNEL_ARCH
+    KERNEL_ARCH = kernelArch()
     KERNEL_NPROC = KERNEL_NPROC
     GO_BUILD_FLAGS = GO_BUILD_FLAGS
     GO_GCFLAGS = GO_GCFLAGS
@@ -42,8 +53,34 @@ target "_common" {
   }
 }
 
+target "_host_common" {
+  inherits = ["_common"]
+  args = {
+    TARGETOS = HOST_OS
+  }
+}
+
+target "_guest_common" {
+  inherits = ["_common"]
+  args = {
+    TARGETOS = "linux"
+  }
+}
+
 variable "DESTDIR" {
   default = "_output"
+}
+
+group "default" {
+  targets = ["host-binaries", "guest-binaries", "kernel"]
+}
+
+group "host-binaries" {
+  targets = ["shim"]
+}
+
+group "guest-binaries" {
+  targets = ["initrd", "libkrun"]
 }
 
 target "menuconfig" {
@@ -53,31 +90,27 @@ target "menuconfig" {
 }
 
 target "kernel" {
-  inherits = ["_common"]
+  inherits = ["_guest_common"]
   target = "kernel"
   output = ["${DESTDIR}"]
 }
 
 target "initrd" {
-  inherits = ["_common"]
+  inherits = ["_guest_common"]
   target = "initrd"
   output = ["${DESTDIR}"]
 }
 
 target "shim" {
-  inherits = ["_common"]
+  inherits = ["_host_common"]
   target = "shim"
   output = ["${DESTDIR}"]
 }
 
 target "libkrun" {
-  inherits = ["_common"]
+  inherits = ["_guest_common"]
   target = "libkrun"
   output = ["${DESTDIR}"]
-}
-
-group "default" {
-    targets = ["kernel", "initrd", "shim"]
 }
 
 target "dev" {

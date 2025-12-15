@@ -206,8 +206,8 @@ jobs:
 
       - name: Build remaining artifacts (initrd and shim)
         run: |
-          echo "Building shim, initrd and libkrun..."
-          docker buildx bake shim initrd libkrun
+          echo "Building host and guest binaries:"
+          docker buildx bake host-binaries guest-binaries
 
       - name: Verify all artifacts
         run: |

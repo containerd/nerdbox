@@ -45,7 +45,7 @@ RUN echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.con
 # Install build dependencies
 RUN --mount=type=cache,sharing=locked,id=kernel-aptlib,target=/var/lib/apt \
     --mount=type=cache,sharing=locked,id=kernel-aptcache,target=/var/cache/apt \
-        apt-get update && apt-get install -y build-essential libncurses-dev flex bison libssl-dev libelf-dev bc cpio git wget xz-utils
+        apt-get update && apt-get install -y build-essential libncurses-dev flex bison libssl-dev libelf-dev bc cpio git wget xz-utils pahole
 
 ARG KERNEL_VERSION="6.12.44"
 ARG KERNEL_ARCH="x86_64"

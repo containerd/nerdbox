@@ -21,8 +21,11 @@ ROOTDIR=$(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 WHALE = "🇩"
 ONI = "👹"
 
-ARCH = $(shell uname -m)
-OS = $(shell uname -s)
+# Detect local platform; 'linux' or 'darwin'
+OS ?= $(shell uname -s | tr '[:upper:]' '[:lower:]')
+ARCH ?= $(shell uname -m)
+export PLATFORM ?= $(OS)/$(ARCH)
+
 LDFLAGS_x86_64_Linux = -lkrun
 LDFLAGS_aarch64_Linux = -lkrun
 LDFLAGS_arm64_Darwin = -L/opt/homebrew/lib -lkrun
@@ -52,10 +55,13 @@ GO_STATIC_LDFLAGS := -ldflags '-extldflags "-static" $(LDFLAGS) $(EXTRA_LDFLAGS)
 MODULE_NAME=$(shell go list -m)
 API_PACKAGES=$(shell ($(GO) list ${GO_TAGS} ./... | grep /api/ ))
 
-.PHONY: clean all validate lint generate protos check-protos check-api-descriptors proto-fmt shell
+.PHONY: clean all build validate lint generate protos check-protos check-api-descriptors proto-fmt shell
 
-all:
-	$(BUILDX) bake
+all: build
+
+build:
+	@echo "$(WHALE) $@"
+	HOST_OS=$(OS) ARCH=$(ARCH) $(BUILDX) bake
 
 _output/containerd-shim-nerdbox-v1: cmd/containerd-shim-nerdbox-v1 FORCE
 	@echo "$(WHALE) $@"

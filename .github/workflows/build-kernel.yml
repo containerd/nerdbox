@@ -1,0 +1,42 @@
+name: Build Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_version:
+        description: 'Kernel version to build'
+        required: true
+        default: '6.12.46'
+      kernel_nproc:
+        description: 'Number of parallel build processes'
+        required: false
+        # Public runners provide 4 cores; default to that to avoid overloading
+        # https://docs.github.com/en/actions/reference/runners/github-hosted-runners#standard-github-hosted-runners-for-public-repositories
+        default: '4'
+
+permissions:
+  contents: read
+
+jobs:
+  build-kernel:
+    name: Build Kernel ${{ inputs.kernel_version }}-${{ matrix.kernel_arch }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            kernel_arch: x86_64
+          - os: ubuntu-24.04-arm
+            kernel_arch: arm64
+
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+
+      - uses: ./.github/actions/build-kernel
+        with:
+          kernel_version: ${{ inputs.kernel_version }}
+          kernel_arch: ${{ matrix.kernel_arch }}
+          kernel_nproc: ${{ inputs.kernel_nproc }}

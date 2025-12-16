@@ -10,6 +10,26 @@ permissions:  # added using https://github.com/step-security/secure-workflows
   contents: read
 
 jobs:
+  setup:
+    name: Setup
+    runs-on: ubuntu-latest
+    outputs:
+      kernel-version: ${{ steps.set-vars.outputs.kernel-version }}
+      containerd-version: ${{ steps.set-vars.outputs.containerd-version }}
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+        with:
+          sparse-checkout: |
+            .github/.tool-versions
+
+      - name: Set variables
+        id: set-vars
+        run: |
+          kernel_version=$(grep -E '^kernel [0-9.]+$' .github/.tool-versions | sed -E 's/^kernel ([0-9.]+)$/\1/')
+          echo "kernel-version=${kernel_version}" >> $GITHUB_OUTPUT
+          containerd_version=$(grep -E '^containerd [0-9.]+$' .github/.tool-versions | sed -E 's/^containerd ([0-9.]+)$/\1/')
+          echo "containerd-version=${containerd_version}" >> $GITHUB_OUTPUT
+
   linters:
     permissions:
       contents: read  # for actions/checkout to fetch code
@@ -37,7 +57,9 @@ jobs:
           path: src/github.com/containerd/nerdbox
           fetch-depth: 100
 
-      - uses: ./src/github.com/containerd/nerdbox/.github/actions/install-go
+      - uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c  # v6.1.0
+        with:
+          go-version-file: 'src/github.com/containerd/nerdbox/.github/.tool-versions'
 
       - uses: containerd/project-checks@d7751f3c375b8fe4a84c02a068184ee4c1f59bc4  # v1.2.2
         if: github.repository == 'containerd/nerdbox'
@@ -73,7 +95,9 @@ jobs:
           repository: containerd/containerd
           path: src/github.com/containerd/containerd
 
-      - uses: ./src/github.com/containerd/nerdbox/.github/actions/install-go
+      - uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c  # v6.1.0
+        with:
+          go-version-file: 'src/github.com/containerd/nerdbox/.github/.tool-versions'
 
       - name: Set env
         shell: bash
@@ -92,3 +116,177 @@ jobs:
       - run: script/install-proto-tools
       - run: make proto-fmt
       - run: make check-protos check-api-descriptors
+
+  #
+  # Build kernels on cache miss
+  #
+  build-kernels:
+    name: Build Kernels (if needed)
+    runs-on: ${{ matrix.os }}
+    needs: setup
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x86_64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+      - uses: ./.github/actions/build-kernel
+        with:
+          kernel_version: ${{ needs.setup.outputs.kernel-version }}
+          kernel_arch: ${{ matrix.arch }}
+
+  #
+  # Integration tests
+  #
+  integration:
+    name: Integration Tests
+    needs: [setup, build-kernels]
+    # Always run after kernel builds complete (whether they were cached or not)
+    if: |
+      always() &&
+      (needs.build-kernels.result == 'success' || needs.build-kernels.result == 'skipped')
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x86_64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+
+      - name: Calculate kernel cache key
+        id: cache-key
+        run: |
+          # Hash the kernel config and patches to create a unique cache key
+          CONFIG_FILE="kernel/config-${{ needs.setup.outputs.kernel-version }}-${{ matrix.arch }}"
+
+          if [ ! -f "$CONFIG_FILE" ]; then
+            echo "Error: Kernel config file $CONFIG_FILE not found"
+            exit 1
+          fi
+
+          # Calculate hash of config file and all patches
+          CONFIG_HASH=$(sha256sum "$CONFIG_FILE" | cut -d' ' -f1)
+          PATCHES_HASH=$(find kernel/patches -type f -name "*.patch" -exec sha256sum {} \; | sort | sha256sum | cut -d' ' -f1)
+
+          # Combine version, arch, config hash, and patches hash
+          CACHE_KEY="kernel-${{ needs.setup.outputs.kernel-version }}-${{ matrix.arch }}-${CONFIG_HASH:0:8}-${PATCHES_HASH:0:8}"
+
+          echo "cache-key=${CACHE_KEY}" >> $GITHUB_OUTPUT
+          echo "Kernel cache key: ${CACHE_KEY}"
+
+      - name: Restore cached kernel
+        id: cache-kernel
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57  # v4.2.0
+        with:
+          path: _output/nerdbox-kernel-${{ matrix.arch }}
+          key: ${{ steps.cache-key.outputs.cache-key }}
+
+      - name: Verify kernel from cache
+        run: |
+          if [ "${{ steps.cache-kernel.outputs.cache-hit }}" = "true" ]; then
+            echo "✅ Kernel restored from cache"
+          else
+            echo "❌ Kernel not in cache - this should not happen after build-kernels-on-demand"
+            exit 1
+          fi
+          ls -lh _output/nerdbox-kernel-${{ matrix.arch }}
+          file _output/nerdbox-kernel-${{ matrix.arch }}
+
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435  # v3.11.1
+
+      - name: Build remaining artifacts (initrd and shim)
+        run: |
+          echo "Building host and guest binaries:"
+          docker buildx bake host-binaries guest-binaries
+
+      - name: Verify all artifacts
+        run: |
+          echo "Verifying build artifacts:"
+          ls -lh _output/
+          echo ""
+          echo "Kernel:"
+          file _output/nerdbox-kernel-${{ matrix.arch }}
+          echo ""
+          echo "Initrd:"
+          file _output/nerdbox-initrd
+          echo ""
+          echo "Shim:"
+          file _output/containerd-shim-nerdbox-v1
+
+      - uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c  # v6.1.0
+        with:
+          go-version-file: '.github/.tool-versions'
+
+      - name: Setup containerd
+        uses: ./.github/actions/setup-containerd
+        with:
+          containerd_version: ${{ needs.setup.outputs.containerd-version }}
+          architecture: ${{ matrix.arch == 'x86_64' && 'amd64' || 'arm64' }}
+
+      - name: Run integration tests
+        id: integration-tests
+        run: go test -v ./integration/...
+
+      - name: Output containerd logs on failure
+        if: failure() && steps.integration-tests.outcome == 'failure'
+        run: |
+          echo "Integration tests failed. Outputting containerd logs..."
+          echo "==================== CONTAINERD LOGS ===================="
+          sudo cat /var/log/containerd/containerd.log || echo "No containerd logs found"
+          echo "========================================================="
+          echo ""
+          echo "Containerd process status:"
+          ps aux | grep containerd | grep -v grep || echo "No containerd processes running"
+
+      - name: Stop containerd
+        if: always()
+        run: |
+          echo "Stopping containerd..."
+
+          # Try to stop containerd gracefully using pkill
+          if pgrep -x containerd > /dev/null; then
+            echo "Found running containerd process(es)"
+            sudo pkill -TERM containerd || true
+
+            # Wait up to 10 seconds for graceful shutdown
+            for i in {1..10}; do
+              if ! pgrep -x containerd > /dev/null; then
+                echo "Containerd stopped gracefully"
+                break
+              fi
+              if [ $i -eq 10 ]; then
+                echo "Containerd did not stop gracefully, forcing shutdown..."
+                sudo pkill -KILL containerd || true
+              fi
+              sleep 1
+            done
+          else
+            echo "No containerd process found running"
+          fi
+
+          # Clean up PID file if it exists
+          if [ -f /var/run/containerd.pid ]; then
+            sudo rm -f /var/run/containerd.pid
+            echo "Cleaned up containerd PID file"
+          fi
+
+          # Verify containerd is stopped
+          if pgrep -x containerd > /dev/null; then
+            echo "Warning: Containerd process still running after cleanup attempt"
+            ps aux | grep containerd | grep -v grep
+          else
+            echo "Containerd stopped successfully"
+          fi

@@ -15,6 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       kernel-version: ${{ steps.set-vars.outputs.kernel-version }}
+      containerd-version: ${{ steps.set-vars.outputs.containerd-version }}
     steps:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
         with:
@@ -26,6 +27,8 @@ jobs:
         run: |
           kernel_version=$(grep -E '^kernel [0-9.]+$' .github/.tool-versions | sed -E 's/^kernel ([0-9.]+)$/\1/')
           echo "kernel-version=${kernel_version}" >> $GITHUB_OUTPUT
+          containerd_version=$(grep -E '^containerd [0-9.]+$' .github/.tool-versions | sed -E 's/^containerd ([0-9.]+)$/\1/')
+          echo "containerd-version=${containerd_version}" >> $GITHUB_OUTPUT
 
   linters:
     permissions:
@@ -227,5 +230,63 @@ jobs:
         with:
           go-version-file: '.github/.tool-versions'
 
+      - name: Setup containerd
+        uses: ./.github/actions/setup-containerd
+        with:
+          containerd_version: ${{ needs.setup.outputs.containerd-version }}
+          architecture: ${{ matrix.arch == 'x86_64' && 'amd64' || 'arm64' }}
+
       - name: Run integration tests
+        id: integration-tests
         run: go test -v ./integration/...
+
+      - name: Output containerd logs on failure
+        if: failure() && steps.integration-tests.outcome == 'failure'
+        run: |
+          echo "Integration tests failed. Outputting containerd logs..."
+          echo "==================== CONTAINERD LOGS ===================="
+          sudo cat /var/log/containerd/containerd.log || echo "No containerd logs found"
+          echo "========================================================="
+          echo ""
+          echo "Containerd process status:"
+          ps aux | grep containerd | grep -v grep || echo "No containerd processes running"
+
+      - name: Stop containerd
+        if: always()
+        run: |
+          echo "Stopping containerd..."
+
+          # Try to stop containerd gracefully using pkill
+          if pgrep -x containerd > /dev/null; then
+            echo "Found running containerd process(es)"
+            sudo pkill -TERM containerd || true
+
+            # Wait up to 10 seconds for graceful shutdown
+            for i in {1..10}; do
+              if ! pgrep -x containerd > /dev/null; then
+                echo "Containerd stopped gracefully"
+                break
+              fi
+              if [ $i -eq 10 ]; then
+                echo "Containerd did not stop gracefully, forcing shutdown..."
+                sudo pkill -KILL containerd || true
+              fi
+              sleep 1
+            done
+          else
+            echo "No containerd process found running"
+          fi
+
+          # Clean up PID file if it exists
+          if [ -f /var/run/containerd.pid ]; then
+            sudo rm -f /var/run/containerd.pid
+            echo "Cleaned up containerd PID file"
+          fi
+
+          # Verify containerd is stopped
+          if pgrep -x containerd > /dev/null; then
+            echo "Warning: Containerd process still running after cleanup attempt"
+            ps aux | grep containerd | grep -v grep
+          else
+            echo "Containerd stopped successfully"
+          fi

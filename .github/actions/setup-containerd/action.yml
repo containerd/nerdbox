@@ -1,0 +1,134 @@
+name: "Setup containerd"
+description: "Downloads and installs containerd for use in the workflow"
+inputs:
+  containerd_version:
+    description: 'Version of containerd to install'
+    required: false
+    default: '2.0.2'
+  architecture:
+    description: 'Architecture for containerd binary (amd64, arm64)'
+    required: false
+    default: 'amd64'
+
+runs:
+  using: "composite"
+  steps:
+    - name: Download containerd
+      shell: bash
+      run: |
+        VERSION="${{ inputs.containerd_version }}"
+        ARCH="${{ inputs.architecture }}"
+
+        echo "Downloading containerd v${VERSION} for ${ARCH}..."
+
+        # Construct download URL
+        TARBALL="containerd-${VERSION}-linux-${ARCH}.tar.gz"
+        URL="https://github.com/containerd/containerd/releases/download/v${VERSION}/${TARBALL}"
+
+        # Download containerd
+        curl -fsSL -o "/tmp/${TARBALL}" "${URL}"
+
+        echo "Downloaded containerd tarball to /tmp/${TARBALL}"
+        ls -lh "/tmp/${TARBALL}"
+
+    - name: Install containerd
+      shell: bash
+      run: |
+        VERSION="${{ inputs.containerd_version }}"
+        ARCH="${{ inputs.architecture }}"
+        TARBALL="containerd-${VERSION}-linux-${ARCH}.tar.gz"
+
+        echo "Installing containerd..."
+
+        # Extract binaries to /usr/local
+        sudo tar -C /usr/local -xzf "/tmp/${TARBALL}"
+
+        # Verify installation
+        echo "Verifying containerd installation..."
+        containerd --version
+        ctr --version
+
+        echo "Containerd installed successfully at:"
+        which containerd
+        which ctr
+
+    - name: Setup containerd config
+      shell: bash
+      run: |
+        echo "Creating containerd config directory..."
+        sudo mkdir -p /etc/containerd
+
+        # Generate default config
+        echo "Generating default containerd config..."
+        sudo containerd config default | sudo tee /etc/containerd/config.toml
+
+        echo "Containerd config created at /etc/containerd/config.toml"
+
+    - name: Create containerd log directory
+      shell: bash
+      run: |
+        echo "Creating log directory for containerd..."
+        sudo mkdir -p /var/log/containerd
+        sudo chmod 755 /var/log/containerd
+
+    - name: Start containerd
+      shell: bash
+      run: |
+        echo "Starting containerd..."
+
+        # Start containerd in background with logging
+        sudo nohup containerd > /var/log/containerd/containerd.log 2>&1 &
+        CONTAINERD_PID=$!
+
+        echo "Containerd started with PID: $CONTAINERD_PID"
+
+        # Save PID for cleanup
+        echo "$CONTAINERD_PID" | sudo tee /var/run/containerd.pid
+
+        # Wait for containerd to be ready
+        echo "Waiting for containerd to be ready..."
+        for i in {1..30}; do
+          if sudo ctr version >/dev/null 2>&1; then
+            echo "Containerd is ready!"
+            break
+          fi
+          if [ $i -eq 30 ]; then
+            echo "Error: Containerd failed to start within 30 seconds"
+            echo "Containerd logs:"
+            sudo cat /var/log/containerd/containerd.log
+            exit 1
+          fi
+          echo "Waiting... ($i/30)"
+          sleep 1
+        done
+
+        # Verify containerd is running
+        sudo ctr version
+        echo "Containerd is running successfully"
+
+    - name: Installation summary
+      shell: bash
+      run: |
+        echo "## Containerd Setup Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "- **Version**: ${{ inputs.containerd_version }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Architecture**: ${{ inputs.architecture }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Status**: ✅ Running" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Installed Binaries" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        containerd --version >> $GITHUB_STEP_SUMMARY
+        ctr --version >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Binary Locations" >> $GITHUB_STEP_SUMMARY
+        echo "- containerd: \`$(which containerd)\`" >> $GITHUB_STEP_SUMMARY
+        echo "- ctr: \`$(which ctr)\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Process Info" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        ps aux | grep containerd | grep -v grep >> $GITHUB_STEP_SUMMARY || echo "No containerd processes found" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Logs" >> $GITHUB_STEP_SUMMARY
+        echo "Containerd logs are available at: \`/var/log/containerd/containerd.log\`" >> $GITHUB_STEP_SUMMARY

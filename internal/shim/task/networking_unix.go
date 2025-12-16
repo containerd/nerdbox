@@ -195,15 +195,17 @@ func (p *networksProvider) SetupVM(ctx context.Context, vmi vm.Instance) error {
 func (p *networksProvider) InitArgs() []string {
 	args := make([]string, 0, len(p.nws))
 	for _, nw := range p.nws {
+		fields := []string{"mac=" + nw.mac.String()}
 		if nw.dhcp {
-			args = append(args, fmt.Sprintf("-network=mac=%s,dhcp=true", nw.mac))
+			fields = append(fields, "dhcp=true")
 		}
 		if nw.addr4.IsValid() {
-			args = append(args, fmt.Sprintf("-network=mac=%s,addr=%s", nw.mac, nw.addr4))
+			fields = append(fields, "addr="+nw.addr4.String())
 		}
 		if nw.addr6.IsValid() {
-			args = append(args, fmt.Sprintf("-network=mac=%s,addr=%s", nw.mac, nw.addr6))
+			fields = append(fields, "addr="+nw.addr6.String())
 		}
+		args = append(args, "-network="+strings.Join(fields, ","))
 	}
 	return args
 }

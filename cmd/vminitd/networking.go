@@ -33,19 +33,24 @@ type networks []vmnetworking.Network
 func (n *networks) String() string {
 	ss := make([]string, 0, len(*n))
 	for _, nw := range *n {
-		ss = append(ss, fmt.Sprintf("mac=%s,addr=%s,dhcp=%t", nw.MAC, nw.Addr, nw.DHCP))
+		fields := []string{"mac=" + nw.MAC.String()}
+		if nw.DHCP {
+			fields = append(fields, "dhcp=true")
+		}
+		if nw.Addr4.IsValid() {
+			fields = append(fields, "addr="+nw.Addr4.String())
+		}
+		if nw.Addr6.IsValid() {
+			fields = append(fields, "addr="+nw.Addr6.String())
+		}
+		ss = append(ss, strings.Join(fields, ","))
 	}
 	return strings.Join(ss, " ")
 }
 
 func (n *networks) Set(value string) error {
-	kvs := strings.Split(value, ",")
-	if len(kvs) != 2 {
-		return fmt.Errorf("invalid network %q: expected format: mac=<mac>,[addr=<addr>|dhcp=<dhcp>]", value)
-	}
-
 	var nw vmnetworking.Network
-	for _, kv := range kvs {
+	for _, kv := range strings.Split(value, ",") {
 		parts := strings.Split(kv, "=")
 		if len(parts) != 2 {
 			return fmt.Errorf("invalid network %q: expected format: mac=<mac>,[addr=<addr>|dhcp=<dhcp>]", value)
@@ -62,7 +67,11 @@ func (n *networks) Set(value string) error {
 			if err != nil {
 				return fmt.Errorf("invalid IP address: %w", err)
 			}
-			nw.Addr = addr
+			if addr.Addr().Is4() {
+				nw.Addr4 = addr
+			} else {
+				nw.Addr6 = addr
+			}
 		case "dhcp":
 			dhcp, err := strconv.ParseBool(parts[1])
 			if err != nil {

@@ -29,7 +29,7 @@ import (
 func TestMain(m *testing.M) {
 	var err error
 
-	absPath, err := filepath.Abs("../build")
+	absPath, err := filepath.Abs("../_output")
 	if err != nil {
 		log.Fatalf("Failed to resolve build path: %v", err)
 	}

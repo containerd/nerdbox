@@ -206,7 +206,7 @@ FROM scratch AS libkrun
 COPY --from=libkrun-build /libkrun/target/release/libkrun.so /libkrun.so
 
 FROM ${GOLANG_IMAGE} AS dev
-ARG CONTAINERD_VERSION=2.1.4
+ARG CONTAINERD_VERSION=2.2.0
 ARG TARGETARCH
 
 ENV PATH=/go/src/github.com/containerd/nerdbox/_output:$PATH

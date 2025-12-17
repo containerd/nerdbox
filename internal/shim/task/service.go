@@ -47,6 +47,7 @@ import (
 	"github.com/containerd/nerdbox/internal/nwcfg"
 	"github.com/containerd/nerdbox/internal/shim/sandbox"
 	"github.com/containerd/nerdbox/internal/shim/task/bundle"
+	"github.com/containerd/nerdbox/internal/sigstop"
 )
 
 var (
@@ -105,6 +106,10 @@ type service struct {
 }
 
 func (s *service) RegisterTTRPC(server *ttrpc.Server) error {
+	if v := os.Getenv("NERDBOX_SIGSTOP"); v != "" {
+		// Raise a SIGSTOP to pause the shim until a debugger is attached.
+		sigstop.Raise()
+	}
 	taskAPI.RegisterTTRPCTaskService(server, s)
 	return nil
 }

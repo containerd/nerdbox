@@ -38,16 +38,17 @@ import (
 )
 
 type Network struct {
-	MAC  net.HardwareAddr
-	Addr netip.Prefix
-	DHCP bool
+	MAC   net.HardwareAddr
+	Addr4 netip.Prefix
+	Addr6 netip.Prefix
+	DHCP  bool
 }
 
 func (nw Network) Validate() error {
-	if nw.MAC == nil || (!nw.Addr.IsValid() && !nw.DHCP) {
-		return errors.New("must specify mac and either addr or dhcp")
+	if nw.MAC == nil || (!nw.Addr4.IsValid() && !nw.Addr6.IsValid() && !nw.DHCP) {
+		return errors.New("must specify either addr or dhcp")
 	}
-	if nw.Addr.IsValid() && nw.DHCP {
+	if (nw.Addr4.IsValid() || nw.Addr6.IsValid()) && nw.DHCP {
 		return errors.New("cannot specify both addr and dhcp")
 	}
 	return nil
@@ -126,11 +127,18 @@ func SetupVM(ctx context.Context, nws []Network, debug bool) (func(context.Conte
 			})
 		} else {
 			eg.Go(func() error {
-				ctx := log.WithLogger(ctx, log.G(ctx).WithField("addr", nw.Addr.String()))
+				ctx := log.WithLogger(ctx, log.G(ctx).WithFields(log.Fields{
+					"addr4": nw.Addr4.String(),
+					"addr6": nw.Addr6.String(),
+				}))
 
 				// Consider that the 1st assignable IP address in the subnet is
 				// the gateway and select that as a potential default gateway.
-				gws[i] = nw.Addr.Masked().Addr().Next()
+				if nw.Addr4.IsValid() {
+					gws[i] = nw.Addr4.Masked().Addr().Next()
+				} else {
+					gws[i] = nw.Addr6.Masked().Addr().Next()
+				}
 
 				return configureStatic(ctx, iface, nw)
 			})
@@ -200,20 +208,30 @@ func listVirtioIfaces() (map[string]netlink.Link, error) {
 
 // configureStatic configures an interface with a static IP address.
 func configureStatic(ctx context.Context, iface netlink.Link, nw Network) error {
-	if err := netlink.AddrAdd(iface, &netlink.Addr{
-		IPNet: &net.IPNet{
-			IP:   nw.Addr.Addr().AsSlice(),
-			Mask: net.CIDRMask(nw.Addr.Bits(), nw.Addr.Addr().BitLen()),
-		},
-		// Disable DAD to avoid random delays until the IP address is ready
-		// and the VM gets external connectivity.
-		// The VMM, and its network provider, need to ensure that there's no
-		// conflicting IP addresses assigned to multiple VMs on the same
-		// network.
-		Flags: unix.IFA_F_PERMANENT | unix.IFA_F_NODAD,
-	}); err != nil {
-		log.G(ctx).WithError(err).Error("failed to add IP address to virtio interface")
-		return err
+	for _, prefix := range []netip.Prefix{nw.Addr4, nw.Addr6} {
+		if !prefix.IsValid() {
+			continue
+		}
+
+		if err := netlink.AddrAdd(iface, &netlink.Addr{
+			IPNet: &net.IPNet{
+				IP:   prefix.Addr().AsSlice(),
+				Mask: net.CIDRMask(prefix.Bits(), prefix.Addr().BitLen()),
+			},
+			// Disable DAD to avoid random delays until the IP address is ready
+			// and the VM gets external connectivity.
+			// The VMM, and its network provider, need to ensure that there's no
+			// conflicting IP addresses assigned to multiple VMs on the same
+			// network.
+			Flags: unix.IFA_F_PERMANENT | unix.IFA_F_NODAD,
+		}); err != nil {
+			log.G(ctx).WithFields(log.Fields{
+				"error": err,
+				"addr":  prefix.String(),
+				"iface": iface.Attrs().Name,
+			}).Error("failed to add IP address to virtio interface")
+			return err
+		}
 	}
 
 	if err := netlink.LinkSetUp(iface); err != nil {

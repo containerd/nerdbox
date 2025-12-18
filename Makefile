@@ -165,3 +165,6 @@ verify-vendor: ## verify if all the go.mod/go.sum files are up-to-date
 	@(cd ${TMPDIR}/nerdbox && ${GO} mod verify)
 	diff -r -u ${ROOTDIR} ${TMPDIR}/nerdbox
 	@rm -rf ${TMPDIR}
+
+test-unit:
+	go test -count=1 $(shell go list ./... | grep -v /integration)

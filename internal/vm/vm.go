@@ -49,6 +49,7 @@ func WithInitArgs(args ...string) StartOpt {
 
 type MountConfig struct {
 	Readonly bool
+	Vmdk     bool
 }
 
 type MountOpt func(*MountConfig)
@@ -73,5 +74,11 @@ type Instance interface {
 func WithReadOnly() MountOpt {
 	return func(o *MountConfig) {
 		o.Readonly = true
+	}
+}
+
+func WithVmdk() MountOpt {
+	return func(o *MountConfig) {
+		o.Vmdk = true
 	}
 }

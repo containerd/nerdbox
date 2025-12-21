@@ -49,6 +49,8 @@ that take the following fields:
   VFKIT magic sequence after connecting to the `socket`. Accept any of `1, t, T,
   TRUE, true, True, 0, f, F, FALSE, false, False`. Any other value is invalid and
   will produce an error.
+- `vnet_hdr` (optional, defaults to false): Indicate whether the VMM includes
+  virtio-net headers along with Ethernet frames.
 
 Note that the first network specified will be used as the default gateway.
 

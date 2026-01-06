@@ -305,7 +305,8 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 		if _, err := os.Stat(socketPath); err == nil {
 			conn, err = net.Dial("unix", socketPath)
 			if err != nil {
-				return fmt.Errorf("failed to connect to TTRPC server: %w", err)
+				log.G(ctx).WithError(err).Debugf("VM socket exists, but can't connect yet. Retrying in %s...", d)
+				continue
 			}
 			conn.SetReadDeadline(time.Now().Add(d))
 			if err := ttrpcutil.PingTTRPC(conn); err != nil {

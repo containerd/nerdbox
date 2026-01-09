@@ -143,10 +143,11 @@ ARG GO_DEBUG_GCFLAGS
 ARG GO_GCFLAGS
 ARG GO_BUILD_FLAGS
 ARG TARGETPLATFORM
+ARG TARGETARCH
 
 RUN --mount=type=bind,target=.,rw \
     --mount=type=cache,target=/root/.cache/go-build,id=vminit-build-$TARGETPLATFORM \
-    go build ${GO_DEBUG_GCFLAGS} ${GO_GCFLAGS} ${GO_BUILD_FLAGS} -o /build/vminitd -ldflags '-extldflags \"-static\" -s -w' -tags 'osusergo netgo static_build no_grpc'  ./cmd/vminitd
+    GOARCH=${TARGETARCH} go build ${GO_DEBUG_GCFLAGS} ${GO_GCFLAGS} ${GO_BUILD_FLAGS} -o /build/vminitd -ldflags '-extldflags \"-static\" -s -w' -tags 'osusergo netgo static_build no_grpc'  ./cmd/vminitd
 
 # TODO: Use nix instructions to build crun statically
 #FROM base AS crun-src
@@ -180,15 +181,8 @@ RUN --mount=type=bind,target=.,rw \
 FROM base AS crun-build
 WORKDIR /usr/src/crun
 
-RUN <<EOT
-    mkdir /build
-    case $(uname -m) in
-        x86_64) ARCH=amd64 ;;
-        aarch64) ARCH=arm64 ;;
-        *) echo "Unsupported architecture: $(uname -m)" ; exit 1 ;;
-    esac
-    wget -O /build/crun https://github.com/containers/crun/releases/download/1.24/crun-1.24-linux-${ARCH}-disable-systemd
-EOT
+ARG TARGETARCH
+RUN mkdir /build && wget -O /build/crun https://github.com/containers/crun/releases/download/1.24/crun-1.24-linux-${TARGETARCH}-disable-systemd
 
 FROM base AS initrd-build
 WORKDIR /usr/src/init

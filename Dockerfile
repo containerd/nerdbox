@@ -51,6 +51,23 @@ ARG KERNEL_VERSION="6.12.46"
 ARG KERNEL_ARCH="x86_64"
 ARG KERNEL_NPROC="4"
 
+# Install cross-compiler if host architecture differs from target
+RUN  --mount=type=cache,sharing=locked,id=kernel-aptlib,target=/var/lib/apt \
+    --mount=type=cache,sharing=locked,id=kernel-aptcache,target=/var/cache/apt <<EOT
+    HOST_ARCH=$(uname -m)
+    # Normalize host arch to match KERNEL_ARCH naming
+    case "${HOST_ARCH}" in
+        aarch64) HOST_ARCH=arm64 ;;
+    esac
+    if [ "${HOST_ARCH}" != "${KERNEL_ARCH}" ]; then
+        case "${KERNEL_ARCH}" in
+            arm64) apt-get update && apt-get install -y gcc-aarch64-linux-gnu ;;
+            x86_64) apt-get update && apt-get install -y gcc-x86-64-linux-gnu ;;
+            *) echo "Unsupported architecture: ${KERNEL_ARCH}" ; exit 1 ;;
+        esac
+    fi
+EOT
+
 # Set the working directory
 WORKDIR /usr/src
 
@@ -74,16 +91,31 @@ EOT
 FROM kernel-build-base AS kernel-build
 
 # Compile the kernel
-RUN cd linux && make -j${KERNEL_NPROC}
+RUN <<EOT
+    set -e
+    HOST_ARCH=$(uname -m)
+    # Normalize host arch to match KERNEL_ARCH naming
+    case "${HOST_ARCH}" in
+        aarch64) HOST_ARCH=arm64 ;;
+    esac
+    CROSS_COMPILE=""
+    if [ "${HOST_ARCH}" != "${KERNEL_ARCH}" ]; then
+        case "${KERNEL_ARCH}" in
+            arm64) CROSS_COMPILE=aarch64-linux-gnu- ;;
+            x86_64) CROSS_COMPILE=x86_64-linux-gnu- ;;
+        esac
+    fi
+    cd linux && ARCH="${KERNEL_ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" make -j${KERNEL_NPROC}
+EOT
 
 RUN <<EOT
     set -e
     cd linux
     mkdir /build
-    case $(uname -m) in
+    case "${KERNEL_ARCH}" in
         x86_64) cp vmlinux /build/kernel ;;
-        aarch64) cp arch/arm64/boot/Image /build/kernel ;;
-        *) echo "Unsupported architecture: $(uname -m)" ; exit 1 ;;
+        arm64) cp arch/arm64/boot/Image /build/kernel ;;
+        *) echo "Unsupported architecture: ${KERNEL_ARCH} " ; exit 1 ;;
     esac
 EOT
 
@@ -111,10 +143,11 @@ ARG GO_DEBUG_GCFLAGS
 ARG GO_GCFLAGS
 ARG GO_BUILD_FLAGS
 ARG TARGETPLATFORM
+ARG TARGETARCH
 
 RUN --mount=type=bind,target=.,rw \
     --mount=type=cache,target=/root/.cache/go-build,id=vminit-build-$TARGETPLATFORM \
-    go build ${GO_DEBUG_GCFLAGS} ${GO_GCFLAGS} ${GO_BUILD_FLAGS} -o /build/vminitd -ldflags '-extldflags \"-static\" -s -w' -tags 'osusergo netgo static_build no_grpc'  ./cmd/vminitd
+    GOARCH=${TARGETARCH} go build ${GO_DEBUG_GCFLAGS} ${GO_GCFLAGS} ${GO_BUILD_FLAGS} -o /build/vminitd -ldflags '-extldflags \"-static\" -s -w' -tags 'osusergo netgo static_build no_grpc'  ./cmd/vminitd
 
 # TODO: Use nix instructions to build crun statically
 #FROM base AS crun-src
@@ -148,15 +181,8 @@ RUN --mount=type=bind,target=.,rw \
 FROM base AS crun-build
 WORKDIR /usr/src/crun
 
-RUN <<EOT
-    mkdir /build
-    case $(uname -m) in
-        x86_64) ARCH=amd64 ;;
-        aarch64) ARCH=arm64 ;;
-        *) echo "Unsupported architecture: $(uname -m)" ; exit 1 ;;
-    esac
-    wget -O /build/crun https://github.com/containers/crun/releases/download/1.24/crun-1.24-linux-${ARCH}-disable-systemd
-EOT
+ARG TARGETARCH
+RUN mkdir /build && wget -O /build/crun https://github.com/containers/crun/releases/download/1.24/crun-1.24-linux-${TARGETARCH}-disable-systemd
 
 FROM base AS initrd-build
 WORKDIR /usr/src/init

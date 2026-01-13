@@ -64,6 +64,7 @@ func main() {
 	flag.IntVar(&config.StreamPort, "vsock-stream-port", 1025, "vsock port to listen for streams on")
 	flag.IntVar(&config.VSockContextID, "vsock-cid", 0, "vsock context ID for vsock listen")
 	flag.Var(&config.Networks, "network", "network interfaces to set up")
+	flag.Var(&config.Mounts, "mount", "mounts to set up")
 	args := os.Args[1:]
 	// Strip "tsi_hijack" added by libkrun
 	if len(args) > 0 && args[0] == "tsi_hijack" {
@@ -193,6 +194,10 @@ func systemInit(ctx context.Context, config ServiceConfig) (func(context.Context
 		return nil, err
 	}
 
+	if err := config.Mounts.mountAll(ctx); err != nil {
+		return nil, err
+	}
+
 	config.Shutdown.RegisterCallback(func(ctx context.Context) error {
 		return dhcpReleaser()
 	})
@@ -263,6 +268,7 @@ type ServiceConfig struct {
 	RPCPort        int
 	StreamPort     int
 	Networks       networks
+	Mounts         bindMounts
 	Shutdown       shutdown.Service
 	Debug          bool
 }

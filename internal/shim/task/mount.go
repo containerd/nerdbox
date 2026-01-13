@@ -18,13 +18,17 @@ package task
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/containerd/containerd/api/types"
 	"github.com/containerd/errdefs"
 	"github.com/containerd/log"
 
+	"github.com/containerd/nerdbox/internal/shim/task/bundle"
 	"github.com/containerd/nerdbox/internal/vm"
 )
 
@@ -145,4 +149,71 @@ func filterOptions(options []string) []string {
 		}
 	}
 	return filtered
+}
+
+type bindMounter struct {
+	mounts []bindMount
+}
+
+type bindMount struct {
+	tag      string
+	hostSrc  string
+	vmTarget string
+}
+
+func (bm *bindMounter) FromBundle(ctx context.Context, b *bundle.Bundle) error {
+	for i, m := range b.Spec.Mounts {
+		if m.Type != "bind" {
+			continue
+		}
+
+		log.G(ctx).WithField("mount", m).Debug("transforming bind mount into a virtiofs mount")
+
+		fi, err := os.Stat(m.Source)
+		if err != nil {
+			return fmt.Errorf("failed to stat bind mount source %s: %w", m.Source, err)
+		}
+
+		hash := sha256.Sum256([]byte(m.Destination))
+		tag := fmt.Sprintf("bind-%x", hash[:8])
+		vmTarget := "/mnt/" + tag
+
+		// For files, share the parent directory via virtiofs since virtiofs
+		// operates on directories. The spec source points to the file within
+		// the mounted directory.
+		hostSrc := m.Source
+		specSrc := vmTarget
+		if !fi.IsDir() {
+			hostSrc = filepath.Dir(m.Source)
+			specSrc = filepath.Join(vmTarget, filepath.Base(m.Source))
+		}
+
+		transformed := bindMount{
+			tag:      tag,
+			hostSrc:  hostSrc,
+			vmTarget: vmTarget,
+		}
+
+		bm.mounts = append(bm.mounts, transformed)
+		b.Spec.Mounts[i].Source = specSrc
+	}
+
+	return nil
+}
+
+func (bm *bindMounter) SetupVM(ctx context.Context, vmi vm.Instance) error {
+	for _, m := range bm.mounts {
+		if err := vmi.AddFS(ctx, m.tag, m.hostSrc); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (bm *bindMounter) InitArgs() []string {
+	args := make([]string, 0, len(bm.mounts))
+	for _, m := range bm.mounts {
+		args = append(args, "-mount="+m.tag+":"+m.vmTarget)
+	}
+	return args
 }

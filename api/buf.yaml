@@ -1,0 +1,6 @@
+version: v2
+deps:
+  - buf.build/googleapis/googleapis
+  - buf.build/containerd/api-dev
+modules:
+  - path: .

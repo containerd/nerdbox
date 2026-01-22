@@ -154,8 +154,8 @@ func parseNetwork(annotation string) (network, error) {
 		}
 	}
 
-	if n.endpoint == "" || n.mode == "" || n.mac == nil || (!n.dhcp && !n.addr4.IsValid() && !n.addr6.IsValid()) {
-		return network{}, fmt.Errorf("either 'endpoint', 'mode', 'mac', 'dhcp' or 'addr' is missing")
+	if n.endpoint == "" || n.mode == "" || n.mac == nil {
+		return network{}, fmt.Errorf("missing required field(s): endpoint, mode, mac")
 	}
 
 	return n, nil

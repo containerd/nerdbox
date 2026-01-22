@@ -41,9 +41,10 @@ that take the following fields:
 - `mac` (reqired): MAC address
 - `dhcp` (optional, defaults to false): tells the VM to retrieve the IPv4 address
   of this interface through DHCPv4.
-- `addr` (required): IP address with subnet mask (in CIDR notation). This field
-  can be specified either zero times (when `dhcp` is specified), or at most
-  twice (once per IP family).
+- `addr` (optional): IP address with subnet mask (in CIDR notation). This field
+  can be omitted (specified zero times) either when `dhcp` is enabled or when the
+  interface is intended to be L2-only (no IP assigned), and may be specified at
+  most twice otherwise (once per IP family).
 - `features` (optional, defaults to 0): Bitwise-OR separated list of virtio-net
   features. Supported features:
   - `VIRTIO_NET_F_CSUM`: Device handles packets with partial checksum offload
@@ -60,6 +61,10 @@ that take the following fields:
   will produce an error.
 
 Note that the first network specified will be used as the default gateway.
+
+If neither `addr` nor `dhcp` are specified, the network interface will have no IP
+address assigned and will be used exclusively to switch packets between the VM
+and the host.
 
 #### gvisor-tap-vsock
 

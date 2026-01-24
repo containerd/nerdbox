@@ -81,15 +81,8 @@ jobs:
           echo "GOPATH=${{ github.workspace }}" >> $GITHUB_ENV
           echo "${{ github.workspace }}/bin" >> $GITHUB_PATH
 
-      - name: Install buf
-        run: |
-          BIN="/usr/local/bin" && \
-          VERSION="1.64.0" && \
-          curl -sSL \
-          "https://github.com/bufbuild/buf/releases/download/v${VERSION}/buf-$(uname -s)-$(uname -m)" \
-          -o "${BIN}/buf" && \
-          chmod +x "${BIN}/buf"
-
+      - uses: actions/setup-node@v6
+      - run: npm install -g @bufbuild/buf
       - run: script/install-proto-tools
       - run: make proto-fmt
       - run: make check-protos check-api-descriptors

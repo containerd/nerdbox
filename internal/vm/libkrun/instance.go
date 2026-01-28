@@ -250,10 +250,19 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 		return fmt.Errorf("failed to get cwd: %w", err)
 	}
 	socketPath := filepath.Join(v.state, "run_vminitd.sock")
+	// Compute the relative socket path to avoid exceeding the max length on macOS.
 	socketPath, err = filepath.Rel(cwd, socketPath)
 	if err != nil {
 		return fmt.Errorf("failed to get relative socket path: %w", err)
 	}
+	// When the socket path exceeds max length, it appears as if the VM didn't
+	// start properly. There's no easy way to figure this out as the only log
+	// is: "Timeout while waiting for VM to start". Thus, return an error
+	// preventively here.
+	if (runtime.GOOS == "darwin" && len(socketPath) >= 104) || len(socketPath) >= 108 {
+		return fmt.Errorf("socket path is too long: %s", socketPath)
+	}
+
 	if err := v.vmc.AddVSockPort(1025, socketPath); err != nil {
 		return fmt.Errorf("failed to add vsock port: %w", err)
 	}

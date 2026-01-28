@@ -96,7 +96,9 @@ generate: protos
 
 protos:
 	@echo "$(WHALE) $@"
-	@(cd ${ROOTDIR}/api && PATH="${ROOTDIR}/bin:${PATH}" protobuild --quiet ${API_PACKAGES})
+	@(cd ${ROOTDIR}/api && buf dep update)
+	@(cd ${ROOTDIR}/api && PATH="${ROOTDIR}/bin:${PATH}" buf generate)
+	@(cd ${ROOTDIR}/api && buf build --exclude-imports -o next.txtpb)
 	go-fix-acronym -w -a '^Os' $(shell find api/ -name '*.pb.go')
 	go-fix-acronym -w -a '(Id|Io|Uuid|Os)$$' $(shell find api/ -name '*.pb.go')
 
@@ -108,8 +110,8 @@ check-protos: protos ## check if protobufs needs to be generated again
 
 check-api-descriptors: protos ## check that protobuf changes aren't present.
 	@echo "$(WHALE) $@"
-	@test -z "$$(git status --short | grep ".pb.txt" | tee /dev/stderr)" || \
-		((git diff $$(find . -name '*.pb.txt') | cat) && \
+	@test -z "$$(git status --short | grep ".txtpb" | tee /dev/stderr)" || \
+		((git diff $$(find . -name '*.txtpb') | cat) && \
 		(echo "$(ONI) please run 'make protos' when making changes to proto files and check-in the generated descriptor file changes" && false))
 
 proto-fmt: ## check format of proto files

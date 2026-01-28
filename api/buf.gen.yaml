@@ -1,0 +1,12 @@
+version: v2
+plugins:
+  - remote: buf.build/protocolbuffers/go:v1.28.1
+    out: .
+    opt:
+      - module=github.com/containerd/nerdbox/api
+      - Mgoogle/rpc/status.proto=google.golang.org/genproto/googleapis/rpc/status
+  - local: protoc-gen-go-ttrpc
+    out: .
+    opt:
+      - module=github.com/containerd/nerdbox/api
+      - prefix=TTRPC

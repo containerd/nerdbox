@@ -20,7 +20,5 @@
 set -eu -o pipefail
 
 # install `protobuild` and other commands
-go install github.com/containerd/protobuild@v0.3.0
 go install github.com/containerd/protobuild/cmd/go-fix-acronym@v0.3.0
-go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.28.1
 go install github.com/containerd/ttrpc/cmd/protoc-gen-go-ttrpc@v1.2.5

@@ -1,0 +1,671 @@
+file: {
+  name: "proto/nerdbox/services/bundle/v1/bundle.proto"
+  package: "containerd.vminitd.services.bundle.v1"
+  message_type: {
+    name: "CreateRequest"
+    field: {
+      name: "id"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "id"
+    }
+    field: {
+      name: "files"
+      number: 2
+      label: LABEL_REPEATED
+      type: TYPE_MESSAGE
+      type_name: ".containerd.vminitd.services.bundle.v1.CreateRequest.FilesEntry"
+      json_name: "files"
+    }
+    nested_type: {
+      name: "FilesEntry"
+      field: {
+        name: "key"
+        number: 1
+        label: LABEL_OPTIONAL
+        type: TYPE_STRING
+        json_name: "key"
+      }
+      field: {
+        name: "value"
+        number: 2
+        label: LABEL_OPTIONAL
+        type: TYPE_BYTES
+        json_name: "value"
+      }
+      options: {
+        map_entry: true
+      }
+    }
+  }
+  message_type: {
+    name: "CreateResponse"
+    field: {
+      name: "bundle"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "bundle"
+    }
+  }
+  service: {
+    name: "Bundle"
+    method: {
+      name: "Create"
+      input_type: ".containerd.vminitd.services.bundle.v1.CreateRequest"
+      output_type: ".containerd.vminitd.services.bundle.v1.CreateResponse"
+    }
+  }
+  options: {
+    go_package: "github.com/containerd/nerdbox/api/services/bundle/v1;bundle"
+  }
+  source_code_info: {
+    location: {
+      span: 16
+      span: 0
+      span: 33
+      span: 1
+    }
+    location: {
+      path: 12
+      span: 16
+      span: 0
+      span: 18
+      leading_detached_comments: "\nCopyright The containerd Authors.\n\nLicensed under the Apache License, Version 2.0 (the \"License\");\nyou may not use this file except in compliance with the License.\nYou may obtain a copy of the License at\n\nhttp://www.apache.org/licenses/LICENSE-2.0\n\nUnless required by applicable law or agreed to in writing, software\ndistributed under the License is distributed on an \"AS IS\" BASIS,\nWITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\nSee the License for the specific language governing permissions and\nlimitations under the License.\n"
+    }
+    location: {
+      path: 2
+      span: 18
+      span: 0
+      span: 46
+    }
+    location: {
+      path: 8
+      span: 20
+      span: 0
+      span: 82
+    }
+    location: {
+      path: 8
+      path: 11
+      span: 20
+      span: 0
+      span: 82
+    }
+    location: {
+      path: 6
+      path: 0
+      span: 22
+      span: 0
+      span: 24
+      span: 1
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 1
+      span: 22
+      span: 8
+      span: 14
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      span: 23
+      span: 8
+      span: 59
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      path: 1
+      span: 23
+      span: 12
+      span: 18
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      path: 2
+      span: 23
+      span: 19
+      span: 32
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      path: 3
+      span: 23
+      span: 43
+      span: 57
+    }
+    location: {
+      path: 4
+      path: 0
+      span: 26
+      span: 0
+      span: 29
+      span: 1
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 1
+      span: 26
+      span: 8
+      span: 21
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      span: 27
+      span: 8
+      span: 22
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      path: 5
+      span: 27
+      span: 8
+      span: 14
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      path: 1
+      span: 27
+      span: 15
+      span: 17
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      path: 3
+      span: 27
+      span: 20
+      span: 21
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 1
+      span: 28
+      span: 8
+      span: 37
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 1
+      path: 6
+      span: 28
+      span: 8
+      span: 26
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 1
+      path: 1
+      span: 28
+      span: 27
+      span: 32
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 1
+      path: 3
+      span: 28
+      span: 35
+      span: 36
+    }
+    location: {
+      path: 4
+      path: 1
+      span: 31
+      span: 0
+      span: 33
+      span: 1
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 1
+      span: 31
+      span: 8
+      span: 22
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      span: 32
+      span: 8
+      span: 26
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      path: 5
+      span: 32
+      span: 8
+      span: 14
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      path: 1
+      span: 32
+      span: 15
+      span: 21
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      path: 3
+      span: 32
+      span: 24
+      span: 25
+    }
+  }
+  syntax: "proto3"
+  buf_extension: {
+    is_import: false
+    is_syntax_unspecified: false
+  }
+}
+file: {
+  name: "proto/nerdbox/services/system/v1/info.proto"
+  package: "containerd.vminitd.services.system.v1"
+  dependency: "google/protobuf/empty.proto"
+  message_type: {
+    name: "InfoResponse"
+    field: {
+      name: "version"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "version"
+    }
+    field: {
+      name: "kernel_version"
+      number: 2
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "kernelVersion"
+    }
+  }
+  service: {
+    name: "System"
+    method: {
+      name: "Info"
+      input_type: ".google.protobuf.Empty"
+      output_type: ".containerd.vminitd.services.system.v1.InfoResponse"
+    }
+  }
+  options: {
+    go_package: "github.com/containerd/nerdbox/api/services/system/v1;system"
+  }
+  source_code_info: {
+    location: {
+      span: 16
+      span: 0
+      span: 31
+      span: 1
+    }
+    location: {
+      path: 12
+      span: 16
+      span: 0
+      span: 18
+      leading_detached_comments: "\nCopyright The containerd Authors.\n\nLicensed under the Apache License, Version 2.0 (the \"License\");\nyou may not use this file except in compliance with the License.\nYou may obtain a copy of the License at\n\nhttp://www.apache.org/licenses/LICENSE-2.0\n\nUnless required by applicable law or agreed to in writing, software\ndistributed under the License is distributed on an \"AS IS\" BASIS,\nWITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\nSee the License for the specific language governing permissions and\nlimitations under the License.\n"
+    }
+    location: {
+      path: 2
+      span: 18
+      span: 0
+      span: 46
+    }
+    location: {
+      path: 3
+      path: 0
+      span: 20
+      span: 0
+      span: 37
+    }
+    location: {
+      path: 8
+      span: 22
+      span: 0
+      span: 82
+    }
+    location: {
+      path: 8
+      path: 11
+      span: 22
+      span: 0
+      span: 82
+    }
+    location: {
+      path: 6
+      path: 0
+      span: 24
+      span: 0
+      span: 26
+      span: 1
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 1
+      span: 24
+      span: 8
+      span: 14
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      span: 25
+      span: 8
+      span: 63
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      path: 1
+      span: 25
+      span: 12
+      span: 16
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      path: 2
+      span: 25
+      span: 17
+      span: 38
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      path: 3
+      span: 25
+      span: 49
+      span: 61
+    }
+    location: {
+      path: 4
+      path: 0
+      span: 28
+      span: 0
+      span: 31
+      span: 1
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 1
+      span: 28
+      span: 8
+      span: 20
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      span: 29
+      span: 8
+      span: 27
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      path: 5
+      span: 29
+      span: 8
+      span: 14
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      path: 1
+      span: 29
+      span: 15
+      span: 22
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      path: 3
+      span: 29
+      span: 25
+      span: 26
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 1
+      span: 30
+      span: 8
+      span: 34
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 1
+      path: 5
+      span: 30
+      span: 8
+      span: 14
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 1
+      path: 1
+      span: 30
+      span: 15
+      span: 29
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 1
+      path: 3
+      span: 30
+      span: 32
+      span: 33
+    }
+  }
+  syntax: "proto3"
+  buf_extension: {
+    is_import: false
+    is_syntax_unspecified: false
+  }
+}
+file: {
+  name: "proto/nerdbox/services/vmevents/v1/events.proto"
+  package: "nerdbox.services.vmevents.v1"
+  dependency: "containerd/types/event.proto"
+  dependency: "google/protobuf/empty.proto"
+  service: {
+    name: "Events"
+    method: {
+      name: "Stream"
+      input_type: ".google.protobuf.Empty"
+      output_type: ".containerd.types.Envelope"
+      server_streaming: true
+    }
+  }
+  options: {
+    go_package: "github.com/containerd/nerdbox/api/services/vmevents/v1;vmevents"
+  }
+  source_code_info: {
+    location: {
+      span: 16
+      span: 0
+      span: 28
+      span: 1
+    }
+    location: {
+      path: 12
+      span: 16
+      span: 0
+      span: 18
+      leading_detached_comments: "\nCopyright The containerd Authors.\n\nLicensed under the Apache License, Version 2.0 (the \"License\");\nyou may not use this file except in compliance with the License.\nYou may obtain a copy of the License at\n\nhttp://www.apache.org/licenses/LICENSE-2.0\n\nUnless required by applicable law or agreed to in writing, software\ndistributed under the License is distributed on an \"AS IS\" BASIS,\nWITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\nSee the License for the specific language governing permissions and\nlimitations under the License.\n"
+    }
+    location: {
+      path: 2
+      span: 18
+      span: 0
+      span: 37
+    }
+    location: {
+      path: 3
+      path: 0
+      span: 20
+      span: 0
+      span: 38
+    }
+    location: {
+      path: 3
+      path: 1
+      span: 21
+      span: 0
+      span: 37
+    }
+    location: {
+      path: 8
+      span: 23
+      span: 0
+      span: 86
+    }
+    location: {
+      path: 8
+      path: 11
+      span: 23
+      span: 0
+      span: 86
+    }
+    location: {
+      path: 6
+      path: 0
+      span: 25
+      span: 0
+      span: 28
+      span: 1
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 1
+      span: 25
+      span: 8
+      span: 14
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      span: 27
+      span: 8
+      span: 85
+      leading_comments: " Stream events\n"
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      path: 1
+      span: 27
+      span: 12
+      span: 18
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      path: 2
+      span: 27
+      span: 19
+      span: 40
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      path: 6
+      span: 27
+      span: 51
+      span: 57
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      path: 3
+      span: 27
+      span: 58
+      span: 83
+    }
+  }
+  syntax: "proto3"
+  buf_extension: {
+    is_import: false
+    is_syntax_unspecified: false
+  }
+}

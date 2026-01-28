@@ -96,7 +96,6 @@ generate: protos
 
 protos:
 	@echo "$(WHALE) $@"
-	@(cd ${ROOTDIR}/api && buf dep update)
 	@(cd ${ROOTDIR}/api && PATH="${ROOTDIR}/bin:${PATH}" buf generate)
 	@(cd ${ROOTDIR}/api && buf build --exclude-imports -o next.txtpb)
 	go-fix-acronym -w -a '^Os' $(shell find api/ -name '*.pb.go')

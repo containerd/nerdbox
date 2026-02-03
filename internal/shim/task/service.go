@@ -207,8 +207,12 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	}
 	b.AddExtraFile(nwcfg.Filename, nwJSON)
 
-	vmState := filepath.Join(r.Bundle, "vm")
-	if err := os.Mkdir(vmState, 0700); err != nil {
+	// vmState directory should be a path under the current working directory, not specific to a single bundle
+	vmState, err := filepath.Abs("vm")
+	if err != nil {
+		return nil, errgrpc.ToGRPCf(err, "failed to get absolute path for vm state directory")
+	}
+	if err := os.MkdirAll(vmState, 0700); err != nil {
 		return nil, errgrpc.ToGRPCf(err, "failed to create vm state directory %q", vmState)
 	}
 	vmi, err := s.vmInstance(ctx, vmState)

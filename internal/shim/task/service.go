@@ -184,14 +184,18 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		return nil, errgrpc.ToGRPC(err)
 	}
 
-	var nwpr networksProvider
-	var ctrNetCfg ctrNetConfig
+	var (
+		nwpr      networksProvider
+		ctrNetCfg ctrNetConfig
+		resCfg    resourceConfig
+	)
 	// Load the OCI bundle and apply transformers to get the bundle that'll be
 	// set up on the VM side.
 	b, err := bundle.Load(ctx, r.Bundle,
 		transformBindMounts,
 		nwpr.FromBundle,
 		ctrNetCfg.fromBundle,
+		resCfg.FromBundle,
 		func(ctx context.Context, b *bundle.Bundle) error {
 			// If there are no VM networks, try falling back to host's resolv.conf (for TSI).
 			return addResolvConf(ctx, b, len(nwpr.nws) == 0)
@@ -226,6 +230,10 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	}
 
 	if err := nwpr.SetupVM(ctx, vmi); err != nil {
+		return nil, errgrpc.ToGRPC(err)
+	}
+
+	if err := resCfg.SetupVM(ctx, vmi); err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
 

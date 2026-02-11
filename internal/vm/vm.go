@@ -19,6 +19,7 @@ package vm
 
 import (
 	"context"
+	"io"
 	"net"
 
 	"github.com/containerd/ttrpc"
@@ -36,7 +37,8 @@ type Manager interface {
 }
 
 type StartOpts struct {
-	InitArgs []string
+	InitArgs      []string
+	ConsoleWriter io.Writer // If set, console output is also copied here (in addition to os.Stderr)
 }
 
 type StartOpt func(*StartOpts)
@@ -44,6 +46,12 @@ type StartOpt func(*StartOpts)
 func WithInitArgs(args ...string) StartOpt {
 	return func(o *StartOpts) {
 		o.InitArgs = append(o.InitArgs, args...)
+	}
+}
+
+func WithConsoleWriter(w io.Writer) StartOpt {
+	return func(o *StartOpts) {
+		o.ConsoleWriter = w
 	}
 }
 

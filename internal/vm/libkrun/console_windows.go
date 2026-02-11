@@ -23,24 +23,39 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/Microsoft/go-winio"
 	"github.com/containerd/log"
 )
 
+var consolePipeCounter uint64
+
 func setupConsole(_ context.Context, vmc *vmcontext, _ string) (io.ReadCloser, error) {
-	pipeName := fmt.Sprintf(`\\.\pipe\krun-console-%d`, os.Getpid())
+	// Use a named pipe for console output on Windows.
+	// The pipe name includes our PID and a counter to avoid collisions
+	// when multiple VM instances run in the same process.
+	id := atomic.AddUint64(&consolePipeCounter, 1)
+	pipeName := fmt.Sprintf(`\\.\pipe\krun-console-%d-%d`, os.Getpid(), id)
+
 	if err := vmc.SetConsole(pipeName); err != nil {
 		return nil, err
 	}
+
+	// Return a reader that connects to the named pipe in the background.
+	// The pipe is created by krun during Start(), so we retry until it's available.
 	pr, pw := io.Pipe()
 	go connectAndCopyConsole(pipeName, pw)
 	return pr, nil
 }
 
+// connectAndCopyConsole connects to the named pipe created by krun and copies
+// console output to the pipe writer. It retries connection since the pipe is
+// created asynchronously during VM start.
 func connectAndCopyConsole(pipeName string, pw *io.PipeWriter) {
 	defer pw.Close()
+
 	var conn io.ReadCloser
 	timeout := 5 * time.Second
 	for d := 10 * time.Millisecond; d < timeout; d *= 2 {
@@ -58,6 +73,7 @@ func connectAndCopyConsole(pipeName string, pw *io.PipeWriter) {
 	}
 	defer conn.Close()
 	log.L.Debugf("connected to console pipe %s", pipeName)
+
 	if _, err := io.Copy(pw, conn); err != nil {
 		log.L.WithError(err).Debug("console pipe copy ended")
 	}

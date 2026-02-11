@@ -55,6 +55,7 @@ type MountConfig struct {
 type MountOpt func(*MountConfig)
 
 type Instance interface {
+	SetCPUAndMemory(ctx context.Context, cpu uint8, ram uint32) error
 	AddFS(ctx context.Context, tag, mountPath string, opts ...MountOpt) error
 	AddDisk(ctx context.Context, blockID, mountPath string, opts ...MountOpt) error
 	AddNIC(ctx context.Context, endpoint string, mac net.HardwareAddr, mode NetworkMode, features, flags uint32) error

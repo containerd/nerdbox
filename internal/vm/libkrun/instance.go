@@ -198,6 +198,17 @@ func (v *vmInstance) AddNIC(ctx context.Context, endpoint string, mac net.Hardwa
 	return nil
 }
 
+func (v *vmInstance) SetCPUAndMemory(ctx context.Context, cpu uint8, ram uint32) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	if err := v.vmc.SetCPUAndMemory(cpu, ram); err != nil {
+		return fmt.Errorf("failed to set cpu and memory: %w", err)
+	}
+
+	return nil
+}
+
 func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -205,9 +216,6 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 		return errors.New("VM instance already started")
 	}
 
-	if err := v.vmc.SetCPUAndMemory(2, 2096); err != nil {
-		return fmt.Errorf("failed to set cpu and memory: %w", err)
-	}
 	if err := v.vmc.SetKernel(v.kernelPath, v.initrdPath, "console=hvc0"); err != nil {
 		return fmt.Errorf("failed to set kernel: %w", err)
 	}

@@ -1,6 +1,15 @@
-# VM Networking
+# VM Configuration
 
-## TSI
+## Resources
+
+VM resources can be configured through the following OCI annotations:
+
+- `io.containerd.nerdbox.resources.cpu`: Number of vCPUs (default: 2)
+- `io.containerd.nerdbox.resources.memory`: Memory in MiB (default: 2048)
+
+## Networking
+
+### TSI
 
 By default, nerdbox creates microVMs with no network interface set up. In this
 case, VMs get connectivity through TSI (i.e. Transparent Socket Impersonation).
@@ -15,7 +24,7 @@ These patches automatically translate socket syscalls made for socket family
 AF_INET, and socket types SOCK_STREAM and SOCK_DGRAM, into AF_TSI. As such,
 this networking mode doesn't support IPv6 connections, and ICMP protocol.
 
-## External network providers
+### External network providers
 
 Network interfaces can be attached to the VM by specifying the OCI annotations
 `io.containerd.nerdbox.network.*`. These annotations are CSV-encoded strings

@@ -3,7 +3,7 @@
 ## Connecting to VM networks
 
 Containers can be connected to networks the VM that have been defined via the
-`io.containerd.nerdbox.network.*` annotation, see [vm-networking](vm-networking.md).
+`io.containerd.nerdbox.network.*` annotation, see [VM Configuration](vm-configuration.md#networking).
 
 Each `io.containerd.nerdbox.ctr.network` annotation describes a single network
 connection.

@@ -27,11 +27,14 @@ import (
 	"strings"
 
 	"github.com/opencontainers/runtime-spec/specs-go"
-	"golang.org/x/sys/unix"
 
 	"github.com/containerd/nerdbox/internal/nwcfg"
 	"github.com/containerd/nerdbox/internal/shim/task/bundle"
 )
+
+// ifNameSize is the maximum length of a network interface name (including NUL terminator).
+// This matches IFNAMSIZ from <net/if.h> on Linux.
+const ifNameSize = 16
 
 // ctrNetConfig is used to assemble network configuration for the VM.
 // Its JSON serialization is passed to the VM along with the bundle.
@@ -138,9 +141,9 @@ func parseCtrNetwork(annotation string) (nwcfg.Network, error) {
 				n.DefaultGw6 = addr
 			}
 		case ctrIfName:
-			if len(value) >= unix.IFNAMSIZ {
+			if len(value) >= ifNameSize {
 				return nwcfg.Network{}, fmt.Errorf("interface name has more than %d characters: %s",
-					unix.IFNAMSIZ-1, value[:unix.IFNAMSIZ-1]+"...")
+					ifNameSize-1, value[:ifNameSize-1]+"...")
 			}
 			n.IfName = value
 		default:

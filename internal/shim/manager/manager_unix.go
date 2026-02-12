@@ -1,3 +1,5 @@
+//go:build !windows
+
 /*
    Copyright The containerd Authors.
 
@@ -18,9 +20,7 @@ package manager
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -31,41 +31,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/containerd/containerd/api/types"
 	"github.com/containerd/containerd/v2/defaults"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/containerd/v2/pkg/shim"
 	"github.com/containerd/errdefs"
 	"golang.org/x/sys/unix"
 )
-
-// NewShimManager returns an implementation of the shim manager
-// using run_vminitd
-func NewShimManager(name string) shim.Manager {
-	return &manager{
-		name: name,
-	}
-}
-
-type manager struct {
-	name string
-}
-
-// group labels specifies how the shim groups services.
-// currently supports a runc.v2 specific .group label and the
-// standard k8s pod label.  Order matters in this list
-var groupLabels = []string{
-	"io.containerd.runc.v2.group",
-	"io.kubernetes.cri.sandbox-id",
-}
-
-// spec is a shallow version of [oci.Spec] containing only the
-// fields we need for the hook. We use a shallow struct to reduce
-// the overhead of unmarshaling.
-type spec struct {
-	// Annotations contains arbitrary metadata for the container.
-	Annotations map[string]string `json:"annotations,omitempty"`
-}
 
 func newCommand(ctx context.Context, id, containerdAddress, containerdTTRPCAddress string, debug bool) (*exec.Cmd, error) {
 	ns, err := namespaces.NamespaceRequired(ctx)
@@ -96,24 +67,6 @@ func newCommand(ctx context.Context, id, containerdAddress, containerdTTRPCAddre
 		Setpgid: true,
 	}
 	return cmd, nil
-}
-
-func readSpec() (*spec, error) {
-	const configFileName = "config.json"
-	f, err := os.Open(configFileName)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	var s spec
-	if err := json.NewDecoder(f).Decode(&s); err != nil {
-		return nil, err
-	}
-	return &s, nil
-}
-
-func (m manager) Name() string {
-	return m.name
 }
 
 type shimSocket struct {
@@ -338,35 +291,4 @@ func (manager) Stop(ctx context.Context, id string) (shim.StopStatus, error) {
 		ExitStatus: 128 + int(unix.SIGKILL),
 		Pid:        pid,
 	}, nil
-}
-
-func (m manager) Info(ctx context.Context, optionsR io.Reader) (*types.RuntimeInfo, error) {
-	info := &types.RuntimeInfo{
-		Name:    m.name,
-		Version: &types.RuntimeVersion{
-			//Version:  version.Version,
-			//Revision: version.Revision,
-		},
-		Annotations: map[string]string{
-			"containerd.io/runtime-allow-mounts": "mkdir/*,format/*,erofs",
-		},
-	}
-	// TODO: Get features list from run_vminitd
-	/*
-		opts, err := shim.ReadRuntimeOptions[*options.Options](optionsR)
-		if err != nil {
-			if !errors.Is(err, errdefs.ErrNotFound) {
-				return nil, fmt.Errorf("failed to read runtime options (*options.Options): %w", err)
-			}
-		}
-		if opts != nil {
-			info.Options, err = typeurl.MarshalAnyToProto(opts)
-			if err != nil {
-				return nil, fmt.Errorf("failed to marshal %T: %w", opts, err)
-			}
-			// TODO: use opts.BinaryName
-
-		}
-	*/
-	return info, nil
 }

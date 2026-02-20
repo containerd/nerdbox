@@ -65,7 +65,14 @@ func runWithVM(t *testing.T, runTest func(*testing.T, vm.Instance)) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			vm, err := tc.vmm.NewInstance(t.Context(), t.TempDir())
+			td := t.TempDir()
+			t.Chdir(td)
+			// Use Getwd to resolve symlinks (e.g., /var -> /private/var on macOS)
+			resolvedTd, err := os.Getwd()
+			if err != nil {
+				t.Fatal("Failed to get current working directory:", err)
+			}
+			vm, err := tc.vmm.NewInstance(t.Context(), resolvedTd)
 			if err != nil {
 				t.Fatal("Failed to create VM instance:", err)
 			}

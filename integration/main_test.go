@@ -20,6 +20,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/containerd/nerdbox/internal/vm"
@@ -27,13 +28,24 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	var err error
-
-	absPath, err := filepath.Abs("../build")
+	e, err := os.Executable()
 	if err != nil {
-		log.Fatalf("Failed to resolve build path: %v", err)
+		log.Fatalf("Failed to get executable path: %v", err)
 	}
-	if err := os.Setenv("PATH", absPath+":"+os.Getenv("PATH")); err != nil {
+	exeDir := filepath.Dir(e)
+	paths := filepath.SplitList(os.Getenv("PATH"))
+	for _, p := range []string{
+		"../_output",
+		".",
+	} {
+		absPath := filepath.Clean(filepath.Join(exeDir, p))
+		// Prepend to slice
+		paths = append(paths, "")
+		copy(paths[1:], paths)
+		paths[0] = absPath
+	}
+	log.Printf("%v", paths)
+	if err := os.Setenv("PATH", strings.Join(paths, string(filepath.ListSeparator))); err != nil {
 		log.Fatalf("Failed to set PATH environment variable: %v", err)
 	}
 

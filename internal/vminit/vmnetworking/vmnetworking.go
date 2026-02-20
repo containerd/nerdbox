@@ -45,8 +45,8 @@ type Network struct {
 }
 
 func (nw Network) Validate() error {
-	if nw.MAC == nil || (!nw.Addr4.IsValid() && !nw.Addr6.IsValid() && !nw.DHCP) {
-		return errors.New("must specify either addr or dhcp")
+	if nw.MAC == nil {
+		return errors.New("must specify MAC address")
 	}
 	if (nw.Addr4.IsValid() || nw.Addr6.IsValid()) && nw.DHCP {
 		return errors.New("cannot specify both addr and dhcp")

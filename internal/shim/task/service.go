@@ -55,11 +55,17 @@ var (
 
 // NewTaskService creates a new instance of a task service
 func NewTaskService(ctx context.Context, sb sandbox.Sandbox, publisher shim.Publisher, sd shutdown.Service) (taskAPI.TTRPCTaskService, error) {
+	var debug bool
+	if opts, ok := ctx.Value(shim.OptsKey{}).(shim.Opts); ok {
+		debug = opts.Debug
+	}
+
 	s := &service{
 		context:          ctx,
 		sb:               sb,
 		events:           make(chan any, 128),
 		containers:       make(map[string]*container),
+		debug:            debug,
 		initiateShutdown: sd.Shutdown,
 	}
 	sd.RegisterCallback(s.shutdown)
@@ -93,6 +99,7 @@ type service struct {
 
 	containers map[string]*container
 
+	debug            bool
 	initiateShutdown func()
 }
 
@@ -224,6 +231,10 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	initArgs := nwpr.InitArgs()
 
 	var opts []sandbox.Opt
+	if s.debug {
+		opts = append(opts, sandbox.WithInitArgs("-debug"))
+	}
+
 	opts = append(opts, sandbox.WithStateDir(vmState))
 	opts = append(opts, mountOpts...)
 	opts = append(opts, nwOpts...)

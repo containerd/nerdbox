@@ -226,7 +226,6 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 
 	startOpts := vm.StartOpts{
 		InitArgs: []string{
-			"-debug",
 			"-vsock-rpc-port=1025",    // vsock rpc port number
 			"-vsock-stream-port=1026", // vsock stream port number
 			"-vsock-cid=3",            // vsock guest context id

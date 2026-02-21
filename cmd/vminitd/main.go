@@ -59,7 +59,7 @@ func main() {
 		config ServiceConfig
 		dev    = flag.Bool("dev", false, "Development mode with graceful exit")
 	)
-	flag.BoolVar(&config.Debug, "debug", true, "Debug log level")
+	flag.BoolVar(&config.Debug, "debug", false, "Debug log level")
 	flag.IntVar(&config.RPCPort, "vsock-rpc-port", 1024, "vsock port to listen for rpc on")
 	flag.IntVar(&config.StreamPort, "vsock-stream-port", 1025, "vsock port to listen for streams on")
 	flag.IntVar(&config.VSockContextID, "vsock-cid", 0, "vsock context ID for vsock listen")

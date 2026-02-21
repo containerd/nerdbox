@@ -219,11 +219,11 @@ FROM "${GOLANG_IMAGE}" AS dlv
 RUN go install github.com/go-delve/delve/cmd/dlv@latest
 
 FROM "${RUST_IMAGE}" AS libkrun-build
-ARG LIBKRUN_VERSION=v1.15.1
+ARG LIBKRUN_VERSION=v1.17.4
 
 RUN --mount=type=cache,sharing=locked,id=libkrun-aptlib,target=/var/lib/apt \
     --mount=type=cache,sharing=locked,id=libkrun-aptcache,target=/var/cache/apt \
-        apt-get update && apt-get install -y git libclang-19-dev llvm make
+        apt-get update && apt-get install -y git libcap-ng-dev libclang-19-dev llvm make
 
 RUN git clone --depth 1 --branch ${LIBKRUN_VERSION} https://github.com/containers/libkrun.git && \
     cd libkrun && \

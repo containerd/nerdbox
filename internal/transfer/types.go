@@ -39,17 +39,19 @@ func init() {
 // filesystem. It acts as either a source or destination in a transfer
 // operation, identifying the container and path for archive operations.
 type ContainerFilesystem struct {
-	ContainerID string
-	Path        string
-	NoWalk   bool
+	ContainerID       string
+	Path              string
+	NoWalk            bool
+	PreserveOwnership bool
 }
 
 // MarshalAny marshals the ContainerFilesystem to a typeurl.Any.
 func (cf *ContainerFilesystem) MarshalAny(ctx context.Context, sm streaming.StreamCreator) (typeurl.Any, error) {
 	return typeurl.MarshalAny(&transferpb.ContainerFilesystem{
-		ContainerID: cf.ContainerID,
-		Path:        cf.Path,
-		NoWalk:   cf.NoWalk,
+		ContainerID:       cf.ContainerID,
+		Path:              cf.Path,
+		NoWalk:            cf.NoWalk,
+		PreserveOwnership: cf.PreserveOwnership,
 	})
 }
 
@@ -62,6 +64,7 @@ func (cf *ContainerFilesystem) UnmarshalAny(ctx context.Context, sg streaming.St
 	cf.ContainerID = p.ContainerID
 	cf.Path = p.Path
 	cf.NoWalk = p.NoWalk
+	cf.PreserveOwnership = p.PreserveOwnership
 	return nil
 }
 

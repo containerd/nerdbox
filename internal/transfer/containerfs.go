@@ -63,7 +63,7 @@ func (t *containerFSTransferrer) Transfer(ctx context.Context, src, dst any, opt
 		}
 		rootfs := filepath.Join(t.bundleDir, d.ContainerID, "rootfs")
 		r := s.Reader(ctx)
-		return readPath(r, rootfs, d.Path, s.MediaType)
+		return readPath(r, rootfs, d.Path, s.MediaType, d.PreserveOwnership)
 	}
 
 	return errdefs.ErrNotImplemented
@@ -150,8 +150,9 @@ func writeTarEntry(tw *tar.Writer, filePath string, fi os.FileInfo, name string)
 }
 
 // readPath reads a tar archive from r and extracts it to the given path
-// within rootfs.
-func readPath(r io.Reader, rootfs, path, mediaType string) error {
+// within rootfs. When preserveOwnership is true, extracted files have
+// their UID/GID set from the tar headers.
+func readPath(r io.Reader, rootfs, path, mediaType string, preserveOwnership bool) error {
 	if mediaType != mediaTypeTar {
 		return fmt.Errorf("unsupported media type %q: %w", mediaType, errdefs.ErrNotImplemented)
 	}
@@ -175,13 +176,13 @@ func readPath(r io.Reader, rootfs, path, mediaType string) error {
 			return fmt.Errorf("tar entry %q would escape destination", header.Name)
 		}
 
-		if err := extractTarEntry(target, header, tr); err != nil {
+		if err := extractTarEntry(target, header, tr, preserveOwnership); err != nil {
 			return err
 		}
 	}
 }
 
-func extractTarEntry(target string, header *tar.Header, r io.Reader) error {
+func extractTarEntry(target string, header *tar.Header, r io.Reader, preserveOwnership bool) error {
 	switch header.Typeflag {
 	case tar.TypeDir:
 		if err := os.MkdirAll(target, os.FileMode(header.Mode)); err != nil {
@@ -217,5 +218,12 @@ func extractTarEntry(target string, header *tar.Header, r io.Reader) error {
 			return err
 		}
 	}
+
+	if preserveOwnership {
+		if err := os.Lchown(target, header.Uid, header.Gid); err != nil {
+			return fmt.Errorf("failed to chown %s: %w", target, err)
+		}
+	}
+
 	return nil
 }

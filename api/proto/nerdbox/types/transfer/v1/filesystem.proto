@@ -31,4 +31,9 @@ message ContainerFilesystem {
 	// itself without walking into its contents. This is useful for
 	// stat-like operations where only the directory's metadata is needed.
 	bool no_walk = 3;
+
+	// When true, preserve the UID/GID from tar headers when extracting
+	// files. When false, extracted files are owned by the extracting
+	// process.
+	bool preserve_ownership = 4;
 }

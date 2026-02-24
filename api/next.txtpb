@@ -965,6 +965,13 @@ file: {
       type: TYPE_BOOL
       json_name: "noWalk"
     }
+    field: {
+      name: "preserve_ownership"
+      number: 4
+      label: LABEL_OPTIONAL
+      type: TYPE_BOOL
+      json_name: "preserveOwnership"
+    }
   }
   options: {
     go_package: "github.com/containerd/nerdbox/api/types/transfer/v1;transfer"
@@ -973,7 +980,7 @@ file: {
     location: {
       span: 16
       span: 0
-      span: 33
+      span: 38
       span: 1
     }
     location: {
@@ -1007,7 +1014,7 @@ file: {
       path: 0
       span: 25
       span: 0
-      span: 33
+      span: 38
       span: 1
       leading_comments: " ContainerFilesystem represents a path within a running container's\n filesystem. It acts as either a source or destination in a transfer\n operation, identifying the container and path for archive operations.\n"
     }
@@ -1136,6 +1143,46 @@ file: {
       span: 32
       span: 23
       span: 24
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 3
+      span: 37
+      span: 8
+      span: 36
+      leading_comments: " When true, preserve the UID/GID from tar headers when extracting\n files. When false, extracted files are owned by the extracting\n process.\n"
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 3
+      path: 5
+      span: 37
+      span: 8
+      span: 12
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 3
+      path: 1
+      span: 37
+      span: 13
+      span: 31
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 3
+      path: 3
+      span: 37
+      span: 34
+      span: 35
     }
   }
   syntax: "proto3"

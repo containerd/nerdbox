@@ -958,6 +958,13 @@ file: {
       type: TYPE_STRING
       json_name: "path"
     }
+    field: {
+      name: "no_walk"
+      number: 3
+      label: LABEL_OPTIONAL
+      type: TYPE_BOOL
+      json_name: "noWalk"
+    }
   }
   options: {
     go_package: "github.com/containerd/nerdbox/api/types/transfer/v1;transfer"
@@ -966,7 +973,7 @@ file: {
     location: {
       span: 16
       span: 0
-      span: 28
+      span: 33
       span: 1
     }
     location: {
@@ -1000,7 +1007,7 @@ file: {
       path: 0
       span: 25
       span: 0
-      span: 28
+      span: 33
       span: 1
       leading_comments: " ContainerFilesystem represents a path within a running container's\n filesystem. It acts as either a source or destination in a transfer\n operation, identifying the container and path for archive operations.\n"
     }
@@ -1089,6 +1096,46 @@ file: {
       span: 27
       span: 22
       span: 23
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 2
+      span: 32
+      span: 8
+      span: 25
+      leading_comments: " When true and path is a directory, return only the directory entry\n itself without walking into its contents. This is useful for\n stat-like operations where only the directory's metadata is needed.\n"
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 2
+      path: 5
+      span: 32
+      span: 8
+      span: 12
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 2
+      path: 1
+      span: 32
+      span: 13
+      span: 20
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 2
+      path: 3
+      span: 32
+      span: 23
+      span: 24
     }
   }
   syntax: "proto3"

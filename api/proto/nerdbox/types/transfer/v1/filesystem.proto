@@ -26,4 +26,9 @@ option go_package = "github.com/containerd/nerdbox/api/types/transfer/v1;transfe
 message ContainerFilesystem {
 	string container_id = 1;
 	string path = 2;
+
+	// When true and path is a directory, return only the directory entry
+	// itself without walking into its contents. This is useful for
+	// stat-like operations where only the directory's metadata is needed.
+	bool no_walk = 3;
 }

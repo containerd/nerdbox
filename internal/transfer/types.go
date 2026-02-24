@@ -41,6 +41,7 @@ func init() {
 type ContainerFilesystem struct {
 	ContainerID string
 	Path        string
+	NoWalk   bool
 }
 
 // MarshalAny marshals the ContainerFilesystem to a typeurl.Any.
@@ -48,6 +49,7 @@ func (cf *ContainerFilesystem) MarshalAny(ctx context.Context, sm streaming.Stre
 	return typeurl.MarshalAny(&transferpb.ContainerFilesystem{
 		ContainerID: cf.ContainerID,
 		Path:        cf.Path,
+		NoWalk:   cf.NoWalk,
 	})
 }
 
@@ -59,6 +61,7 @@ func (cf *ContainerFilesystem) UnmarshalAny(ctx context.Context, sg streaming.St
 	}
 	cf.ContainerID = p.ContainerID
 	cf.Path = p.Path
+	cf.NoWalk = p.NoWalk
 	return nil
 }
 

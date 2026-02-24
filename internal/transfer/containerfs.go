@@ -53,7 +53,7 @@ func (t *containerFSTransferrer) Transfer(ctx context.Context, src, dst any, opt
 		rootfs := filepath.Join(t.bundleDir, s.ContainerID, "rootfs")
 		w := d.Writer(ctx)
 		defer w.Close()
-		return writePath(rootfs, s.Path, w, d.MediaType)
+		return writePath(rootfs, s.Path, w, d.MediaType, s.NoWalk)
 
 	case *ReadStream:
 		// Copy-to: ReadStream -> ContainerFilesystem
@@ -70,8 +70,9 @@ func (t *containerFSTransferrer) Transfer(ctx context.Context, src, dst any, opt
 }
 
 // writePath creates a tar archive from the given path within rootfs
-// and writes it to w.
-func writePath(rootfs, path string, w io.Writer, mediaType string) error {
+// and writes it to w. When noWalk is true and path is a directory,
+// only the directory entry itself is included without walking into it.
+func writePath(rootfs, path string, w io.Writer, mediaType string, noWalk bool) error {
 	if mediaType != mediaTypeTar {
 		return fmt.Errorf("unsupported media type %q: %w", mediaType, errdefs.ErrNotImplemented)
 	}
@@ -86,7 +87,7 @@ func writePath(rootfs, path string, w io.Writer, mediaType string) error {
 	tw := tar.NewWriter(w)
 	defer tw.Close()
 
-	if !fi.IsDir() {
+	if !fi.IsDir() || noWalk {
 		return writeTarEntry(tw, srcPath, fi, filepath.Base(srcPath))
 	}
 

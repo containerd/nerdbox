@@ -26,6 +26,9 @@ const (
 	// VMManagerPlugin implements the vm manager interface
 	VMManagerPlugin plugin.Type = "nerdbox.vm-manager.v1"
 
+	// SandboxPlugin implements the sandbox interface
+	SandboxPlugin plugin.Type = "nerdbox.sandbox.v1"
+
 	// StreamingPlugin implements a stream manager
 	StreamingPlugin plugin.Type = "nerdbox.streaming.v1"
 )

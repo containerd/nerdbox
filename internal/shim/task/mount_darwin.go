@@ -21,9 +21,9 @@ import (
 
 	"github.com/containerd/containerd/api/types"
 
-	"github.com/containerd/nerdbox/internal/vm"
+	"github.com/containerd/nerdbox/internal/shim/sandbox"
 )
 
-func setupMounts(ctx context.Context, vmi vm.Instance, id string, ms []*types.Mount, _, _ string) ([]*types.Mount, error) {
-	return transformMounts(ctx, vmi, id, ms)
+func setupMounts(ctx context.Context, id string, ms []*types.Mount, _, _ string) ([]*types.Mount, []sandbox.Opt, error) {
+	return transformMounts(ctx, id, ms)
 }

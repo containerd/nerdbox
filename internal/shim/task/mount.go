@@ -21,6 +21,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -229,7 +230,9 @@ func (bm *bindMounter) FromBundle(ctx context.Context, b *bundle.Bundle) error {
 		specSrc := vmTarget
 		if !fi.IsDir() {
 			hostSrc = filepath.Dir(m.Source)
-			specSrc = filepath.Join(vmTarget, filepath.Base(m.Source))
+			// Use path.Join (not filepath.Join) because this path is used
+			// inside the Linux VM where forward slashes are required.
+			specSrc = path.Join(vmTarget, filepath.Base(m.Source))
 		}
 
 		transformed := bindMount{

@@ -32,6 +32,7 @@ fi
 tests=(
     "TestSystemInfo"
     "TestStreamInitialization"
+    "TestTransferEcho"
 )
 
 for test in "${tests[@]}"; do

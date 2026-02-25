@@ -45,7 +45,7 @@ func TestSystemInfo(t *testing.T) {
 
 func TestStreamInitialization(t *testing.T) {
 	runWithVM(t, func(t *testing.T, i vm.Instance) {
-		sid1, conn, err := i.StartStream(t.Context())
+		conn, err := i.StartStream(t.Context(), "test-stream-1")
 		if err != nil {
 			if errors.Is(err, errdefs.ErrNotImplemented) {
 				t.Skip("streaming not implemented")
@@ -53,21 +53,13 @@ func TestStreamInitialization(t *testing.T) {
 			t.Fatal("failed to start stream client:", err)
 		}
 
-		if sid1 == 0 {
-			t.Fatal("expected non-zero stream id")
-		}
-
 		if err := conn.Close(); err != nil {
 			t.Fatal("failed to close stream connection:", err)
 		}
 
-		sid2, conn, err := i.StartStream(t.Context())
+		conn, err = i.StartStream(t.Context(), "test-stream-2")
 		if err != nil {
 			t.Fatal("failed to start stream client:", err)
-		}
-
-		if sid2 <= sid1 {
-			t.Fatalf("expected stream id %d, previous was %d", sid2, sid1)
 		}
 
 		if err := conn.Close(); err != nil {

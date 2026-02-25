@@ -25,7 +25,6 @@ import (
 	"io"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -81,12 +80,7 @@ func (p *linuxPlatform) CopyConsole(ctx context.Context, console console.Console
 	if stdin != "" {
 		var in io.ReadCloser
 		if s, ok := strings.CutPrefix(stdin, "stream://"); ok {
-			var sid uint64
-			sid, err = strconv.ParseUint(s, 10, 32)
-			if err != nil {
-				return nil, err
-			}
-			in, err = p.streams.Get(uint32(sid))
+			in, err = p.streams.Get(s)
 			cstdin = in
 		} else {
 			in, err = fifo.OpenFifo(ctx, stdin, syscall.O_RDONLY|syscall.O_NONBLOCK, 0)
@@ -114,11 +108,7 @@ func (p *linuxPlatform) CopyConsole(ctx context.Context, console console.Console
 
 	switch uri.Scheme {
 	case "stream":
-		sid, err := strconv.ParseUint(strings.TrimPrefix(stdout, "stream://"), 10, 32)
-		if err != nil {
-			return nil, err
-		}
-		out, err := p.streams.Get(uint32(sid))
+		out, err := p.streams.Get(strings.TrimPrefix(stdout, "stream://"))
 		if err != nil {
 			return nil, err
 		}

@@ -28,6 +28,7 @@ import (
 	"github.com/containerd/containerd/v2/pkg/shutdown"
 	cplugins "github.com/containerd/containerd/v2/plugins"
 	"github.com/containerd/errdefs"
+	"github.com/containerd/log"
 	"github.com/containerd/plugin"
 	"github.com/containerd/plugin/registry"
 	"github.com/mdlayher/vsock"
@@ -66,7 +67,7 @@ func init() {
 
 			s := &service{
 				l:       l,
-				streams: make(map[uint32]net.Conn),
+				streams: make(map[string]net.Conn),
 			}
 
 			ss.(shutdown.Service).RegisterCallback(s.Shutdown)
@@ -82,7 +83,7 @@ type service struct {
 	mu sync.Mutex
 	l  net.Listener
 
-	streams map[uint32]net.Conn
+	streams map[string]net.Conn
 }
 
 func (s *service) Shutdown(ctx context.Context) error {
@@ -107,61 +108,77 @@ func (s *service) Shutdown(ctx context.Context) error {
 		return errors.Join(errs...)
 	}
 	return nil
-
 }
+
 func (s *service) Run() {
 	for {
 		conn, err := s.l.Accept()
 		if err != nil {
 			return // Listener closed
 		}
-		var b [4]byte
-		if _, err := conn.Read(b[:]); err != nil {
+
+		// Read length-prefixed stream ID
+		var idLen uint32
+		if err := binary.Read(conn, binary.BigEndian, &idLen); err != nil {
+			log.L.WithError(err).Debug("failed to read stream ID length")
 			conn.Close()
-			continue // Error reading, close connection
+			continue
 		}
+		idBytes := make([]byte, idLen)
+		if _, err := io.ReadFull(conn, idBytes); err != nil {
+			log.L.WithError(err).Debug("failed to read stream ID")
+			conn.Close()
+			continue
+		}
+		streamID := string(idBytes)
 
 		s.mu.Lock()
-		sid := binary.BigEndian.Uint32(b[:])
-		if _, ok := s.streams[sid]; ok {
+		if _, ok := s.streams[streamID]; ok {
 			s.mu.Unlock()
+			log.L.WithField("stream", streamID).Debug("duplicate stream ID, rejecting")
+			// Send back an error message so the client gets a meaningful rejection
+			errMsg := fmt.Sprintf("stream %q already exists", streamID)
+			writeString(conn, errMsg)
 			conn.Close()
-			continue // Error reading, close connection
+			continue
 		}
-		s.streams[sid] = streamConn{
-			Conn: conn,
-			sid:  sid,
-			s:    s,
-		}
+		s.streams[streamID] = conn
 		s.mu.Unlock()
-		conn.Write(b[:])
+
+		// Ack: echo back the stream ID
+		if err := writeString(conn, streamID); err != nil {
+			s.removeStream(streamID)
+			conn.Close()
+			continue
+		}
 	}
 }
 
-func (s *service) Get(id uint32) (io.ReadWriteCloser, error) {
+func (s *service) removeStream(streamID string) {
+	s.mu.Lock()
+	delete(s.streams, streamID)
+	s.mu.Unlock()
+}
+
+// writeString writes a length-prefixed string to the connection.
+func writeString(conn net.Conn, s string) error {
+	b := []byte(s)
+	if err := binary.Write(conn, binary.BigEndian, uint32(len(b))); err != nil {
+		return err
+	}
+	_, err := conn.Write(b)
+	return err
+}
+
+// Get returns the raw connection for the given stream ID, removing it from
+// the map. This implements stream.Manager for the task service IO forwarding.
+func (s *service) Get(id string) (io.ReadWriteCloser, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	c, ok := s.streams[id]
+	conn, ok := s.streams[id]
 	if !ok {
-		return nil, fmt.Errorf("stream %d not found: %w", id, errdefs.ErrNotFound)
+		return nil, fmt.Errorf("stream %q not found: %w", id, errdefs.ErrNotFound)
 	}
-	return c, nil
-}
-
-type streamConn struct {
-	net.Conn
-	sid uint32
-	s   *service
-}
-
-func (sc streamConn) Close() error {
-	sc.s.mu.Lock()
-	defer sc.s.mu.Unlock()
-	delete(sc.s.streams, sc.sid)
-
-	if err := sc.Conn.Close(); err != nil {
-		return fmt.Errorf("failed to close connection: %w", err)
-	}
-
-	return nil
+	delete(s.streams, id)
+	return conn, nil
 }

@@ -18,6 +18,8 @@ package task
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
@@ -27,6 +29,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/containerd/containerd/v2/pkg/stdio"
 	"github.com/containerd/errdefs"
@@ -35,10 +38,18 @@ import (
 )
 
 type streamCreator interface {
-	StartStream(ctx context.Context) (uint32, net.Conn, error)
+	StartStream(ctx context.Context, streamID string) (net.Conn, error)
 }
 
-func (s *service) forwardIO(ctx context.Context, ss streamCreator, sio stdio.Stdio) (stdio.Stdio, func(ctx context.Context) error, error) {
+// generateStreamID creates a pseudo-random stream ID with the given prefix.
+// The format is "{prefix}-{nanosecond}-{random}" to minimize collisions.
+func generateStreamID(prefix string) string {
+	var b [4]byte
+	rand.Read(b[:])
+	return fmt.Sprintf("%s-%d-%s", prefix, time.Now().UnixNano(), base64.RawURLEncoding.EncodeToString(b[:]))
+}
+
+func (s *service) forwardIO(ctx context.Context, ss streamCreator, idPrefix string, sio stdio.Stdio) (stdio.Stdio, func(ctx context.Context) error, error) {
 	pio := sio
 	if pio.IsNull() {
 		return pio, nil, nil
@@ -56,7 +67,7 @@ func (s *service) forwardIO(ctx context.Context, ss streamCreator, sio stdio.Std
 		// Pass through
 		return pio, nil, nil
 	case "fifo":
-		pio, streams, err = createStreams(ctx, ss, pio)
+		pio, streams, err = createStreams(ctx, ss, idPrefix, pio)
 		if err != nil {
 			return stdio.Stdio{}, nil, err
 		}
@@ -75,7 +86,7 @@ func (s *service) forwardIO(ctx context.Context, ss streamCreator, sio stdio.Std
 		f.Close()
 		pio.Stdout = filePath
 		pio.Stderr = filePath
-		pio, streams, err = createStreams(ctx, ss, pio)
+		pio, streams, err = createStreams(ctx, ss, idPrefix, pio)
 		if err != nil {
 			return stdio.Stdio{}, nil, err
 		}
@@ -115,7 +126,7 @@ func (s *service) forwardIO(ctx context.Context, ss streamCreator, sio stdio.Std
 	}, nil
 }
 
-func createStreams(ctx context.Context, ss streamCreator, io stdio.Stdio) (_ stdio.Stdio, conns [3]io.ReadWriteCloser, err error) {
+func createStreams(ctx context.Context, ss streamCreator, idPrefix string, io stdio.Stdio) (_ stdio.Stdio, conns [3]io.ReadWriteCloser, err error) {
 	defer func() {
 		if err != nil {
 			for i, c := range conns {
@@ -126,21 +137,23 @@ func createStreams(ctx context.Context, ss streamCreator, io stdio.Stdio) (_ std
 		}
 	}()
 	if io.Stdin != "" {
-		sid, conn, err := ss.StartStream(ctx)
+		sid := generateStreamID(idPrefix + "-stdin")
+		conn, err := ss.StartStream(ctx, sid)
 		if err != nil {
-			return io, conns, fmt.Errorf("failed to start fifo stream: %w", err)
+			return io, conns, fmt.Errorf("failed to start stdin stream: %w", err)
 		}
-		io.Stdin = fmt.Sprintf("stream://%d", sid)
+		io.Stdin = fmt.Sprintf("stream://%s", sid)
 		conns[0] = conn
 	}
 
 	stdout := io.Stdout
 	if stdout != "" {
-		sid, conn, err := ss.StartStream(ctx)
+		sid := generateStreamID(idPrefix + "-stdout")
+		conn, err := ss.StartStream(ctx, sid)
 		if err != nil {
-			return io, conns, fmt.Errorf("failed to start fifo stream: %w", err)
+			return io, conns, fmt.Errorf("failed to start stdout stream: %w", err)
 		}
-		io.Stdout = fmt.Sprintf("stream://%d", sid)
+		io.Stdout = fmt.Sprintf("stream://%s", sid)
 		conns[1] = conn
 	}
 
@@ -149,11 +162,12 @@ func createStreams(ctx context.Context, ss streamCreator, io stdio.Stdio) (_ std
 			io.Stderr = io.Stdout
 			conns[2] = conns[1]
 		} else {
-			sid, conn, err := ss.StartStream(ctx)
+			sid := generateStreamID(idPrefix + "-stderr")
+			conn, err := ss.StartStream(ctx, sid)
 			if err != nil {
-				return io, conns, fmt.Errorf("failed to start fifo stream: %w", err)
+				return io, conns, fmt.Errorf("failed to start stderr stream: %w", err)
 			}
-			io.Stderr = fmt.Sprintf("stream://%d", sid)
+			io.Stderr = fmt.Sprintf("stream://%s", sid)
 			conns[2] = conn
 		}
 	}

@@ -284,7 +284,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		Terminal: r.Terminal,
 	}
 
-	cio, ioShutdown, err := s.forwardIO(ctx, s.sb, rio)
+	cio, ioShutdown, err := s.forwardIO(ctx, s.sb, r.ID, rio)
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
@@ -423,7 +423,7 @@ func (s *service) Exec(ctx context.Context, r *taskAPI.ExecProcessRequest) (*pty
 		Terminal: r.Terminal,
 	}
 
-	cio, ioShutdown, err := s.forwardIO(ctx, s.sb, rio)
+	cio, ioShutdown, err := s.forwardIO(ctx, s.sb, r.ID+"-"+r.ExecID, rio)
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}

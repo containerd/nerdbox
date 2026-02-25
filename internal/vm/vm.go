@@ -63,13 +63,13 @@ type Instance interface {
 	Client() *ttrpc.Client
 	Shutdown(context.Context) error
 
-	// StartStream makes a connection to the VM for streaming, returning a 32-bit
-	// identifier for the stream that can be used to reference the stream inside
-	// the vm.
+	// StartStream makes a connection to the VM for streaming with the given
+	// stream ID. The stream ID is passed to the VM so it can be used to
+	// reference the stream inside the VM.
 	//
 	// TODO: Consider making this interface optional, a per RPC implementation
 	// is possible but likely less efficient.
-	StartStream(ctx context.Context) (uint32, net.Conn, error)
+	StartStream(ctx context.Context, streamID string) (net.Conn, error)
 }
 
 func WithReadOnly() MountOpt {

@@ -19,5 +19,5 @@ package stream
 import "io"
 
 type Manager interface {
-	Get(id uint32) (io.ReadWriteCloser, error)
+	Get(id string) (io.ReadWriteCloser, error)
 }

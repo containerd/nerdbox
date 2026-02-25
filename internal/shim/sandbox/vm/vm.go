@@ -140,13 +140,13 @@ func (s *localsandbox) Client() (*ttrpc.Client, error) {
 	return s.instance.Client(), nil
 }
 
-func (s *localsandbox) StartStream(ctx context.Context) (uint32, net.Conn, error) {
+func (s *localsandbox) StartStream(ctx context.Context, streamID string) (net.Conn, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.instance == nil {
-		return 0, nil, errdefs.ErrFailedPrecondition
+		return nil, errdefs.ErrFailedPrecondition
 	}
 
-	return s.instance.StartStream(ctx)
+	return s.instance.StartStream(ctx, streamID)
 }

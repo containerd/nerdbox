@@ -24,7 +24,9 @@ import (
 	"github.com/containerd/nerdbox/internal/shim/manager"
 
 	_ "github.com/containerd/nerdbox/plugins/shim/sandbox"
+	_ "github.com/containerd/nerdbox/plugins/shim/streaming"
 	_ "github.com/containerd/nerdbox/plugins/shim/task"
+	_ "github.com/containerd/nerdbox/plugins/shim/transfer"
 	_ "github.com/containerd/nerdbox/plugins/vm/libkrun"
 )
 

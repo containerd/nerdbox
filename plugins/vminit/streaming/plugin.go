@@ -25,13 +25,17 @@ import (
 	"net"
 	"sync"
 
+	"github.com/containerd/containerd/v2/core/streaming"
 	"github.com/containerd/containerd/v2/pkg/shutdown"
 	cplugins "github.com/containerd/containerd/v2/plugins"
 	"github.com/containerd/errdefs"
 	"github.com/containerd/log"
 	"github.com/containerd/plugin"
 	"github.com/containerd/plugin/registry"
+	"github.com/containerd/typeurl/v2"
 	"github.com/mdlayher/vsock"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
 
 	"github.com/containerd/nerdbox/plugins"
 )
@@ -181,4 +185,69 @@ func (s *service) Get(id string) (io.ReadWriteCloser, error) {
 	}
 	delete(s.streams, id)
 	return conn, nil
+}
+
+// StreamGetter returns a streaming.StreamGetter that looks up streams by
+// their string stream ID.
+func (s *service) StreamGetter() streaming.StreamGetter {
+	return &streamGetter{s: s}
+}
+
+type streamGetter struct {
+	s *service
+}
+
+func (sg *streamGetter) Get(ctx context.Context, name string) (streaming.Stream, error) {
+	sg.s.mu.Lock()
+	conn, ok := sg.s.streams[name]
+	if !ok {
+		sg.s.mu.Unlock()
+		return nil, fmt.Errorf("stream %q not found: %w", name, errdefs.ErrNotFound)
+	}
+	// Remove from map so the stream is exclusively owned by the caller.
+	// The caller is responsible for closing the stream.
+	delete(sg.s.streams, name)
+	sg.s.mu.Unlock()
+	return &vsockStream{conn: conn}, nil
+}
+
+// vsockStream wraps a net.Conn with length-prefixed proto framing to
+// implement the streaming.Stream interface. Each message is framed as
+// a 4-byte big-endian length prefix followed by serialized proto bytes.
+type vsockStream struct {
+	conn net.Conn
+}
+
+func (s *vsockStream) Send(a typeurl.Any) error {
+	data, err := proto.Marshal(typeurl.MarshalProto(a))
+	if err != nil {
+		return fmt.Errorf("failed to marshal stream message: %w", err)
+	}
+	if err := binary.Write(s.conn, binary.BigEndian, uint32(len(data))); err != nil {
+		return fmt.Errorf("failed to write frame length: %w", err)
+	}
+	if _, err := s.conn.Write(data); err != nil {
+		return fmt.Errorf("failed to write frame data: %w", err)
+	}
+	return nil
+}
+
+func (s *vsockStream) Recv() (typeurl.Any, error) {
+	var length uint32
+	if err := binary.Read(s.conn, binary.BigEndian, &length); err != nil {
+		return nil, err
+	}
+	data := make([]byte, length)
+	if _, err := io.ReadFull(s.conn, data); err != nil {
+		return nil, fmt.Errorf("failed to read frame data: %w", err)
+	}
+	var a anypb.Any
+	if err := proto.Unmarshal(data, &a); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal stream message: %w", err)
+	}
+	return &a, nil
+}
+
+func (s *vsockStream) Close() error {
+	return s.conn.Close()
 }

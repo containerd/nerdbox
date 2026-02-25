@@ -72,6 +72,13 @@ _output/nerdbox-initrd: cmd/vminitd FORCE
 	@echo "$(WHALE) $@"
 	$(BUILDX) bake initrd
 
+_output/integration.test: integration FORCE
+	@echo "$(WHALE) $@"
+	$(GO) test -c -o $@ ${GO_LDFLAGS} ${GO_TAGS} ./integration
+ifeq ($(OS),Darwin)
+	codesign --entitlements cmd/containerd-shim-nerdbox-v1/containerd-shim-nerdbox-v1.entitlements --force -s - $@
+endif
+
 _output/test_vminitd: cmd/test_vminitd FORCE
 	@echo "$(WHALE) $@"
 	$(GO) build ${DEBUG_GO_GCFLAGS} ${GO_GCFLAGS} ${GO_BUILD_FLAGS} -o $@ ${GO_LDFLAGS} ${GO_TAGS} ./$<
@@ -169,3 +176,7 @@ verify-vendor: ## verify if all the go.mod/go.sum files are up-to-date
 
 test-unit:
 	go test -count=1 $(shell go list ./... | grep -v /integration)
+
+test-integration: _output/integration.test
+	@echo "$(WHALE) $@"
+	gotestsum -f testname --raw-command ./integration/test.sh

@@ -14,44 +14,31 @@
    limitations under the License.
 */
 
-package task
+package sandbox
 
 import (
-	"github.com/containerd/containerd/v2/pkg/shim"
-	"github.com/containerd/containerd/v2/pkg/shutdown"
-	cplugins "github.com/containerd/containerd/v2/plugins"
 	"github.com/containerd/plugin"
 	"github.com/containerd/plugin/registry"
 
-	"github.com/containerd/nerdbox/internal/shim/sandbox"
-	"github.com/containerd/nerdbox/internal/shim/task"
+	vmsbox "github.com/containerd/nerdbox/internal/shim/sandbox/vm"
+	"github.com/containerd/nerdbox/internal/vm"
 	"github.com/containerd/nerdbox/plugins"
 )
 
 func init() {
 	registry.Register(&plugin.Registration{
-		Type: plugins.TTRPCPlugin,
-		ID:   "task",
+		Type: plugins.SandboxPlugin,
+		ID:   "manager",
 		Requires: []plugin.Type{
-			cplugins.EventPlugin,
-			cplugins.InternalPlugin,
-			plugins.SandboxPlugin,
+			plugins.VMManagerPlugin,
 		},
 		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
-			pp, err := ic.GetByID(cplugins.EventPlugin, "publisher")
+			// Make this configurable or enforce a single plugin for the type
+			vmm, err := ic.GetByID(plugins.VMManagerPlugin, "libkrun")
 			if err != nil {
 				return nil, err
 			}
-			ss, err := ic.GetByID(cplugins.InternalPlugin, "shutdown")
-			if err != nil {
-				return nil, err
-			}
-			sb, err := ic.GetSingle(plugins.SandboxPlugin)
-			if err != nil {
-				return nil, err
-			}
-			return task.NewTaskService(ic.Context, sb.(sandbox.Sandbox), pp.(shim.Publisher), ss.(shutdown.Service))
+			return vmsbox.NewVMSandbox(vmm.(vm.Manager)), nil
 		},
 	})
-
 }

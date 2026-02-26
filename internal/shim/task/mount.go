@@ -28,7 +28,7 @@ import (
 	"github.com/containerd/log"
 
 	"github.com/containerd/nerdbox/internal/erofs"
-	"github.com/containerd/nerdbox/internal/vm"
+	"github.com/containerd/nerdbox/internal/shim/sandbox"
 )
 
 type diskOptions struct {
@@ -40,11 +40,12 @@ type diskOptions struct {
 
 // transformMounts does not perform any local mounts but transforms
 // the mounts to be used inside the VM via virtio
-func transformMounts(ctx context.Context, vmi vm.Instance, id string, ms []*types.Mount) ([]*types.Mount, error) {
+func transformMounts(ctx context.Context, id string, ms []*types.Mount) ([]*types.Mount, []sandbox.Opt, error) {
 	var (
 		disks    byte = 'a'
 		addDisks []diskOptions
 		am       []*types.Mount
+		sbOpts   []sandbox.Opt
 		err      error
 	)
 
@@ -76,12 +77,12 @@ func transformMounts(ctx context.Context, vmi vm.Instance, id string, ms []*type
 				if _, err := os.Stat(mergedfsPath); err != nil {
 					if !os.IsNotExist(err) {
 						log.G(ctx).Warnf("failed to stat %v: %v", mergedfsPath, err)
-						return nil, errdefs.ErrNotImplemented
+						return nil, nil, errdefs.ErrNotImplemented
 					}
 					err = erofs.DumpVMDKDescriptorToFile(mergedfsPath, 0xfffffffe, devices)
 					if err != nil {
 						log.G(ctx).Warnf("failed to generate %v: %v", mergedfsPath, err)
-						return nil, errdefs.ErrNotImplemented
+						return nil, nil, errdefs.ErrNotImplemented
 					}
 				}
 				addDisks = append(addDisks, diskOptions{
@@ -149,7 +150,7 @@ func transformMounts(ctx context.Context, vmi vm.Instance, id string, ms []*type
 					// Having the upper as virtiofs may return invalid argument, avoid
 					// transforming and attempt to perform the mounts on the host if
 					// supported.
-					return nil, fmt.Errorf("cannot use virtiofs for upper dir in overlay: %w", errdefs.ErrNotImplemented)
+					return nil, nil, fmt.Errorf("cannot use virtiofs for upper dir in overlay: %w", errdefs.ErrNotImplemented)
 				}
 			} else {
 				log.G(ctx).WithField("options", m.Options).Warnf("overlayfs missing workdir or upperdir")
@@ -162,24 +163,22 @@ func transformMounts(ctx context.Context, vmi vm.Instance, id string, ms []*type
 	}
 
 	if len(addDisks) > 10 {
-		return nil, fmt.Errorf("exceeded maximum virtio disk count: %d > 10: %w", len(addDisks), errdefs.ErrNotImplemented)
+		return nil, nil, fmt.Errorf("exceeded maximum virtio disk count: %d > 10: %w", len(addDisks), errdefs.ErrNotImplemented)
 	}
 
 	for _, do := range addDisks {
-		var opts []vm.MountOpt
+		var flags sandbox.DiskFlags
 		if do.readOnly {
-			opts = append(opts, vm.WithReadOnly())
+			flags |= sandbox.DiskFlagReadonly
 		}
 		if do.vmdk {
-			opts = append(opts, vm.WithVmdk())
+			flags |= sandbox.DiskFlagVMDK
 		}
 
-		if err := vmi.AddDisk(ctx, do.name, do.source, opts...); err != nil {
-			return nil, err
-		}
+		sbOpts = append(sbOpts, sandbox.WithDisk(do.name, do.source, flags))
 	}
 
-	return am, err
+	return am, sbOpts, err
 }
 
 func filterOptions(options []string) []string {

@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/containerd/nerdbox/internal/shim/sandbox"
 	"github.com/containerd/nerdbox/internal/shim/task/bundle"
 	"github.com/containerd/nerdbox/internal/virtionet"
 	"github.com/containerd/nerdbox/internal/vm"
@@ -169,9 +170,9 @@ func parseVirtioNetFeatures(value string) (uint32, error) {
 	return f.AsUint32(), nil
 }
 
-// SetupVM configures the VM to use the network provider set up through OCI
-// annotations (if any).
-func (p *networksProvider) SetupVM(ctx context.Context, vmi vm.Instance) error {
+// SandboxOptions returns the options to configure the VM network
+func (p *networksProvider) SandboxOptions() []sandbox.Opt {
+	var opts []sandbox.Opt
 	for _, nw := range p.nws {
 		nwMode := vm.NetworkModeUnixgram
 		if nw.mode == "unixstream" {
@@ -183,11 +184,9 @@ func (p *networksProvider) SetupVM(ctx context.Context, vmi vm.Instance) error {
 			flags = 1 // See https://github.com/containers/libkrun/blob/357ec63fee444b973e4fc76d2121fd41631f121e/include/libkrun.h#L271C9-L271C23
 		}
 
-		if err := vmi.AddNIC(ctx, nw.endpoint, nw.mac, nwMode, nw.features, flags); err != nil {
-			return err
-		}
+		opts = append(opts, sandbox.WithNIC(nw.endpoint, nw.mac, int(nwMode), nw.features, flags))
 	}
-	return nil
+	return opts
 }
 
 // InitArgs returns the arguments for the init process to set up networking

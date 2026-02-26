@@ -21,8 +21,8 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/containerd/nerdbox/internal/shim/sandbox"
 	"github.com/containerd/nerdbox/internal/shim/task/bundle"
-	"github.com/containerd/nerdbox/internal/vm"
 )
 
 const (
@@ -71,9 +71,8 @@ func (r *resourceConfig) FromBundle(ctx context.Context, b *bundle.Bundle) error
 	return nil
 }
 
-func (r *resourceConfig) SetupVM(ctx context.Context, vmi vm.Instance) error {
-	if err := vmi.SetCPUAndMemory(ctx, r.cpu, r.mem); err != nil {
-		return fmt.Errorf("failed to apply VM resources configuration: %w", err)
+func (r *resourceConfig) SandboxOpts() []sandbox.Opt {
+	return []sandbox.Opt{
+		sandbox.WithResources(r.cpu, r.mem),
 	}
-	return nil
 }

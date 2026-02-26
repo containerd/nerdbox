@@ -44,8 +44,8 @@ import (
 	"github.com/containerd/nerdbox/api/services/vmevents/v1"
 	"github.com/containerd/nerdbox/internal/kvm"
 	"github.com/containerd/nerdbox/internal/nwcfg"
+	"github.com/containerd/nerdbox/internal/shim/sandbox"
 	"github.com/containerd/nerdbox/internal/shim/task/bundle"
-	"github.com/containerd/nerdbox/internal/vm"
 )
 
 var (
@@ -54,10 +54,10 @@ var (
 )
 
 // NewTaskService creates a new instance of a task service
-func NewTaskService(ctx context.Context, vmm vm.Manager, publisher shim.Publisher, sd shutdown.Service) (taskAPI.TTRPCTaskService, error) {
+func NewTaskService(ctx context.Context, sb sandbox.Sandbox, publisher shim.Publisher, sd shutdown.Service) (taskAPI.TTRPCTaskService, error) {
 	s := &service{
 		context:          ctx,
-		vmm:              vmm,
+		sb:               sb,
 		events:           make(chan any, 128),
 		containers:       make(map[string]*container),
 		initiateShutdown: sd.Shutdown,
@@ -85,13 +85,8 @@ type container struct {
 type service struct {
 	mu sync.Mutex
 
-	// vmm is the VM manager used to create the VM instance
-	// TODO: Move this and instance to separate service so
-	// that the managemnt can be shared with sandbox service
-	vmm vm.Manager
-
-	// vm is the VM instance used to run the container
-	vm vm.Instance
+	// sb is the sandbox instance used to run the container
+	sb sandbox.Sandbox
 
 	context context.Context
 	events  chan any
@@ -124,9 +119,9 @@ func (s *service) shutdown(ctx context.Context) error {
 		}
 	}
 
-	if s.vm != nil {
-		if err := s.vm.Shutdown(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("vm shutdown: %w", err))
+	if s.sb != nil {
+		if err := s.sb.Stop(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("sandbox shutdown: %w", err))
 		}
 	}
 
@@ -219,34 +214,31 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	if err := os.MkdirAll(vmState, 0700); err != nil {
 		return nil, errgrpc.ToGRPCf(err, "failed to create vm state directory %q", vmState)
 	}
-	vmi, err := s.vmInstance(ctx, vmState)
+
+	m, mountOpts, err := setupMounts(ctx, r.ID, r.Rootfs, b.Rootfs, filepath.Join(r.Bundle, "mounts"))
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
 
-	m, err := setupMounts(ctx, vmi, r.ID, r.Rootfs, b.Rootfs, filepath.Join(r.Bundle, "mounts"))
-	if err != nil {
-		return nil, errgrpc.ToGRPC(err)
-	}
+	nwOpts := nwpr.SandboxOptions()
+	initArgs := nwpr.InitArgs()
 
-	if err := nwpr.SetupVM(ctx, vmi); err != nil {
-		return nil, errgrpc.ToGRPC(err)
-	}
+	var opts []sandbox.Opt
+	opts = append(opts, sandbox.WithStateDir(vmState))
+	opts = append(opts, mountOpts...)
+	opts = append(opts, nwOpts...)
+	opts = append(opts, sandbox.WithInitArgs(initArgs...))
 
-	if err := resCfg.SetupVM(ctx, vmi); err != nil {
-		return nil, errgrpc.ToGRPC(err)
-	}
+	opts = append(opts, resCfg.SandboxOpts()...)
 
 	prestart := time.Now()
-	if err := vmi.Start(ctx,
-		vm.WithInitArgs(nwpr.InitArgs()...),
-	); err != nil {
+	if err := s.sb.Start(ctx, opts...); err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
 	bootTime := time.Since(prestart)
 	log.G(ctx).WithField("bootTime", bootTime).Debug("VM started")
 
-	vmc, err := s.client()
+	vmc, err := s.sb.Client()
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
@@ -292,7 +284,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		Terminal: r.Terminal,
 	}
 
-	cio, ioShutdown, err := s.forwardIO(ctx, vmi, rio)
+	cio, ioShutdown, err := s.forwardIO(ctx, s.sb, rio)
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
@@ -369,7 +361,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 // Start a process
 func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.StartResponse, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID, "exec": r.ExecID}).Info("starting container task")
-	vmc, err := s.client()
+	vmc, err := s.sb.Client()
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
@@ -380,7 +372,7 @@ func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.
 // Delete the initial process and container
 func (s *service) Delete(ctx context.Context, r *taskAPI.DeleteRequest) (*taskAPI.DeleteResponse, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID, "exec": r.ExecID}).Info("deleting task")
-	vmc, err := s.client()
+	vmc, err := s.sb.Client()
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
@@ -419,7 +411,7 @@ func (s *service) Delete(ctx context.Context, r *taskAPI.DeleteRequest) (*taskAP
 // Exec an additional process inside the container
 func (s *service) Exec(ctx context.Context, r *taskAPI.ExecProcessRequest) (*ptypes.Empty, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID, "exec": r.ExecID}).Info("exec container")
-	vmc, err := s.client()
+	vmc, err := s.sb.Client()
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
@@ -431,7 +423,7 @@ func (s *service) Exec(ctx context.Context, r *taskAPI.ExecProcessRequest) (*pty
 		Terminal: r.Terminal,
 	}
 
-	cio, ioShutdown, err := s.forwardIO(ctx, s.vm, rio)
+	cio, ioShutdown, err := s.forwardIO(ctx, s.sb, rio)
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
@@ -479,7 +471,7 @@ func (s *service) Exec(ctx context.Context, r *taskAPI.ExecProcessRequest) (*pty
 // ResizePty of a process
 func (s *service) ResizePty(ctx context.Context, r *taskAPI.ResizePtyRequest) (*ptypes.Empty, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID, "exec": r.ExecID}).Info("resize pty")
-	vmc, err := s.client()
+	vmc, err := s.sb.Client()
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
@@ -489,7 +481,7 @@ func (s *service) ResizePty(ctx context.Context, r *taskAPI.ResizePtyRequest) (*
 
 // State returns runtime state information for a process
 func (s *service) State(ctx context.Context, r *taskAPI.StateRequest) (*taskAPI.StateResponse, error) {
-	vmc, err := s.client()
+	vmc, err := s.sb.Client()
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
@@ -507,7 +499,7 @@ func (s *service) State(ctx context.Context, r *taskAPI.StateRequest) (*taskAPI.
 // Pause the container
 func (s *service) Pause(ctx context.Context, r *taskAPI.PauseRequest) (*ptypes.Empty, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID}).Info("pause")
-	vmc, err := s.client()
+	vmc, err := s.sb.Client()
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
@@ -518,7 +510,7 @@ func (s *service) Pause(ctx context.Context, r *taskAPI.PauseRequest) (*ptypes.E
 // Resume the container
 func (s *service) Resume(ctx context.Context, r *taskAPI.ResumeRequest) (*ptypes.Empty, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID}).Info("resume")
-	vmc, err := s.client()
+	vmc, err := s.sb.Client()
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
@@ -529,7 +521,7 @@ func (s *service) Resume(ctx context.Context, r *taskAPI.ResumeRequest) (*ptypes
 // Kill a process with the provided signal
 func (s *service) Kill(ctx context.Context, r *taskAPI.KillRequest) (*ptypes.Empty, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID, "exec": r.ExecID}).Info("kill")
-	vmc, err := s.client()
+	vmc, err := s.sb.Client()
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
@@ -540,7 +532,7 @@ func (s *service) Kill(ctx context.Context, r *taskAPI.KillRequest) (*ptypes.Emp
 // Pids returns all pids inside the container
 func (s *service) Pids(ctx context.Context, r *taskAPI.PidsRequest) (*taskAPI.PidsResponse, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID}).Info("all pids")
-	vmc, err := s.client()
+	vmc, err := s.sb.Client()
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
@@ -551,7 +543,7 @@ func (s *service) Pids(ctx context.Context, r *taskAPI.PidsRequest) (*taskAPI.Pi
 // CloseIO of a process
 func (s *service) CloseIO(ctx context.Context, r *taskAPI.CloseIORequest) (*ptypes.Empty, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID, "exec": r.ExecID, "stdin": r.Stdin}).Info("close io")
-	vmc, err := s.client()
+	vmc, err := s.sb.Client()
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
@@ -577,7 +569,7 @@ func (s *service) Checkpoint(ctx context.Context, r *taskAPI.CheckpointTaskReque
 // Update a running container
 func (s *service) Update(ctx context.Context, r *taskAPI.UpdateTaskRequest) (*ptypes.Empty, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID}).Info("update")
-	vmc, err := s.client()
+	vmc, err := s.sb.Client()
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
@@ -588,7 +580,7 @@ func (s *service) Update(ctx context.Context, r *taskAPI.UpdateTaskRequest) (*pt
 // Wait for a process to exit
 func (s *service) Wait(ctx context.Context, r *taskAPI.WaitRequest) (*taskAPI.WaitResponse, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID, "exec": r.ExecID}).Info("wait")
-	vmc, err := s.client()
+	vmc, err := s.sb.Client()
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
@@ -599,7 +591,7 @@ func (s *service) Wait(ctx context.Context, r *taskAPI.WaitRequest) (*taskAPI.Wa
 // Connect returns shim information such as the shim's pid
 func (s *service) Connect(ctx context.Context, r *taskAPI.ConnectRequest) (*taskAPI.ConnectResponse, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID}).Info("connect")
-	vmc, err := s.client()
+	vmc, err := s.sb.Client()
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
@@ -637,7 +629,7 @@ func (s *service) Shutdown(ctx context.Context, r *taskAPI.ShutdownRequest) (*pt
 
 func (s *service) Stats(ctx context.Context, r *taskAPI.StatsRequest) (*taskAPI.StatsResponse, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID}).Info("stats")
-	vmc, err := s.client()
+	vmc, err := s.sb.Client()
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}

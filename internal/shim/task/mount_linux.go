@@ -25,11 +25,12 @@ import (
 	"github.com/containerd/errdefs"
 
 	"github.com/containerd/nerdbox/internal/mountutil"
-	"github.com/containerd/nerdbox/internal/vm"
+	"github.com/containerd/nerdbox/internal/shim/sandbox"
 )
 
-func setupMounts(ctx context.Context, vmi vm.Instance, id string, m []*types.Mount, rootfs, lmounts string) ([]*types.Mount, error) {
+func setupMounts(ctx context.Context, id string, m []*types.Mount, rootfs, lmounts string) ([]*types.Mount, []sandbox.Opt, error) {
 	// Handle mounts
+	var sbOpts []sandbox.Opt
 
 	if len(m) == 1 && (m[0].Type == "overlay" || m[0].Type == "bind") {
 		tag := fmt.Sprintf("rootfs-%s", id)
@@ -43,35 +44,31 @@ func setupMounts(ctx context.Context, vmi vm.Instance, id string, m []*types.Mou
 			Options: m[0].Options,
 		}
 		if err := mnt.Mount(rootfs); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		if err := vmi.AddFS(ctx, tag, rootfs); err != nil {
-			return nil, err
-		}
+		sbOpts = append(sbOpts, sandbox.WithFS(tag, rootfs, false))
 		return []*types.Mount{{
 			Type:   "virtiofs",
 			Source: tag,
 			// TODO: Translate the options
 			//Options: m[0].Options,
-		}}, nil
+		}}, sbOpts, nil
 	} else if len(m) == 0 {
 		tag := fmt.Sprintf("rootfs-%s", id)
 		// virtiofs implementation has a limit of 36 characters for the tag
 		if len(tag) > 36 {
 			tag = tag[:36]
 		}
-		if err := vmi.AddFS(ctx, tag, rootfs); err != nil {
-			return nil, err
-		}
+		sbOpts = append(sbOpts, sandbox.WithFS(tag, rootfs, false))
 		return []*types.Mount{{
 			Type:   "virtiofs",
 			Source: tag,
-		}}, nil
+		}}, sbOpts, nil
 	}
-	mounts, err := transformMounts(ctx, vmi, id, m)
+	mounts, opts, err := transformMounts(ctx, id, m)
 	if err != nil && errdefs.IsNotImplemented(err) {
 		if err := mountutil.All(ctx, rootfs, lmounts, m); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		// Fallback to original rootfs mount
@@ -80,13 +77,14 @@ func setupMounts(ctx context.Context, vmi vm.Instance, id string, m []*types.Mou
 		if len(tag) > 36 {
 			tag = tag[:36]
 		}
-		if err := vmi.AddFS(ctx, tag, rootfs); err != nil {
-			return nil, err
-		}
+		sbOpts = append(sbOpts, sandbox.WithFS(tag, rootfs, false))
 		return []*types.Mount{{
 			Type:   "virtiofs",
 			Source: tag,
-		}}, nil
+		}}, sbOpts, nil
 	}
-	return mounts, err
+	if len(opts) > 0 {
+		sbOpts = append(sbOpts, opts...)
+	}
+	return mounts, sbOpts, err
 }

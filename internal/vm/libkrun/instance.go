@@ -433,6 +433,16 @@ func (v *vmInstance) Shutdown(ctx context.Context) error {
 	if v.handler == 0 {
 		return fmt.Errorf("libkrun already closed")
 	}
+	// Stop the VM and wait for all threads (vCPU, virtio workers) to exit
+	// before unloading the library. krun_free_ctx is synchronous: it joins
+	// all threads and closes all file handles. Without this, dlClose rips
+	// the code out from under running threads and leaves file handles open,
+	// preventing containerd from cleaning up the bundle directory.
+	if v.vmc != nil {
+		if err := v.vmc.Shutdown(); err != nil {
+			log.G(ctx).WithError(err).Warn("krun_free_ctx failed during shutdown")
+		}
+	}
 	err := dlClose(v.handler)
 	if err != nil {
 		return err

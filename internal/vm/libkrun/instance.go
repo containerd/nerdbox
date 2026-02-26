@@ -72,10 +72,11 @@ func (*vmManager) NewInstance(ctx context.Context, state string) (vm.Instance, e
 	if runtime.GOOS != "windows" && len(p2) == 0 {
 		p2 = []string{"/usr/local/lib", "/usr/local/lib64", "/usr/lib", "/lib"}
 	}
-	sharedNames := []string{"libkrun.so"}
+	arch := kernelArch()
+	sharedNames := []string{fmt.Sprintf("libkrun-%s.so", arch), "libkrun.so"}
 	switch runtime.GOOS {
 	case "darwin":
-		sharedNames = []string{"libkrun.dylib", "libkrun-efi.dylib"}
+		sharedNames = []string{fmt.Sprintf("libkrun-%s.dylib", arch), "libkrun.dylib", fmt.Sprintf("libkrun-efi-%s.dylib", arch), "libkrun-efi.dylib"}
 		p2 = append(p2, "/opt/homebrew/lib")
 	case "windows":
 		sharedNames = []string{"krun.dll"}
@@ -103,7 +104,7 @@ func (*vmManager) NewInstance(ctx context.Context, state string) (vm.Instance, e
 			}
 		}
 		if initrdPath == "" {
-			path = filepath.Join(dir, "nerdbox-initrd")
+			path = filepath.Join(dir, fmt.Sprintf("nerdbox-initrd-%s", arch))
 			if _, err := os.Stat(path); err == nil {
 				initrdPath = path
 			}
@@ -116,7 +117,7 @@ func (*vmManager) NewInstance(ctx context.Context, state string) (vm.Instance, e
 		return nil, fmt.Errorf("nerdbox-kernel not found in PATH or LIBKRUN_PATH")
 	}
 	if initrdPath == "" {
-		return nil, fmt.Errorf("nerdbox-initrd not found in PATH or LIBKRUN_PATH")
+		return nil, fmt.Errorf("nerdbox-initrd-%s not found in PATH or LIBKRUN_PATH", arch)
 	}
 
 	lib, handler, err := openLibkrun(krunPath)

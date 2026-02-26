@@ -27,6 +27,7 @@ require (
 	github.com/vishvananda/netns v0.0.5
 	golang.org/x/sync v0.19.0
 	golang.org/x/sys v0.41.0
+	google.golang.org/grpc v1.79.1
 	google.golang.org/protobuf v1.36.11
 )
 
@@ -36,6 +37,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cilium/ebpf v0.16.0 // indirect
 	github.com/containerd/continuity v0.4.5 // indirect
+	github.com/containerd/platforms v1.0.0-rc.2 // indirect
 	github.com/coreos/go-systemd/v22 v22.7.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
@@ -46,6 +48,7 @@ require (
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/josharian/native v1.1.0 // indirect
+	github.com/klauspost/compress v1.18.4 // indirect
 	github.com/mdlayher/packet v1.1.2 // indirect
 	github.com/mdlayher/socket v0.5.1 // indirect
 	github.com/moby/sys/mountinfo v0.7.2 // indirect
@@ -65,7 +68,6 @@ require (
 	golang.org/x/net v0.48.0 // indirect
 	golang.org/x/text v0.32.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20251202230838-ff82c1b0f217 // indirect
-	google.golang.org/grpc v1.79.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 

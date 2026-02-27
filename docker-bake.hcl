@@ -30,6 +30,10 @@ variable "GOLANGCI_LINT_MULTIPLATFORM" {
   default = ""
 }
 
+variable "GOPROXY" {
+  default = ""
+}
+
 target "_common" {
   args = {
     KERNEL_VERSION = KERNEL_VERSION
@@ -39,6 +43,7 @@ target "_common" {
     GO_GCFLAGS = GO_GCFLAGS
     GO_DEBUG_GCFLAGS = GO_DEBUG_GCFLAGS
     GO_LDFLAGS = GO_LDFLAGS
+    GOPROXY = GOPROXY
   }
 }
 

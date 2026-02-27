@@ -100,7 +100,13 @@ func (s *service) Stream(ctx context.Context, srv streamapi.TTRPCStreaming_Strea
 
 	// TTRPC -> VM: receive typeurl.Any from containerd, frame and write to VM
 	go func() {
-		done <- bridgeTTRPCToVM(srv, vmConn)
+		err := bridgeTTRPCToVM(srv, vmConn)
+		// Half-close the write side so the VM sees EOF on its reads
+		// while still allowing data to flow back from VM -> TTRPC.
+		if cw, ok := vmConn.(interface{ CloseWrite() error }); ok {
+			cw.CloseWrite()
+		}
+		done <- err
 	}()
 
 	// VM -> TTRPC: read framed messages from VM, send to containerd

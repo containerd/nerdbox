@@ -130,10 +130,11 @@ ARG GO_LDFLAGS
 ARG TARGETOS
 ARG TARGETARCH
 ARG TARGETPLATFORM
+ARG GOPROXY
 
 RUN --mount=type=bind,target=.,rw \
     --mount=type=cache,target=/root/.cache/go-build,id=shim-build-$TARGETPLATFORM \
-    GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build ${GO_DEBUG_GCFLAGS} ${GO_GCFLAGS} ${GO_BUILD_FLAGS} -o /build/containerd-shim-nerdbox-v1 ${GO_LDFLAGS} -tags 'no_grpc' ./cmd/containerd-shim-nerdbox-v1
+    GOOS=${TARGETOS} GOPROXY=${GOPROXY} GOARCH=${TARGETARCH} go build ${GO_DEBUG_GCFLAGS} ${GO_GCFLAGS} ${GO_BUILD_FLAGS} -o /build/containerd-shim-nerdbox-v1 ${GO_LDFLAGS} -tags 'no_grpc' ./cmd/containerd-shim-nerdbox-v1
 
 FROM base AS vminit-build
 
@@ -144,10 +145,11 @@ ARG GO_GCFLAGS
 ARG GO_BUILD_FLAGS
 ARG TARGETPLATFORM
 ARG TARGETARCH
+ARG GOPROXY
 
 RUN --mount=type=bind,target=.,rw \
     --mount=type=cache,target=/root/.cache/go-build,id=vminit-build-$TARGETPLATFORM \
-    GOARCH=${TARGETARCH} go build ${GO_DEBUG_GCFLAGS} ${GO_GCFLAGS} ${GO_BUILD_FLAGS} -o /build/vminitd -ldflags '-extldflags \"-static\" -s -w' -tags 'osusergo netgo static_build no_grpc'  ./cmd/vminitd
+    GOARCH=${TARGETARCH} GOPROXY=${GOPROXY} go build ${GO_DEBUG_GCFLAGS} ${GO_GCFLAGS} ${GO_BUILD_FLAGS} -o /build/vminitd -ldflags '-extldflags \"-static\" -s -w' -tags 'osusergo netgo static_build no_grpc'  ./cmd/vminitd
 
 # TODO: Use nix instructions to build crun statically
 #FROM base AS crun-src

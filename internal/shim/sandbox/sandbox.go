@@ -31,7 +31,7 @@ type Sandbox interface {
 	Start(context.Context, ...Opt) error
 	Stop(context.Context) error
 	Client() (*ttrpc.Client, error)
-	StartStream(ctx context.Context) (uint32, net.Conn, error)
+	StartStream(context.Context, string) (net.Conn, error)
 }
 
 type Filesystem struct {

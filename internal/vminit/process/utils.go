@@ -25,7 +25,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -226,13 +225,10 @@ func getStream(uri string, sm stream.Manager) (io.ReadWriteCloser, error) {
 	if !strings.HasPrefix(uri, "stream://") {
 		return nil, fmt.Errorf("not a stream: %s", errdefs.ErrInvalidArgument)
 	}
-	sid, err := strconv.ParseUint(uri[9:], 10, 32)
+	sid := uri[9:]
+	c, err := sm.Get(sid)
 	if err != nil {
-		return nil, fmt.Errorf("invalid stream id %q: %w", uri, err)
-	}
-	c, err := sm.Get(uint32(sid))
-	if err != nil {
-		return nil, fmt.Errorf("unable to get stream %d: %w", sid, errdefs.ErrNotFound)
+		return nil, fmt.Errorf("unable to get stream %q: %w", sid, errdefs.ErrNotFound)
 	}
 	return c, err
 }

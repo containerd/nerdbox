@@ -28,7 +28,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"sync/atomic"
+
 	"syscall"
 	"time"
 
@@ -144,8 +144,6 @@ type vmInstance struct {
 	kernelPath string
 	initrdPath string
 	streamPath string
-
-	streamC uint32
 
 	lib     *libkrun
 	handler uintptr
@@ -355,45 +353,50 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 	return nil
 }
 
-func (v *vmInstance) StartStream(ctx context.Context) (uint32, net.Conn, error) {
-	var conn net.Conn
+func (v *vmInstance) StartStream(ctx context.Context, streamID string) (net.Conn, error) {
 	const timeIncrement = 10 * time.Millisecond
 	for d := timeIncrement; d < time.Second; d += timeIncrement {
-		sid := atomic.AddUint32(&v.streamC, 1)
-		if sid == 0 {
-			return 0, nil, fmt.Errorf("exhausted stream identifiers: %w", errdefs.ErrUnavailable)
-		}
 		select {
 		case <-ctx.Done():
-			return 0, nil, ctx.Err()
+			return nil, ctx.Err()
 		default:
 		}
 		if _, err := os.Stat(v.streamPath); err == nil {
-			conn, err = net.Dial("unix", v.streamPath)
+			conn, err := net.Dial("unix", v.streamPath)
 			if err != nil {
-				return 0, nil, fmt.Errorf("failed to connect to stream server: %w", err)
+				return nil, fmt.Errorf("failed to connect to stream server: %w", err)
 			}
-			var vs [4]byte
-			binary.BigEndian.PutUint32(vs[:], sid)
-			if _, err := conn.Write(vs[:]); err != nil {
+			// Write length-prefixed stream ID
+			idBytes := []byte(streamID)
+			if err := binary.Write(conn, binary.BigEndian, uint32(len(idBytes))); err != nil {
 				conn.Close()
-				return 0, nil, fmt.Errorf("failed to write stream id to stream server: %w", err)
+				return nil, fmt.Errorf("failed to write stream id length: %w", err)
 			}
-			// Wait for ack
-			var ack [4]byte
-			if _, err := io.ReadFull(conn, ack[:]); err != nil {
+			if _, err := conn.Write(idBytes); err != nil {
 				conn.Close()
-				return 0, nil, fmt.Errorf("failed to read ack from stream server: %w", err)
+				return nil, fmt.Errorf("failed to write stream id: %w", err)
 			}
-			if binary.BigEndian.Uint32(ack[:]) != sid {
+			// Wait for ack (length-prefixed string echoed back)
+			var ackLen uint32
+			if err := binary.Read(conn, binary.BigEndian, &ackLen); err != nil {
 				conn.Close()
-				return 0, nil, fmt.Errorf("stream server ack mismatch: got %d, expected %d", binary.BigEndian.Uint32(ack[:]), sid)
+				return nil, fmt.Errorf("failed to read ack length: %w", err)
+			}
+			ackBytes := make([]byte, ackLen)
+			if _, err := io.ReadFull(conn, ackBytes); err != nil {
+				conn.Close()
+				return nil, fmt.Errorf("failed to read ack: %w", err)
+			}
+			if ack := string(ackBytes); ack != streamID {
+				conn.Close()
+				return nil, fmt.Errorf("stream %q rejected by server: %s", streamID, ack)
 			}
 
-			return sid, conn, nil
+			return conn, nil
 		}
+		time.Sleep(d)
 	}
-	return 0, nil, fmt.Errorf("timeout waiting for stream server: %w", errdefs.ErrUnavailable)
+	return nil, fmt.Errorf("timeout waiting for stream server: %w", errdefs.ErrUnavailable)
 }
 
 func (v *vmInstance) Client() *ttrpc.Client {

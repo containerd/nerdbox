@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -136,6 +137,15 @@ func newShimSocket(ctx context.Context, root, path, id string, debug bool) (*shi
 	if err != nil {
 		return nil, err
 	}
+
+	// Workaround: shim.NewSocket expects the parent directory to exist.
+	// Ensure the socket directory exists before creating the socket.
+	// TODO: Remove after https://github.com/containerd/containerd/pull/12960
+	addrParentDir := filepath.Base(strings.TrimPrefix("unix://", address))
+	if err := os.MkdirAll(addrParentDir, 0o700); err != nil {
+		return nil, fmt.Errorf("create socket directory: %w", err)
+	}
+
 	socket, err := shim.NewSocket(address)
 	if err != nil {
 		// the only time where this would happen is if there is a bug and the socket

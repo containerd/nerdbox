@@ -25,8 +25,130 @@ import (
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/stretchr/testify/assert"
 
+	"github.com/containerd/nerdbox/internal/shim/sandbox"
 	"github.com/containerd/nerdbox/internal/shim/task/bundle"
 )
+
+func applyOpts(opts []sandbox.Opt) sandbox.Options {
+	var o sandbox.Options
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return o
+}
+
+func TestBlockMountsProvider(t *testing.T) {
+	const id = "cid"
+
+	testcases := []struct {
+		name           string
+		mounts         []specs.Mount
+		wantDisks      []sandbox.Disk
+		wantSpecMounts []specs.Mount
+		wantInitArgs   []string
+	}{
+		{
+			name:           "no mounts",
+			mounts:         nil,
+			wantDisks:      nil,
+			wantSpecMounts: nil,
+			wantInitArgs:   nil,
+		},
+		{
+			name: "no ext4 mounts",
+			mounts: []specs.Mount{
+				{Type: "tmpfs", Source: "tmpfs", Destination: "/tmp"},
+				{Type: "proc", Source: "proc", Destination: "/proc"},
+			},
+			wantDisks: nil,
+			wantSpecMounts: []specs.Mount{
+				{Type: "tmpfs", Source: "tmpfs", Destination: "/tmp"},
+				{Type: "proc", Source: "proc", Destination: "/proc"},
+			},
+			wantInitArgs: nil,
+		},
+		{
+			name: "single ext4 mount read-write",
+			mounts: []specs.Mount{
+				{Type: "ext4", Source: "/vol/myvolume.img", Destination: "/data"},
+			},
+			wantDisks: []sandbox.Disk{
+				{BlockID: "disk-97-cid", MountPath: "/vol/myvolume.img", Flags: 0},
+			},
+			wantSpecMounts: []specs.Mount{
+				{Type: "bind", Source: "/mnt/sda", Destination: "/data", Options: []string{"rbind"}},
+			},
+			wantInitArgs: []string{"-blockmount=/dev/vda:/mnt/sda"},
+		},
+		{
+			name: "single ext4 mount read-only",
+			mounts: []specs.Mount{
+				{Type: "ext4", Source: "/vol/myvolume.img", Destination: "/data", Options: []string{"ro"}},
+			},
+			wantDisks: []sandbox.Disk{
+				{BlockID: "disk-97-cid", MountPath: "/vol/myvolume.img", Flags: sandbox.DiskFlagReadonly},
+			},
+			wantSpecMounts: []specs.Mount{
+				{Type: "bind", Source: "/mnt/sda", Destination: "/data", Options: []string{"rbind", "ro"}},
+			},
+			wantInitArgs: []string{"-blockmount=/dev/vda:/mnt/sda:ro"},
+		},
+		{
+			name: "multiple ext4 mounts",
+			mounts: []specs.Mount{
+				{Type: "ext4", Source: "/vol/vol1.img", Destination: "/data"},
+				{Type: "ext4", Source: "/vol/vol2.img", Destination: "/logs", Options: []string{"ro"}},
+			},
+			wantDisks: []sandbox.Disk{
+				{BlockID: "disk-97-cid", MountPath: "/vol/vol1.img", Flags: 0},
+				{BlockID: "disk-98-cid", MountPath: "/vol/vol2.img", Flags: sandbox.DiskFlagReadonly},
+			},
+			wantSpecMounts: []specs.Mount{
+				{Type: "bind", Source: "/mnt/sda", Destination: "/data", Options: []string{"rbind"}},
+				{Type: "bind", Source: "/mnt/sdb", Destination: "/logs", Options: []string{"rbind", "ro"}},
+			},
+			wantInitArgs: []string{
+				"-blockmount=/dev/vda:/mnt/sda",
+				"-blockmount=/dev/vdb:/mnt/sdb:ro",
+			},
+		},
+		{
+			name: "mixed mount types",
+			mounts: []specs.Mount{
+				{Type: "tmpfs", Source: "tmpfs", Destination: "/tmp"},
+				{Type: "ext4", Source: "/vol/myvolume.img", Destination: "/data"},
+				{Type: "proc", Source: "proc", Destination: "/proc"},
+			},
+			wantDisks: []sandbox.Disk{
+				{BlockID: "disk-97-cid", MountPath: "/vol/myvolume.img", Flags: 0},
+			},
+			wantSpecMounts: []specs.Mount{
+				{Type: "tmpfs", Source: "tmpfs", Destination: "/tmp"},
+				{Type: "bind", Source: "/mnt/sda", Destination: "/data", Options: []string{"rbind"}},
+				{Type: "proc", Source: "proc", Destination: "/proc"},
+			},
+			wantInitArgs: []string{"-blockmount=/dev/vda:/mnt/sda"},
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := &bundle.Bundle{
+				Spec: specs.Spec{Mounts: tc.mounts},
+			}
+
+			da := newDiskAllocator()
+			bm := &blockMounter{}
+			err := bm.FromBundle(context.Background(), b, id, &da)
+			assert.NoError(t, err)
+
+			opts := applyOpts(bm.SandboxOpts())
+			assert.Equal(t, tc.wantDisks, opts.Disks)
+			assert.Equal(t, tc.wantSpecMounts, b.Spec.Mounts)
+			assert.Equal(t, tc.wantInitArgs, bm.InitArgs())
+		})
+	}
+}
 
 func TestBindMountsProvider(t *testing.T) {
 	tmpDir := t.TempDir()

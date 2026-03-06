@@ -34,6 +34,18 @@ import (
 	"github.com/containerd/nerdbox/internal/shim/task/bundle"
 )
 
+// diskAllocator assigns sequential virtio disk letters (vda, vdb, …).
+// A single instance is shared across rootfs and volume disk allocation so
+// that all disks within a container get unique, collision-free letters.
+type diskAllocator struct{ next byte }
+
+func newDiskAllocator() diskAllocator { return diskAllocator{next: 'a'} }
+
+func (d *diskAllocator) Next() byte { c := d.next; d.next++; return c }
+
+// count returns the total number of disks allocated so far.
+func (d *diskAllocator) count() int { return int(d.next - 'a') }
+
 type diskOptions struct {
 	name     string
 	source   string
@@ -43,9 +55,8 @@ type diskOptions struct {
 
 // transformMounts does not perform any local mounts but transforms
 // the mounts to be used inside the VM via virtio
-func transformMounts(ctx context.Context, id string, ms []*types.Mount) ([]*types.Mount, []sandbox.Opt, error) {
+func transformMounts(ctx context.Context, id string, ms []*types.Mount, da *diskAllocator) ([]*types.Mount, []sandbox.Opt, error) {
 	var (
-		disks    byte = 'a'
 		addDisks []diskOptions
 		am       []*types.Mount
 		sbOpts   []sandbox.Opt
@@ -56,8 +67,8 @@ func transformMounts(ctx context.Context, id string, ms []*types.Mount) ([]*type
 	for _, m := range ms {
 		switch m.Type {
 		case "erofs":
-
-			disk := fmt.Sprintf("disk-%d-%s", disks, id)
+			letter := da.Next()
+			disk := fmt.Sprintf("disk-%d-%s", letter, id)
 			// virtiofs implementation has a limit of 36 characters for the tag
 			if len(disk) > 36 {
 				disk = disk[:36]
@@ -104,14 +115,14 @@ func transformMounts(ctx context.Context, id string, ms []*types.Mount) ([]*type
 			}
 			am = append(am, &types.Mount{
 				Type:    "erofs",
-				Source:  fmt.Sprintf("/dev/vd%c", disks),
+				Source:  fmt.Sprintf("/dev/vd%c", letter),
 				Target:  m.Target,
 				Options: filterOptions(Options),
 			})
 
-			disks++
 		case "ext4":
-			disk := fmt.Sprintf("disk-%d-%s", disks, id)
+			letter := da.Next()
+			disk := fmt.Sprintf("disk-%d-%s", letter, id)
 			// virtiofs implementation has a limit of 36 characters for the tag
 			if len(disk) > 36 {
 				disk = disk[:36]
@@ -125,11 +136,10 @@ func transformMounts(ctx context.Context, id string, ms []*types.Mount) ([]*type
 			})
 			am = append(am, &types.Mount{
 				Type:    "ext4",
-				Source:  fmt.Sprintf("/dev/vd%c", disks),
+				Source:  fmt.Sprintf("/dev/vd%c", letter),
 				Target:  m.Target,
 				Options: filterOptions(m.Options),
 			})
-			disks++
 		case "overlay", "format/overlay", "format/mkdir/overlay":
 			var (
 				wdi = -1
@@ -163,10 +173,6 @@ func transformMounts(ctx context.Context, id string, ms []*types.Mount) ([]*type
 		default:
 			am = append(am, m)
 		}
-	}
-
-	if len(addDisks) > 10 {
-		return nil, nil, fmt.Errorf("exceeded maximum virtio disk count: %d > 10: %w", len(addDisks), errdefs.ErrNotImplemented)
 	}
 
 	for _, do := range addDisks {
@@ -262,4 +268,72 @@ func (bm *bindMounter) InitArgs() []string {
 		args = append(args, "-mount="+m.tag+":"+m.vmTarget)
 	}
 	return args
+}
+
+// blockMounter transforms ext4 volume mounts in the OCI spec into
+// virtio-block devices. It must be called after setupMounts so that
+// rootfs disks are allocated first and volume disks follow sequentially.
+type blockMounter struct {
+	opts     []sandbox.Opt
+	initArgs []string
+}
+
+// FromBundle iterates the OCI spec mounts and for each ext4 mount:
+//   - allocates a virtio-block disk letter via the shared diskAllocator
+//   - rewrites the spec source to /mnt/sdX (where vminitd will mount it)
+//   - records a sandbox.WithDisk opt for the host image path
+//   - records a -blockmount init arg so vminitd mounts the device at startup
+func (bm *blockMounter) FromBundle(ctx context.Context, b *bundle.Bundle, id string, da *diskAllocator) error {
+	for i, m := range b.Spec.Mounts {
+		if m.Type != "ext4" {
+			continue
+		}
+
+		log.G(ctx).WithField("mount", m).Debug("transforming ext4 volume mount to virtio-block device")
+
+		letter := da.Next()
+		diskName := fmt.Sprintf("disk-%d-%s", letter, id)
+		if len(diskName) > 36 {
+			diskName = diskName[:36]
+		}
+
+		device := fmt.Sprintf("/dev/vd%c", letter)
+		vmTarget := fmt.Sprintf("/mnt/sd%c", letter)
+
+		hostSrc := b.Spec.Mounts[i].Source
+		b.Spec.Mounts[i].Type = "bind"
+		b.Spec.Mounts[i].Source = vmTarget
+
+		readonly := false
+		var flags sandbox.DiskFlags
+		for _, opt := range m.Options {
+			if opt == "ro" {
+				flags |= sandbox.DiskFlagReadonly
+				readonly = true
+				break
+			}
+		}
+		bindOpts := []string{"rbind"}
+		if readonly {
+			bindOpts = append(bindOpts, "ro")
+		}
+		b.Spec.Mounts[i].Options = bindOpts
+
+		bm.opts = append(bm.opts, sandbox.WithDisk(diskName, hostSrc, flags))
+
+		initArg := "-blockmount=" + device + ":" + vmTarget
+		if readonly {
+			initArg += ":ro"
+		}
+		bm.initArgs = append(bm.initArgs, initArg)
+	}
+	return nil
+}
+
+func (bm *blockMounter) SandboxOpts() []sandbox.Opt {
+	return bm.opts
+}
+
+func (bm *blockMounter) InitArgs() []string {
+	return bm.initArgs
 }

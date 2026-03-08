@@ -187,9 +187,10 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	}
 
 	var (
-		nwpr      networksProvider
-		ctrNetCfg ctrNetConfig
-		resCfg    resourceConfig
+		nwpr        networksProvider
+		ctrNetCfg   ctrNetConfig
+		resCfg      resourceConfig
+		dumpInfoCfg dumpInfoConfig
 	)
 	// Load the OCI bundle and apply transformers to get the bundle that'll be
 	// set up on the VM side.
@@ -198,6 +199,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		nwpr.FromBundle,
 		ctrNetCfg.fromBundle,
 		resCfg.FromBundle,
+		dumpInfoCfg.FromBundle,
 		func(ctx context.Context, b *bundle.Bundle) error {
 			// If there are no VM networks, try falling back to host's resolv.conf (for TSI).
 			return addResolvConf(ctx, b, len(nwpr.nws) == 0)
@@ -241,6 +243,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	opts = append(opts, sandbox.WithInitArgs(initArgs...))
 
 	opts = append(opts, resCfg.SandboxOpts()...)
+	opts = append(opts, dumpInfoCfg.SandboxOpts()...)
 
 	prestart := time.Now()
 	if err := s.sb.Start(ctx, opts...); err != nil {

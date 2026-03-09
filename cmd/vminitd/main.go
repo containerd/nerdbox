@@ -59,11 +59,12 @@ func main() {
 		config ServiceConfig
 		dev    = flag.Bool("dev", false, "Development mode with graceful exit")
 	)
-	flag.BoolVar(&config.Debug, "debug", true, "Debug log level")
+	flag.BoolVar(&config.Debug, "debug", false, "Debug log level")
 	flag.IntVar(&config.RPCPort, "vsock-rpc-port", 1024, "vsock port to listen for rpc on")
 	flag.IntVar(&config.StreamPort, "vsock-stream-port", 1025, "vsock port to listen for streams on")
 	flag.IntVar(&config.VSockContextID, "vsock-cid", 0, "vsock context ID for vsock listen")
 	flag.Var(&config.Networks, "network", "network interfaces to set up")
+	flag.BoolVar(&config.DumpInfo, "dump-info", false, "dump information about the system")
 	args := os.Args[1:]
 	// Strip "tsi_hijack" added by libkrun
 	if len(args) > 0 && args[0] == "tsi_hijack" {
@@ -123,7 +124,7 @@ func main() {
 		}
 	}()
 
-	if config.Debug {
+	if config.DumpInfo {
 		systools.DumpInfo(ctx)
 	}
 
@@ -264,6 +265,7 @@ type ServiceConfig struct {
 	StreamPort     int
 	Networks       networks
 	Shutdown       shutdown.Service
+	DumpInfo       bool
 	Debug          bool
 }
 

@@ -55,11 +55,17 @@ var (
 
 // NewTaskService creates a new instance of a task service
 func NewTaskService(ctx context.Context, sb sandbox.Sandbox, publisher shim.Publisher, sd shutdown.Service) (taskAPI.TTRPCTaskService, error) {
+	var debug bool
+	if opts, ok := ctx.Value(shim.OptsKey{}).(shim.Opts); ok {
+		debug = opts.Debug
+	}
+
 	s := &service{
 		context:          ctx,
 		sb:               sb,
 		events:           make(chan any, 128),
 		containers:       make(map[string]*container),
+		debug:            debug,
 		initiateShutdown: sd.Shutdown,
 	}
 	sd.RegisterCallback(s.shutdown)
@@ -93,6 +99,7 @@ type service struct {
 
 	containers map[string]*container
 
+	debug            bool
 	initiateShutdown func()
 }
 
@@ -180,9 +187,10 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	}
 
 	var (
-		nwpr      networksProvider
-		ctrNetCfg ctrNetConfig
-		resCfg    resourceConfig
+		nwpr        networksProvider
+		ctrNetCfg   ctrNetConfig
+		resCfg      resourceConfig
+		dumpInfoCfg dumpInfoConfig
 	)
 	// Load the OCI bundle and apply transformers to get the bundle that'll be
 	// set up on the VM side.
@@ -191,6 +199,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		nwpr.FromBundle,
 		ctrNetCfg.fromBundle,
 		resCfg.FromBundle,
+		dumpInfoCfg.FromBundle,
 		func(ctx context.Context, b *bundle.Bundle) error {
 			// If there are no VM networks, try falling back to host's resolv.conf (for TSI).
 			return addResolvConf(ctx, b, len(nwpr.nws) == 0)
@@ -224,12 +233,17 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	initArgs := nwpr.InitArgs()
 
 	var opts []sandbox.Opt
+	if s.debug {
+		opts = append(opts, sandbox.WithInitArgs("-debug"))
+	}
+
 	opts = append(opts, sandbox.WithStateDir(vmState))
 	opts = append(opts, mountOpts...)
 	opts = append(opts, nwOpts...)
 	opts = append(opts, sandbox.WithInitArgs(initArgs...))
 
 	opts = append(opts, resCfg.SandboxOpts()...)
+	opts = append(opts, dumpInfoCfg.SandboxOpts()...)
 
 	prestart := time.Now()
 	if err := s.sb.Start(ctx, opts...); err != nil {

@@ -76,3 +76,28 @@ func (r *resourceConfig) SandboxOpts() []sandbox.Opt {
 		sandbox.WithResources(r.cpu, r.mem),
 	}
 }
+
+type dumpInfoConfig struct {
+	enabled bool
+}
+
+func (d *dumpInfoConfig) FromBundle(ctx context.Context, b *bundle.Bundle) error {
+	if b.Spec.Annotations == nil {
+		return nil
+	}
+
+	for annotKey := range b.Spec.Annotations {
+		if annotKey == "io.containerd.nerdbox.dump-info" {
+			d.enabled = true
+		}
+	}
+
+	return nil
+}
+
+func (d *dumpInfoConfig) SandboxOpts() []sandbox.Opt {
+	if d.enabled {
+		return []sandbox.Opt{sandbox.WithInitArgs("-dump-info")}
+	}
+	return nil
+}

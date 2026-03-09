@@ -305,6 +305,552 @@ file: {
   }
 }
 file: {
+  name: "proto/nerdbox/services/mount/v1/mount.proto"
+  package: "containerd.vminitd.services.mount.v1"
+  message_type: {
+    name: "MountSpec"
+    field: {
+      name: "type"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "type"
+    }
+    field: {
+      name: "source"
+      number: 2
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "source"
+    }
+    field: {
+      name: "target"
+      number: 3
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "target"
+    }
+    field: {
+      name: "options"
+      number: 4
+      label: LABEL_REPEATED
+      type: TYPE_STRING
+      json_name: "options"
+    }
+  }
+  message_type: {
+    name: "MountAllRequest"
+    field: {
+      name: "mounts"
+      number: 1
+      label: LABEL_REPEATED
+      type: TYPE_MESSAGE
+      type_name: ".containerd.vminitd.services.mount.v1.MountSpec"
+      json_name: "mounts"
+    }
+  }
+  message_type: {
+    name: "MountAllResponse"
+  }
+  message_type: {
+    name: "UnmountRequest"
+    field: {
+      name: "target"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "target"
+    }
+  }
+  message_type: {
+    name: "UnmountResponse"
+  }
+  service: {
+    name: "Mount"
+    method: {
+      name: "MountAll"
+      input_type: ".containerd.vminitd.services.mount.v1.MountAllRequest"
+      output_type: ".containerd.vminitd.services.mount.v1.MountAllResponse"
+    }
+    method: {
+      name: "Unmount"
+      input_type: ".containerd.vminitd.services.mount.v1.UnmountRequest"
+      output_type: ".containerd.vminitd.services.mount.v1.UnmountResponse"
+    }
+  }
+  options: {
+    go_package: "github.com/containerd/nerdbox/api/services/mount/v1;mount"
+  }
+  source_code_info: {
+    location: {
+      span: 16
+      span: 0
+      span: 44
+      span: 26
+    }
+    location: {
+      path: 12
+      span: 16
+      span: 0
+      span: 18
+      leading_detached_comments: "\nCopyright The containerd Authors.\n\nLicensed under the Apache License, Version 2.0 (the \"License\");\nyou may not use this file except in compliance with the License.\nYou may obtain a copy of the License at\n\nhttp://www.apache.org/licenses/LICENSE-2.0\n\nUnless required by applicable law or agreed to in writing, software\ndistributed under the License is distributed on an \"AS IS\" BASIS,\nWITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\nSee the License for the specific language governing permissions and\nlimitations under the License.\n"
+    }
+    location: {
+      path: 2
+      span: 18
+      span: 0
+      span: 45
+    }
+    location: {
+      path: 8
+      span: 20
+      span: 0
+      span: 80
+    }
+    location: {
+      path: 8
+      path: 11
+      span: 20
+      span: 0
+      span: 80
+    }
+    location: {
+      path: 6
+      path: 0
+      span: 22
+      span: 0
+      span: 25
+      span: 1
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 1
+      span: 22
+      span: 8
+      span: 13
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      span: 23
+      span: 8
+      span: 65
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      path: 1
+      span: 23
+      span: 12
+      span: 20
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      path: 2
+      span: 23
+      span: 21
+      span: 36
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      path: 3
+      span: 23
+      span: 47
+      span: 63
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 1
+      span: 24
+      span: 8
+      span: 62
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 1
+      path: 1
+      span: 24
+      span: 12
+      span: 19
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 1
+      path: 2
+      span: 24
+      span: 20
+      span: 34
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 1
+      path: 3
+      span: 24
+      span: 45
+      span: 60
+    }
+    location: {
+      path: 4
+      path: 0
+      span: 27
+      span: 0
+      span: 32
+      span: 1
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 1
+      span: 27
+      span: 8
+      span: 17
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      span: 28
+      span: 8
+      span: 36
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      path: 5
+      span: 28
+      span: 8
+      span: 14
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      path: 1
+      span: 28
+      span: 15
+      span: 19
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      path: 3
+      span: 28
+      span: 34
+      span: 35
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 1
+      span: 29
+      span: 8
+      span: 36
+      trailing_comments: " in-VM path or virtiofs tag\n"
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 1
+      path: 5
+      span: 29
+      span: 8
+      span: 14
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 1
+      path: 1
+      span: 29
+      span: 15
+      span: 21
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 1
+      path: 3
+      span: 29
+      span: 34
+      span: 35
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 2
+      span: 30
+      span: 8
+      span: 36
+      trailing_comments: " in-VM path\n"
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 2
+      path: 5
+      span: 30
+      span: 8
+      span: 14
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 2
+      path: 1
+      span: 30
+      span: 15
+      span: 21
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 2
+      path: 3
+      span: 30
+      span: 34
+      span: 35
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 3
+      span: 31
+      span: 8
+      span: 36
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 3
+      path: 4
+      span: 31
+      span: 8
+      span: 16
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 3
+      path: 5
+      span: 31
+      span: 17
+      span: 23
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 3
+      path: 1
+      span: 31
+      span: 24
+      span: 31
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 3
+      path: 3
+      span: 31
+      span: 34
+      span: 35
+    }
+    location: {
+      path: 4
+      path: 1
+      span: 34
+      span: 0
+      span: 36
+      span: 1
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 1
+      span: 34
+      span: 8
+      span: 23
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      span: 35
+      span: 8
+      span: 38
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      path: 4
+      span: 35
+      span: 8
+      span: 16
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      path: 6
+      span: 35
+      span: 17
+      span: 26
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      path: 1
+      span: 35
+      span: 27
+      span: 33
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      path: 3
+      span: 35
+      span: 36
+      span: 37
+    }
+    location: {
+      path: 4
+      path: 2
+      span: 38
+      span: 0
+      span: 27
+    }
+    location: {
+      path: 4
+      path: 2
+      path: 1
+      span: 38
+      span: 8
+      span: 24
+    }
+    location: {
+      path: 4
+      path: 3
+      span: 40
+      span: 0
+      span: 42
+      span: 1
+    }
+    location: {
+      path: 4
+      path: 3
+      path: 1
+      span: 40
+      span: 8
+      span: 22
+    }
+    location: {
+      path: 4
+      path: 3
+      path: 2
+      path: 0
+      span: 41
+      span: 8
+      span: 26
+      trailing_comments: " in-VM path\n"
+    }
+    location: {
+      path: 4
+      path: 3
+      path: 2
+      path: 0
+      path: 5
+      span: 41
+      span: 8
+      span: 14
+    }
+    location: {
+      path: 4
+      path: 3
+      path: 2
+      path: 0
+      path: 1
+      span: 41
+      span: 15
+      span: 21
+    }
+    location: {
+      path: 4
+      path: 3
+      path: 2
+      path: 0
+      path: 3
+      span: 41
+      span: 24
+      span: 25
+    }
+    location: {
+      path: 4
+      path: 4
+      span: 44
+      span: 0
+      span: 26
+    }
+    location: {
+      path: 4
+      path: 4
+      path: 1
+      span: 44
+      span: 8
+      span: 23
+    }
+  }
+  syntax: "proto3"
+  buf_extension: {
+    is_import: false
+    is_syntax_unspecified: false
+  }
+}
+file: {
   name: "proto/nerdbox/services/system/v1/info.proto"
   package: "containerd.vminitd.services.system.v1"
   dependency: "google/protobuf/empty.proto"

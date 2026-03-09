@@ -26,6 +26,7 @@ import (
 	"strings"
 
 	"github.com/containerd/containerd/api/types"
+	"github.com/containerd/containerd/v2/core/mount"
 	"github.com/containerd/errdefs"
 	"github.com/containerd/log"
 
@@ -262,12 +263,16 @@ func (bm *bindMounter) SandboxOpts() []sandbox.Opt {
 	return opts
 }
 
-func (bm *bindMounter) InitArgs() []string {
-	args := make([]string, 0, len(bm.mounts))
+func (bm *bindMounter) VmMounts() []mount.Mount {
+	var mounts []mount.Mount
 	for _, m := range bm.mounts {
-		args = append(args, "-mount="+m.tag+":"+m.vmTarget)
+		mounts = append(mounts, mount.Mount{
+			Type:   "virtiofs",
+			Source: m.tag,
+			Target: m.vmTarget,
+		})
 	}
-	return args
+	return mounts
 }
 
 // blockMounter transforms ext4 volume mounts in the OCI spec into
@@ -275,7 +280,7 @@ func (bm *bindMounter) InitArgs() []string {
 // rootfs disks are allocated first and volume disks follow sequentially.
 type blockMounter struct {
 	opts     []sandbox.Opt
-	initArgs []string
+	vmMounts []mount.Mount
 }
 
 // FromBundle iterates the OCI spec mounts and for each ext4 mount:
@@ -321,11 +326,13 @@ func (bm *blockMounter) FromBundle(ctx context.Context, b *bundle.Bundle, id str
 
 		bm.opts = append(bm.opts, sandbox.WithDisk(diskName, hostSrc, flags))
 
-		initArg := "-blockmount=" + device + ":" + vmTarget
-		if readonly {
-			initArg += ":ro"
+		vmMount := mount.Mount{
+			Type:    "ext4",
+			Source:  device,
+			Target:  vmTarget,
+			Options: m.Options,
 		}
-		bm.initArgs = append(bm.initArgs, initArg)
+		bm.vmMounts = append(bm.vmMounts, vmMount)
 	}
 	return nil
 }
@@ -334,6 +341,6 @@ func (bm *blockMounter) SandboxOpts() []sandbox.Opt {
 	return bm.opts
 }
 
-func (bm *blockMounter) InitArgs() []string {
-	return bm.initArgs
+func (bm *blockMounter) VmMounts() []mount.Mount {
+	return bm.vmMounts
 }

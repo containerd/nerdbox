@@ -14,7 +14,7 @@ require (
 	github.com/containerd/log v0.1.0
 	github.com/containerd/otelttrpc v0.1.0
 	github.com/containerd/plugin v1.0.0
-	github.com/containerd/ttrpc v1.2.7
+	github.com/containerd/ttrpc v1.2.8
 	github.com/containerd/typeurl/v2 v2.2.3
 	github.com/docker/go-events v0.0.0-20190806004212-e31b211e4f1c
 	github.com/ebitengine/purego v0.10.0

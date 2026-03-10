@@ -31,6 +31,11 @@ import (
 	"github.com/containerd/nerdbox/internal/vm"
 )
 
+const (
+	NET_FLAG_VFKIT = 1 << iota // See https://github.com/containers/libkrun/blob/357ec63fee444b973e4fc76d2121fd41631f121e/include/libkrun.h#L271C9-L271C23
+	NET_FLAG_INCLUDE_VNET_HEADER
+)
+
 type networksProvider struct {
 	nws []network
 }
@@ -44,6 +49,7 @@ type network struct {
 	addr6    netip.Prefix     // addr6 is the IPv6 address + subnet mask of the network interface
 	features uint32           // features is a bitmask of virtio-net features enabled on this network endpoint
 	vfkit    bool             // vfkit is a boolean flag indicating whether libkrun must send the VFKIT magic sequence after connecting to the socket.
+	vnetHdr  bool             // vnetHdr is a boolean flag indicating whether libkrun must include virtio-net headers along with Ethernet frames.
 }
 
 const (
@@ -58,6 +64,7 @@ const (
 	addrField     = "addr"
 	featuresField = "features" // features is a bitwise-OR separated list of virtio-net features. See https://docs.oasis-open.org/virtio/virtio/v1.3/csd01/virtio-v1.3-csd01.html#x1-2370003
 	vfkitField    = "vfkit"    // vfkit is a boolean flag indicating whether libkrun must send the VFKIT magic sequence after connecting to the socket.
+	vnetHdrField  = "vnet_hdr"
 
 	nwModeUnixgram   = "unixgram"
 	nwModeUnixstream = "unixstream"
@@ -150,6 +157,12 @@ func parseNetwork(annotation string) (network, error) {
 				return network{}, fmt.Errorf("parsing vfkit field: %w", err)
 			}
 			n.vfkit = vfkit
+		case vnetHdrField:
+			vnetHdr, err := strconv.ParseBool(value)
+			if err != nil {
+				return network{}, fmt.Errorf("parsing vnet_hdr field: %w", err)
+			}
+			n.vnetHdr = vnetHdr
 		default:
 			return network{}, fmt.Errorf("unknown network field: %s", key)
 		}
@@ -181,7 +194,10 @@ func (p *networksProvider) SandboxOptions() []sandbox.Opt {
 
 		var flags uint32
 		if nw.vfkit {
-			flags = 1 // See https://github.com/containers/libkrun/blob/357ec63fee444b973e4fc76d2121fd41631f121e/include/libkrun.h#L271C9-L271C23
+			flags = NET_FLAG_VFKIT
+		}
+		if nw.vnetHdr {
+			flags |= NET_FLAG_INCLUDE_VNET_HEADER
 		}
 
 		opts = append(opts, sandbox.WithNIC(nw.endpoint, nw.mac, int(nwMode), nw.features, flags))

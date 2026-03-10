@@ -1,4 +1,4 @@
-//go:build !linux && !darwin
+//go:build !linux
 
 /*
    Copyright The containerd Authors.
@@ -26,6 +26,6 @@ import (
 	"github.com/containerd/nerdbox/internal/shim/sandbox"
 )
 
-func setupMounts(_ context.Context, id string, ms []*types.Mount, rootfs, _ string) ([]*types.Mount, []sandbox.Opt, error) {
-	return ms, nil, nil
+func setupMounts(ctx context.Context, id string, ms []*types.Mount, _, _ string) ([]*types.Mount, []sandbox.Opt, error) {
+	return transformMounts(ctx, id, ms)
 }

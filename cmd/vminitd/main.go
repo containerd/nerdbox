@@ -47,6 +47,7 @@ import (
 
 	_ "github.com/containerd/nerdbox/plugins/services/bundle"
 	_ "github.com/containerd/nerdbox/plugins/services/system"
+	_ "github.com/containerd/nerdbox/plugins/services/transfer"
 
 	_ "github.com/containerd/nerdbox/plugins/vminit/events"
 	_ "github.com/containerd/nerdbox/plugins/vminit/streaming"

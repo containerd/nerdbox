@@ -18,6 +18,8 @@ package integration
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/containerd/errdefs"
@@ -66,4 +68,83 @@ func TestStreamInitialization(t *testing.T) {
 			t.Fatal("failed to close stream connection:", err)
 		}
 	})
+}
+
+// BenchmarkVMStart measures the time to start a VM instance until
+// its TTRPC endpoint is ready to serve requests.
+func BenchmarkVMStart(b *testing.B) {
+	for _, backend := range vmBackends {
+		parentDir := b.TempDir()
+
+		b.Run(backend.name, func(b *testing.B) {
+			for b.Loop() {
+				b.StopTimer()
+
+				stateDir, err := os.MkdirTemp(parentDir, "iter-*")
+				if err != nil {
+					b.Fatal("failed to create temp dir:", err)
+				}
+				// Resolve symlinks so the VM sees a canonical path.
+				resolvedTd, err := filepath.EvalSymlinks(stateDir)
+				if err != nil {
+					b.Fatal("failed to resolve temp dir:", err)
+				}
+				b.Chdir(resolvedTd)
+
+				instance, err := backend.vmm.NewInstance(b.Context(), resolvedTd)
+				if err != nil {
+					b.Fatal("failed to create VM instance:", err)
+				}
+
+				b.StartTimer()
+				if err := instance.Start(b.Context()); err != nil {
+					b.Fatal("failed to start VM:", err)
+				}
+
+				b.StopTimer()
+
+				if err := instance.Shutdown(b.Context()); err != nil {
+					b.Fatal("failed to shut down VM:", err)
+				}
+
+				b.StartTimer()
+			}
+		})
+	}
+}
+
+// BenchmarkVMShutdown measures the time to shut down a running VM.
+func BenchmarkVMShutdown(b *testing.B) {
+	for _, backend := range vmBackends {
+		b.Run(backend.name, func(b *testing.B) {
+			parentDir := b.TempDir()
+
+			for b.Loop() {
+				b.StopTimer()
+
+				stateDir, err := os.MkdirTemp(parentDir, "iter-*")
+				if err != nil {
+					b.Fatal("failed to create temp dir:", err)
+				}
+				resolvedTd, err := filepath.EvalSymlinks(stateDir)
+				if err != nil {
+					b.Fatal("failed to resolve temp dir:", err)
+				}
+				b.Chdir(resolvedTd)
+
+				instance, err := backend.vmm.NewInstance(b.Context(), resolvedTd)
+				if err != nil {
+					b.Fatal("failed to create VM instance:", err)
+				}
+				if err := instance.Start(b.Context()); err != nil {
+					b.Fatal("failed to start VM:", err)
+				}
+
+				b.StartTimer()
+				if err := instance.Shutdown(b.Context()); err != nil {
+					b.Fatal("failed to shut down VM:", err)
+				}
+			}
+		})
+	}
 }

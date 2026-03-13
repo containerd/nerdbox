@@ -53,16 +53,15 @@ func TestMain(m *testing.M) {
 	os.Exit(r)
 }
 
+var vmBackends = []struct {
+	name string
+	vmm  vm.Manager
+}{
+	{name: "libkrun", vmm: libkrun.NewManager()},
+}
+
 func runWithVM(t *testing.T, runTest func(*testing.T, vm.Instance)) {
-	for _, tc := range []struct {
-		name string
-		vmm  vm.Manager
-	}{
-		{
-			name: "libkrun",
-			vmm:  libkrun.NewManager(),
-		},
-	} {
+	for _, tc := range vmBackends {
 		t.Run(tc.name, func(t *testing.T) {
 			td := t.TempDir()
 			t.Chdir(td)

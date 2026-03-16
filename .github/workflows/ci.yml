@@ -183,7 +183,7 @@ jobs:
 
       - name: Restore cached kernel
         id: cache-kernel
-        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57  # v4.2.0
+        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306  # v5.0.3
         with:
           path: _output/nerdbox-kernel-${{ matrix.arch }}
           key: ${{ steps.cache-key.outputs.cache-key }}

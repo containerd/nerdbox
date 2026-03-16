@@ -9,6 +9,7 @@
 # REVIEWERS
 # GitHub ID, Name, Email address, GPG fingerprint
 "robmry","Rob Murray","rob.murray@docker.com",""
+"Kern--","Kern Walster","kern.walster@gmail.com",""
 
 # As a containerd sub-project, containerd maintainers are also included from https://github.com/containerd/project/blob/main/MAINTAINERS.
 # Below are the containerd maintainers who contribute to nerdbox and copied here for ease of reference.

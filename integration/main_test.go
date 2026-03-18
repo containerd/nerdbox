@@ -32,25 +32,18 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		log.Fatalf("Failed to get executable path: %v", err)
 	}
+
+	// Prepend the directory containing the test binary to PATH so that
+	// NewInstance can find libkrun.so, the kernel, and initrd located
+	// alongside the binary (the _output/ directory).
 	exeDir := filepath.Dir(e)
 	paths := filepath.SplitList(os.Getenv("PATH"))
-	for _, p := range []string{
-		"../_output",
-		".",
-	} {
-		absPath := filepath.Clean(filepath.Join(exeDir, p))
-		// Prepend to slice
-		paths = append(paths, "")
-		copy(paths[1:], paths)
-		paths[0] = absPath
-	}
+	paths = append([]string{exeDir}, paths...)
 	if err := os.Setenv("PATH", strings.Join(paths, string(filepath.ListSeparator))); err != nil {
 		log.Fatalf("Failed to set PATH environment variable: %v", err)
 	}
 
-	r := m.Run()
-
-	os.Exit(r)
+	os.Exit(m.Run())
 }
 
 func runWithVM(t *testing.T, runTest func(*testing.T, vm.Instance)) {

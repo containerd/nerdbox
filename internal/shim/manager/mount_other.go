@@ -18,6 +18,6 @@
 
 package manager
 
-func setupMntNs() error {
-	return nil
-}
+import "os/exec"
+
+func cloneMntNs(_ *exec.Cmd) {}

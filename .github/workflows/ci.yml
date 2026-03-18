@@ -229,3 +229,107 @@ jobs:
 
       - name: Run integration tests
         run: go test -v ./integration/...
+
+  #
+  # Integration tests (rootless)
+  #
+  integration-rootless:
+    name: Integration Tests (rootless)
+    needs: [setup, build-kernels]
+    if: |
+      always() &&
+      (needs.build-kernels.result == 'success' || needs.build-kernels.result == 'skipped')
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x86_64
+
+    steps:
+      - name: Create non-root user with KVM access
+        run: |
+          sudo useradd -m testuser
+          sudo usermod -aG kvm testuser
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Calculate kernel cache key
+        id: cache-key
+        run: |
+          # Hash the kernel config and patches to create a unique cache key
+          CONFIG_FILE="kernel/config-${{ needs.setup.outputs.kernel-version }}-${{ matrix.arch }}"
+
+          if [ ! -f "$CONFIG_FILE" ]; then
+            echo "Error: Kernel config file $CONFIG_FILE not found"
+            exit 1
+          fi
+
+          # Calculate hash of config file and all patches
+          CONFIG_HASH=$(sha256sum "$CONFIG_FILE" | cut -d' ' -f1)
+          PATCHES_HASH=$(find kernel/patches -type f -name "*.patch" -exec sha256sum {} \; | sort | sha256sum | cut -d' ' -f1)
+
+          # Combine version, arch, config hash, and patches hash
+          CACHE_KEY="kernel-${{ needs.setup.outputs.kernel-version }}-${{ matrix.arch }}-${CONFIG_HASH:0:8}-${PATCHES_HASH:0:8}"
+
+          echo "cache-key=${CACHE_KEY}" >> $GITHUB_OUTPUT
+          echo "Kernel cache key: ${CACHE_KEY}"
+
+      - name: Restore cached kernel
+        id: cache-kernel
+        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306  # v5.0.3
+        with:
+          path: _output/nerdbox-kernel-${{ matrix.arch }}
+          key: ${{ steps.cache-key.outputs.cache-key }}
+
+      - name: Verify kernel from cache
+        run: |
+          if [ "${{ steps.cache-kernel.outputs.cache-hit }}" = "true" ]; then
+            echo "✅ Kernel restored from cache"
+          else
+            echo "❌ Kernel not in cache - this should not happen after build-kernels-on-demand"
+            exit 1
+          fi
+          ls -lh _output/nerdbox-kernel-${{ matrix.arch }}
+          file _output/nerdbox-kernel-${{ matrix.arch }}
+
+      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4.0.0
+
+      - name: Build remaining artifacts (initrd and shim)
+        run: |
+          echo "Building host and guest binaries:"
+          docker buildx bake host-binaries guest-binaries
+
+      - name: Verify all artifacts
+        run: |
+          echo "Verifying build artifacts:"
+          ls -lh _output/
+          echo ""
+          echo "Kernel:"
+          file _output/nerdbox-kernel-${{ matrix.arch }}
+          echo ""
+          echo "Initrd:"
+          file _output/nerdbox-initrd
+          echo ""
+          echo "Shim:"
+          file _output/containerd-shim-nerdbox-v1
+
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417  # v6.3.0
+        with:
+          go-version-file: '.github/.tool-versions'
+
+      - name: Compile integration test binary
+        run: go test -c -o _output/integration.test ./integration
+
+      - name: Allow testuser to traverse to workspace
+        run: sudo chmod a+x /home/runner
+
+      - name: Run integration tests as non-root
+        run: |
+          sudo -u testuser \
+            env "PATH=$(pwd)/_output:$PATH" \
+                "HOME=/home/testuser" \
+            _output/integration.test -test.v

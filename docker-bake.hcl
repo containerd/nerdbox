@@ -14,6 +14,10 @@ variable "KERNEL_NPROC" {
   default = "4"
 }
 
+variable "KERNEL_PAGE_SIZE" {
+  default = "4k"
+}
+
 variable "GO_BUILD_FLAGS" {
   default = ""
 }
@@ -43,6 +47,7 @@ target "_common" {
     KERNEL_VERSION = KERNEL_VERSION
     KERNEL_ARCH = KERNEL_ARCH
     KERNEL_NPROC = KERNEL_NPROC
+    KERNEL_PAGE_SIZE = KERNEL_PAGE_SIZE
     GO_BUILD_FLAGS = GO_BUILD_FLAGS
     GO_GCFLAGS = GO_GCFLAGS
     GO_DEBUG_GCFLAGS = GO_DEBUG_GCFLAGS

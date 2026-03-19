@@ -42,7 +42,14 @@ import (
 	"github.com/containerd/nerdbox/internal/vm"
 )
 
-const vmStartTimeout = 5 * time.Second
+var vmStartTimeout = 15 * time.Second
+
+func init() {
+	if runtime.GOOS == "windows" {
+		// Windows WHP hypervisor has higher startup overhead.
+		vmStartTimeout = 30 * time.Second
+	}
+}
 
 var setLogging sync.Once
 

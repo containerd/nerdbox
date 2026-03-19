@@ -25,7 +25,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	goruntime "runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -184,16 +183,11 @@ func (manager) Start(ctx context.Context, id string, opts shim.StartOpts) (_ shi
 		cmd.ExtraFiles = append(cmd.ExtraFiles, s.f)
 	}
 
-	goruntime.LockOSThread()
-	if err := setupMntNs(); err != nil {
-		return params, err
-	}
+	cloneMntNs(cmd)
 
 	if err := cmd.Start(); err != nil {
 		return params, err
 	}
-
-	goruntime.UnlockOSThread()
 
 	defer func() {
 		if retErr != nil {

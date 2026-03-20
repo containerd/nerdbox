@@ -1,3 +1,5 @@
+//go:build !windows
+
 /*
    Copyright The containerd Authors.
 
@@ -43,13 +45,6 @@ import (
 )
 
 var vmStartTimeout = 15 * time.Second
-
-func init() {
-	if runtime.GOOS == "windows" {
-		// Windows WHP hypervisor has higher startup overhead.
-		vmStartTimeout = 30 * time.Second
-	}
-}
 
 var setLogging sync.Once
 

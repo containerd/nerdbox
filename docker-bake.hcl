@@ -42,6 +42,11 @@ variable "GOPROXY" {
   default = ""
 }
 
+# Map KERNEL_ARCH to Docker platform architecture names.
+variable "_DOCKER_ARCH" {
+  default = KERNEL_ARCH == "x86_64" ? "amd64" : KERNEL_ARCH == "aarch64" ? "arm64" : KERNEL_ARCH
+}
+
 target "_common" {
   args = {
     KERNEL_VERSION = KERNEL_VERSION
@@ -58,9 +63,7 @@ target "_common" {
 
 target "_host_common" {
   inherits = ["_common"]
-  args = {
-    TARGETOS = HOST_OS
-  }
+  platforms = ["${HOST_OS}/${_DOCKER_ARCH}"]
 }
 
 target "_guest_common" {
@@ -111,8 +114,9 @@ target "shim" {
 }
 
 target "libkrun" {
-  inherits = ["_host_common"]
+  inherits = ["_common"]
   target = "libkrun"
+  platforms = ["linux/${_DOCKER_ARCH}"]
   output = ["${DESTDIR}"]
 }
 

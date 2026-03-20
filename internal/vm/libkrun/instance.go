@@ -40,6 +40,13 @@ import (
 
 var vmStartTimeout = 15 * time.Second
 
+func init() {
+	if runtime.GOOS == "windows" {
+		// Windows WHP hypervisor has higher startup overhead than macOS/Linux.
+		vmStartTimeout = 30 * time.Second
+	}
+}
+
 var setLogging sync.Once
 
 func NewManager() vm.Manager {
@@ -56,13 +63,16 @@ func (*vmManager) NewInstance(ctx context.Context, state string) (vm.Instance, e
 		kernelPath string
 		initrdPath string
 	)
-	if len(p2) == 0 {
+	if runtime.GOOS != "windows" && len(p2) == 0 {
 		p2 = []string{"/usr/local/lib", "/usr/local/lib64", "/usr/lib", "/lib"}
 	}
 	sharedNames := []string{"libkrun.so"}
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
 		sharedNames = []string{"libkrun.dylib", "libkrun-efi.dylib"}
 		p2 = append(p2, "/opt/homebrew/lib")
+	case "windows":
+		sharedNames = []string{"krun.dll"}
 	}
 
 	for _, dir := range append(p1, p2...) {
@@ -235,11 +245,18 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 		return fmt.Errorf("failed to set exec: %w", err)
 	}
 
-	lr, err := setupConsole(ctx, v.vmc, "./krun.fifo")
+	cf := "./krun.fifo"
+	lr, err := setupConsole(ctx, v.vmc, cf)
 	if err != nil {
-		return fmt.Errorf("failed to set console: %w", err)
+		return fmt.Errorf("failed to set up console: %w", err)
 	}
-	go io.Copy(os.Stderr, lr)
+	if lr != nil {
+		consoleW := io.Writer(os.Stderr)
+		if startOpts.ConsoleWriter != nil {
+			consoleW = io.MultiWriter(os.Stderr, startOpts.ConsoleWriter)
+		}
+		go io.Copy(consoleW, lr)
+	}
 
 	// Consider not using unix sockets here and directly connecting via vsock
 	cwd, err := os.Getwd()
@@ -296,7 +313,13 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 	}
 
 	var conn net.Conn
+	// Initial TTRPC ping deadline. On Windows, the vsock listen-mode proxy
+	// has more overhead (host→Unix socket→vsock→guest→vsock→Unix socket→host)
+	// so we start with a longer deadline.
 	d := 2 * time.Millisecond
+	if runtime.GOOS == "windows" {
+		d = 500 * time.Millisecond
+	}
 	startedAt := time.Now()
 	for {
 		select {
@@ -315,7 +338,7 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 		if _, err := os.Stat(socketPath); err == nil {
 			conn, err = net.Dial("unix", socketPath)
 			if err != nil {
-				log.G(ctx).WithError(err).Debugf("VM socket exists, but can't connect yet. Retrying in %s...", d)
+				log.G(ctx).WithError(err).Debugf("VM socket not ready yet. Retrying in %s...", d)
 				continue
 			}
 			conn.SetReadDeadline(time.Now().Add(d))

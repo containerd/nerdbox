@@ -313,7 +313,9 @@ func openLibkrun(path string) (_ *libkrun, _ uintptr, retErr error) {
 			}
 		}
 		if retErr != nil {
-			dlClose(f)
+			if cerr := dlClose(f); cerr != nil {
+				retErr = fmt.Errorf("%w; additionally, failed to close libkrun handle: %v", retErr, cerr)
+			}
 		}
 	}()
 	var k libkrun

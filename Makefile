@@ -68,6 +68,10 @@ ifeq ($(OS),Darwin)
 	codesign --entitlements cmd/containerd-shim-nerdbox-v1/containerd-shim-nerdbox-v1.entitlements --force -s - $@
 endif
 
+_output/containerd-shim-nerdbox-v1.exe: cmd/containerd-shim-nerdbox-v1 FORCE
+	@echo "$(WHALE) $@"
+	GOOS=windows GOARCH=amd64 $(GO) build ${GO_BUILD_FLAGS} -o $@ ${GO_LDFLAGS} ${GO_TAGS} ./$<
+
 _output/vminitd: cmd/vminitd FORCE
 	@echo "$(WHALE) $@"
 	$(GO) build ${DEBUG_GO_GCFLAGS} ${GO_GCFLAGS} ${GO_BUILD_FLAGS} -o $@ ${GO_STATIC_LDFLAGS} ${GO_STATIC_TAGS}  ./$<

@@ -1,0 +1,48 @@
+name: Build Shim
+on:
+  merge_group:
+  pull_request:
+    branches: ['main', 'release/**']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: darwin
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+            suffix: .exe
+          - goos: windows
+            goarch: arm64
+            suffix: .exe
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417  # v6.3.0
+        with:
+          go-version-file: '.github/.tool-versions'
+
+      - name: Build shim
+        run: |
+          mkdir -p _output
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o _output/containerd-shim-nerdbox-v1${{ matrix.suffix }} -ldflags '-s -w' -tags 'no_grpc' ./cmd/containerd-shim-nerdbox-v1
+
+      - name: Verify binary
+        run: file _output/containerd-shim-nerdbox-v1${{ matrix.suffix }}

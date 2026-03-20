@@ -1,5 +1,3 @@
-//go:build !windows
-
 /*
    Copyright The containerd Authors.
 
@@ -30,15 +28,11 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-
-	"syscall"
 	"time"
 
 	"github.com/containerd/errdefs"
-	"github.com/containerd/fifo"
 	"github.com/containerd/log"
 	"github.com/containerd/ttrpc"
-	"github.com/ebitengine/purego"
 
 	"github.com/containerd/nerdbox/internal/ttrpcutil"
 	"github.com/containerd/nerdbox/internal/vm"
@@ -241,12 +235,8 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 		return fmt.Errorf("failed to set exec: %w", err)
 	}
 
-	cf := "./krun.fifo"
-	lr, err := fifo.OpenFifo(ctx, cf, os.O_RDONLY|os.O_CREATE|syscall.O_NONBLOCK, 0644)
+	lr, err := setupConsole(ctx, v.vmc, "./krun.fifo")
 	if err != nil {
-		return err
-	}
-	if err := v.vmc.SetConsole(cf); err != nil {
 		return fmt.Errorf("failed to set console: %w", err)
 	}
 	go io.Copy(os.Stderr, lr)
@@ -412,7 +402,7 @@ func (v *vmInstance) Shutdown(ctx context.Context) error {
 	if v.handler == 0 {
 		return fmt.Errorf("libkrun already closed")
 	}
-	err := purego.Dlclose(v.handler)
+	err := dlClose(v.handler)
 	if err != nil {
 		return err
 	}

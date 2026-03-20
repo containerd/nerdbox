@@ -1,5 +1,3 @@
-//go:build !windows
-
 /*
    Copyright The containerd Authors.
 
@@ -25,8 +23,6 @@ import (
 	"runtime"
 	"strings"
 	"unsafe"
-
-	"github.com/ebitengine/purego"
 
 	"github.com/containerd/nerdbox/internal/vm"
 )
@@ -303,7 +299,7 @@ type libkrun struct {
 }
 
 func openLibkrun(path string) (_ *libkrun, _ uintptr, retErr error) {
-	f, err := purego.Dlopen(path, purego.RTLD_NOW|purego.RTLD_GLOBAL)
+	f, err := dlOpen(path)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -317,7 +313,7 @@ func openLibkrun(path string) (_ *libkrun, _ uintptr, retErr error) {
 			}
 		}
 		if retErr != nil {
-			purego.Dlclose(f)
+			dlClose(f)
 		}
 	}()
 	var k libkrun
@@ -325,7 +321,7 @@ func openLibkrun(path string) (_ *libkrun, _ uintptr, retErr error) {
 	for i := 0; i < ik.NumField(); i++ {
 		cName := ik.Type().Field(i).Tag.Get("C")
 		fn := ik.Field(i).Addr().Interface()
-		purego.RegisterLibFunc(fn, f, cName)
+		registerLibFunc(fn, f, cName)
 	}
 
 	return &k, f, nil

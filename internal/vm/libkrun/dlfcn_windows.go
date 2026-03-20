@@ -19,20 +19,28 @@
 package libkrun
 
 import (
-	"context"
 	"fmt"
+	"syscall"
 
-	"github.com/containerd/errdefs"
-	"github.com/containerd/nerdbox/internal/vm"
+	"github.com/ebitengine/purego"
 )
 
-// NewManager returns a vm.Manager stub that returns ErrNotImplemented on Windows.
-func NewManager() vm.Manager {
-	return &vmManager{}
+func dlOpen(path string) (uintptr, error) {
+	h, err := syscall.LoadLibrary(path)
+	if err != nil {
+		return 0, err
+	}
+	return uintptr(h), nil
 }
 
-type vmManager struct{}
+func dlClose(handle uintptr) error {
+	return syscall.FreeLibrary(syscall.Handle(handle))
+}
 
-func (*vmManager) NewInstance(_ context.Context, _ string) (vm.Instance, error) {
-	return nil, fmt.Errorf("libkrun is not supported on Windows: %w", errdefs.ErrNotImplemented)
+func registerLibFunc(fn interface{}, handle uintptr, name string) {
+	addr, err := syscall.GetProcAddress(syscall.Handle(handle), name)
+	if err != nil {
+		panic(fmt.Sprintf("failed to find %s: %v", name, err))
+	}
+	purego.RegisterFunc(fn, addr)
 }

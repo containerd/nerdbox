@@ -158,6 +158,16 @@ jobs:
           sudo udevadm trigger --name-match=kvm
           sudo usermod -aG kvm $USER
 
+      - name: Allow unprivileged user namespaces
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            if ! sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0; then
+              echo "Warning: failed to set kernel.apparmor_restrict_unprivileged_userns; continuing without change"
+            fi
+          else
+            echo "Info: /proc/sys/kernel/apparmor_restrict_unprivileged_userns not present; skipping sysctl tweak"
+          fi
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: Calculate kernel cache key

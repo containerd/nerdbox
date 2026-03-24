@@ -11,7 +11,7 @@ variable "KERNEL_ARCH" {
 }
 
 variable "KERNEL_NPROC" {
-  default = "4"
+  default = null
 }
 
 variable "KERNEL_PAGE_SIZE" {

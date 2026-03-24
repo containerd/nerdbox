@@ -49,7 +49,7 @@ RUN --mount=type=cache,sharing=locked,id=kernel-aptlib,target=/var/lib/apt \
 
 ARG KERNEL_VERSION="6.12.44"
 ARG KERNEL_ARCH="x86_64"
-ARG KERNEL_NPROC="4"
+ARG KERNEL_NPROC
 ARG KERNEL_PAGE_SIZE="4k"
 
 # Validate KERNEL_PAGE_SIZE early
@@ -142,7 +142,7 @@ RUN <<EOT
             x86_64) CROSS_COMPILE=x86_64-linux-gnu- ;;
         esac
     fi
-    cd linux && ARCH="${KERNEL_ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" make -j${KERNEL_NPROC}
+    cd linux && ARCH="${KERNEL_ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" make -j${KERNEL_NPROC:-$(nproc)}
 EOT
 
 RUN <<EOT
@@ -266,7 +266,7 @@ RUN --mount=type=cache,sharing=locked,id=libkrun-aptlib,target=/var/lib/apt \
 
 RUN git clone --depth 1 --branch ${LIBKRUN_VERSION} https://github.com/containers/libkrun.git && \
     cd libkrun && \
-    make BLK=1 NET=1
+    make -j$(nproc) BLK=1 NET=1
 
 FROM scratch AS libkrun
 COPY --from=libkrun-build /libkrun/target/release/libkrun.so /libkrun.so

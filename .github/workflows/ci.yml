@@ -237,5 +237,10 @@ jobs:
         with:
           go-version-file: '.github/.tool-versions'
 
+      - name: Verify user namespaces not restricted
+        run: |
+          go build -o _output/userns-check ./script/userns-check
+          _output/userns-check
+
       - name: Run integration tests
         run: go test -v ./integration/...

@@ -18,6 +18,9 @@
 
 package manager
 
-import "os/exec"
+import (
+	"context"
+	"os/exec"
+)
 
-func cloneMntNs(_ *exec.Cmd) error { return nil }
+func cloneMntNs(_ context.Context, _ *exec.Cmd) {}

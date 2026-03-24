@@ -21,6 +21,8 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,14 +31,24 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/containerd/nerdbox/internal/ttrpcutil"
 )
 
 const shimBinary = "containerd-shim-nerdbox-v1"
 
-// TestShimStart exercises the shim manager's Start() code path by invoking
-// the real shim binary with the "start" subcommand. This is the same
-// invocation containerd uses to launch a shim.
-func TestShimStart(t *testing.T) {
+type shimParams struct {
+	Version  int    `json:"version"`
+	Address  string `json:"address"`
+	Protocol string `json:"protocol"`
+}
+
+// startShim launches the shim binary with the "start" subcommand and returns
+// the bootstrap parameters. It registers a cleanup function to kill the
+// spawned shim process.
+func startShim(t *testing.T) shimParams {
+	t.Helper()
+
 	shimPath, err := exec.LookPath(shimBinary)
 	if err != nil {
 		t.Fatalf("%s not found on PATH: %v", shimBinary, err)
@@ -49,6 +61,22 @@ func TestShimStart(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(bundleDir, "config.json"), []byte(`{"annotations":{}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
+
+	// The shim child process expects a "log" FIFO in the bundle directory
+	// (used by openLog/fifo.OpenFifoDup2 for redirecting stderr). Create
+	// one and drain it in the background so the shim doesn't block.
+	logFIFO := filepath.Join(bundleDir, "log")
+	if err := syscall.Mkfifo(logFIFO, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		f, err := os.Open(logFIFO)
+		if err != nil {
+			return
+		}
+		defer f.Close()
+		_, _ = io.Copy(io.Discard, f)
+	}()
 
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
@@ -91,16 +119,70 @@ func TestShimStart(t *testing.T) {
 		t.Fatalf("shim start failed: %v\nstderr: %s", err, stderr)
 	}
 
-	var params struct {
-		Version  int    `json:"version"`
-		Address  string `json:"address"`
-		Protocol string `json:"protocol"`
-	}
+	var params shimParams
 	if err := json.Unmarshal(out, &params); err != nil {
 		t.Fatalf("failed to parse shim output: %v\nraw: %s", err, out)
 	}
 	if params.Address == "" {
 		t.Fatal("shim returned empty address")
 	}
+	return params
+}
+
+// TestShimStart exercises the shim manager's Start() code path by invoking
+// the real shim binary with the "start" subcommand. This is the same
+// invocation containerd uses to launch a shim.
+func TestShimStart(t *testing.T) {
+	params := startShim(t)
 	t.Logf("shim started: version=%d protocol=%s address=%s", params.Version, params.Protocol, params.Address)
+}
+
+// TestShimConnect verifies that the shim's TTRPC server is reachable after
+// Start returns. This exercises the same code path containerd uses when it
+// dials the shim socket to create a task. A failure here reproduces the
+// "failed to create TTRPC connection: dial unix …: connect: no such file or
+// directory" error seen in CI.
+func TestShimConnect(t *testing.T) {
+	params := startShim(t)
+	t.Logf("shim started: version=%d protocol=%s address=%s", params.Version, params.Protocol, params.Address)
+
+	socketPath := strings.TrimPrefix(params.Address, "unix://")
+
+	// Poll for the TTRPC server to become ready, same as containerd does
+	// after the shim's Start returns.
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+
+	var conn net.Conn
+	for {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for shim TTRPC server at %s", socketPath)
+		default:
+		}
+
+		if _, err := os.Stat(socketPath); err != nil {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+
+		c, err := net.Dial("unix", socketPath)
+		if err != nil {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+
+		c.SetReadDeadline(time.Now().Add(time.Second))
+		if err := ttrpcutil.PingTTRPC(c); err != nil {
+			c.Close()
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		c.SetReadDeadline(time.Time{})
+		conn = c
+		break
+	}
+	defer conn.Close()
+
+	t.Logf("TTRPC connection established to shim at %s", socketPath)
 }

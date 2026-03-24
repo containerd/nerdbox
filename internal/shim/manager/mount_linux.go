@@ -17,8 +17,10 @@
 package manager
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 )
 
@@ -27,7 +29,7 @@ import (
 // child capabilities within it, without requiring or granting real host
 // capabilities. User namespaces are available unprivileged on many
 // distros (since Linux 3.8), but some may gate them via sysctl (e.g.
-// kernel.unprivileged_userns_clone).
+// kernel.apparmor_restrict_unprivileged_userns on Ubuntu).
 //
 // For a VM-based runtime like nerdbox, the shim does not need real host
 // root — it needs /dev/kvm access (checked against mapped host UID) and
@@ -47,7 +49,13 @@ import (
 // the mounts are into bundle-specific paths that are cleaned up on
 // container delete, and the VM itself performs all container-visible
 // filesystem setup.
-func cloneMntNs(cmd *exec.Cmd) {
+func cloneMntNs(cmd *exec.Cmd) error {
+	if restricted, err := apparmorRestrictsUserns(); err != nil {
+		return fmt.Errorf("checking apparmor userns restriction: %w", err)
+	} else if restricted {
+		return fmt.Errorf("kernel.apparmor_restrict_unprivileged_userns=1 prevents creating user namespaces; either disable this sysctl or configure an AppArmor profile that allows userns creation for the containerd process")
+	}
+
 	uid := os.Getuid()
 	gid := os.Getgid()
 	cmd.SysProcAttr.Cloneflags |= syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS
@@ -57,4 +65,20 @@ func cloneMntNs(cmd *exec.Cmd) {
 	cmd.SysProcAttr.GidMappings = []syscall.SysProcIDMap{
 		{ContainerID: gid, HostID: gid, Size: 1},
 	}
+	return nil
+}
+
+// apparmorRestrictsUserns checks if the kernel sysctl
+// kernel.apparmor_restrict_unprivileged_userns is set to 1.
+// Returns (false, nil) when the sysctl does not exist (older kernels or
+// AppArmor not enabled).
+func apparmorRestrictsUserns() (bool, error) {
+	data, err := os.ReadFile("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(string(data)) == "1", nil
 }

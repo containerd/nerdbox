@@ -20,4 +20,4 @@ package manager
 
 import "os/exec"
 
-func cloneMntNs(_ *exec.Cmd) {}
+func cloneMntNs(_ *exec.Cmd) error { return nil }

@@ -183,9 +183,7 @@ func (manager) Start(ctx context.Context, id string, opts shim.StartOpts) (_ shi
 		cmd.ExtraFiles = append(cmd.ExtraFiles, s.f)
 	}
 
-	if err := cloneMntNs(cmd); err != nil {
-		return params, err
-	}
+	cloneMntNs(ctx, cmd)
 
 	if err := cmd.Start(); err != nil {
 		return params, err

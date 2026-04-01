@@ -232,8 +232,17 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
-	// Start forwarding events
-	sc, err := vmevents.NewTTRPCEventsClient(vmc).Stream(ctx, empty)
+
+	// Start forwarding events.
+	// Use the shim's long-lived context (not the RPC ctx) for the event
+	// stream. If the connection closes, ctx gets canceled, which causes
+	// RecvMsg to return without deleting the underlying ttrpc stream. The VM
+	// keeps sending events to that orphaned stream, which fills the stream's
+	// recv buffer and blocks the ttrpc receive loop — deadlocking all
+	// subsequent calls on the same ttrpc client. This needs a fix in ttrpc
+	// to avoid deadlock, but the stream should be consumed until the stream
+	// is done or the ttrpc connection closes.
+	sc, err := vmevents.NewTTRPCEventsClient(vmc).Stream(s.context, empty)
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}

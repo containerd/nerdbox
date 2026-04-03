@@ -32,7 +32,9 @@ import (
 
 	"github.com/containerd/errdefs"
 	"github.com/containerd/log"
+	"github.com/containerd/otelttrpc"
 	"github.com/containerd/ttrpc"
+	"go.opentelemetry.io/otel"
 
 	"github.com/containerd/nerdbox/internal/ttrpcutil"
 	"github.com/containerd/nerdbox/internal/vm"
@@ -289,8 +291,14 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 		return fmt.Errorf("failed to add vsock port: %w", err)
 	}
 
-	// Start it
-	errC := make(chan error)
+	// Spans use both defer (safety net for early returns) and explicit End()
+	// on the happy path so span durations reflect the actual phase, not the
+	// subsequent wait/sleep. OTel span End() is idempotent — second calls
+	// are no-ops.
+	tracer := otel.Tracer("nerdbox")
+	_, krunStartSpan := tracer.Start(ctx, "libkrun.VMStart")
+	defer krunStartSpan.End()
+	errC := make(chan error, 1)
 	go func() {
 		defer close(errC)
 		if err := v.vmc.Start(); err != nil {
@@ -320,6 +328,8 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 	if runtime.GOOS == "windows" {
 		d = 500 * time.Millisecond
 	}
+	_, ttrpcWaitSpan := tracer.Start(ctx, "libkrun.WaitForTTRPC")
+	defer ttrpcWaitSpan.End()
 	startedAt := time.Now()
 	for {
 		select {
@@ -362,7 +372,12 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 		}
 	}
 
-	v.client = ttrpc.NewClient(conn)
+	krunStartSpan.End()
+	ttrpcWaitSpan.End()
+
+	v.client = ttrpc.NewClient(conn,
+		ttrpc.WithUnaryClientInterceptor(otelttrpc.UnaryClientInterceptor()),
+	)
 
 	return nil
 }

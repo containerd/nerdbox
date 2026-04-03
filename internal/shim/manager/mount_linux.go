@@ -22,8 +22,6 @@ import (
 	"os/exec"
 	"strings"
 	"syscall"
-
-	"github.com/containerd/log"
 )
 
 // cloneMntNs configures the child command to start in a new user + mount
@@ -55,12 +53,16 @@ import (
 // If namespace creation is not possible (e.g. AppArmor restricts
 // unprivileged user namespaces), the function logs a warning and the shim
 // will run without mount isolation.
-func cloneMntNs(ctx context.Context, cmd *exec.Cmd) {
+func cloneMntNs(_ context.Context, cmd *exec.Cmd) {
 	if restricted, err := apparmorRestrictsUserns(); err != nil {
-		log.G(ctx).WithError(err).Warn("failed to check apparmor userns restriction, skipping mount namespace isolation")
+		// Failed to check apparmor userns restriction, skipping mount namespace isolation")
+		// We can't log anything here as it will break the TTRPC protocol!
+		// TODO(vvoland): Find a better way to surface this to the user.
 		return
 	} else if restricted {
-		log.G(ctx).Warn("apparmor_restrict_unprivileged_userns=1 prevents user namespace creation; shim will run without mount namespace isolation")
+		// apparmor_restrict_unprivileged_userns=1 prevents user namespace creation; shim will run without mount namespace isolation
+		// We can't log anything here as it will break the TTRPC protocol!
+		// TODO(vvoland): Find a better way to surface this to the user.
 		return
 	}
 

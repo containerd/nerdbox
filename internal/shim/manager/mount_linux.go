@@ -20,6 +20,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 )
@@ -89,5 +90,25 @@ func apparmorRestrictsUserns() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return strings.TrimSpace(string(data)) == "1", nil
+	if strings.TrimSpace(string(data)) == "1" {
+		if runningUnderCustomProfile() {
+			return false, nil
+		}
+		return true, nil
+	}
+
+	return false, nil
+}
+
+// runningUnderCustomProfile checks /proc/self/attr/current for an AppArmor
+// profile name that contains the current binary name. If present, we are
+// likely running under a custom profile that relaxes the userns restriction
+// for this binary, so we should proceed with namespace creation.
+func runningUnderCustomProfile() bool {
+	data, err := os.ReadFile("/proc/self/attr/current")
+	if err != nil {
+		return false
+	}
+	profile := strings.TrimSpace(string(data))
+	return strings.Contains(profile, filepath.Base(os.Args[0]))
 }

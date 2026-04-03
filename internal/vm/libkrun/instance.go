@@ -32,7 +32,9 @@ import (
 
 	"github.com/containerd/errdefs"
 	"github.com/containerd/log"
+	"github.com/containerd/otelttrpc"
 	"github.com/containerd/ttrpc"
+	"go.opentelemetry.io/otel"
 
 	"github.com/containerd/nerdbox/internal/vm"
 )
@@ -297,10 +299,13 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 		return fmt.Errorf("failed to add vsock port: %w", err)
 	}
 
+	tracer := otel.Tracer("nerdbox")
+	_, krunStartSpan := tracer.Start(ctx, "libkrun.VMStart")
+	defer krunStartSpan.End()
+
 	preVMStart := time.Now()
 
-	// Start it
-	errC := make(chan error)
+	errC := make(chan error, 1)
 	go func() {
 		defer close(errC)
 		if err := v.vmc.Start(); err != nil {
@@ -362,7 +367,11 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 		return conn.Close()
 	})
 
-	v.client = ttrpc.NewClient(conn)
+	krunStartSpan.End()
+
+	v.client = ttrpc.NewClient(conn,
+		ttrpc.WithUnaryClientInterceptor(otelttrpc.UnaryClientInterceptor()),
+	)
 
 	return nil
 }

@@ -188,3 +188,35 @@ test-unit:
 test-integration: _output/integration.test
 	@echo "$(WHALE) $@"
 	gotestsum -f testname --raw-command ./integration/test.sh
+
+jaeger-start:
+	@if docker inspect nerdbox-jaeger >/dev/null 2>&1; then \
+		docker start nerdbox-jaeger 2>/dev/null || true; \
+	else \
+		docker run -d --name nerdbox-jaeger \
+			-p 16686:16686 -p 4318:4318 \
+			jaegertracing/all-in-one@sha256:ab6f1a1f0fb49ea08bcd19f6b84f6081d0d44b364b6de148e1798eb5816bacac; \
+	fi
+	@echo "Jaeger UI: http://localhost:16686"
+
+jaeger-stop:
+	docker stop nerdbox-jaeger 2>/dev/null || true
+
+test-tracing: jaeger-start
+	$(GO) test -c -o _output/integration.test -tags tracing ./integration
+ifeq ($(OS),Darwin)
+	codesign --entitlements cmd/containerd-shim-nerdbox-v1/containerd-shim-nerdbox-v1.entitlements --force -s - _output/integration.test
+endif
+	./_output/integration.test -test.v -test.count=1 -test.run TestTraceVMBoot -test.timeout 2m
+
+jaeger-open:
+	@TRACE_ID=$$(curl -sf "http://localhost:16686/api/traces?service=nerdbox&limit=1" | \
+		python3 -c "import sys,json; print(json.load(sys.stdin)['data'][0]['traceID'])") && \
+		URL="http://localhost:16686/trace/$$TRACE_ID" && \
+		echo "Opening trace $$TRACE_ID" && \
+		(command -v xdg-open >/dev/null 2>&1 && xdg-open "$$URL") || \
+		(command -v open >/dev/null 2>&1 && open "$$URL") || \
+		echo "Visit: $$URL"
+
+jaeger-gantt:
+	@python3 hack/trace-to-mermaid.py nerdbox

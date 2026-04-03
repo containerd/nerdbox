@@ -20,12 +20,19 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"testing"
 	"time"
 
+	taskAPI "github.com/containerd/containerd/api/runtime/task/v3"
+	"github.com/containerd/containerd/api/types"
+	ptypes "github.com/containerd/containerd/v2/pkg/protobuf/types"
 	bundleapi "github.com/containerd/nerdbox/api/services/bundle/v1"
 	systemapi "github.com/containerd/nerdbox/api/services/system/v1"
+	tracesapi "github.com/containerd/nerdbox/api/services/traces/v1"
+	"github.com/containerd/nerdbox/internal/nwcfg"
+	"github.com/containerd/nerdbox/internal/tracing"
 	"github.com/containerd/nerdbox/internal/vm"
 
 	"go.opentelemetry.io/otel"
@@ -88,9 +95,6 @@ func TestTraceVMBoot(t *testing.T) {
 	}()
 
 	tracer := otel.Tracer("nerdbox-test")
-	ctx, rootSpan := tracer.Start(ctx, "TestTraceVMBoot")
-	defer rootSpan.End()
-
 	for _, backend := range vmBackends {
 		t.Run(backend.name, func(t *testing.T) {
 			traceVMBoot(ctx, t, tracer, backend.vmm)
@@ -114,24 +118,39 @@ func traceVMBoot(ctx context.Context, t *testing.T, tracer trace.Tracer, vmm vm.
 		t.Fatal("failed to resolve temp dir:", err)
 	}
 
-	// Span: VM.NewInstance+Start
-	vmCtx, vmSpan := tracer.Start(ctx, "VM.NewInstance+Start")
-	instance, err := vmm.NewInstance(vmCtx, resolvedTd)
+	// Span: VM.NewInstance+Start — this becomes the trace root.
+	ctx, vmSpan := tracer.Start(ctx, "VM.NewInstance+Start")
+	instance, err := vmm.NewInstance(ctx, resolvedTd)
 	if err != nil {
 		vmSpan.End()
 		t.Fatal("failed to create VM instance:", err)
 	}
-	if err := instance.Start(vmCtx); err != nil {
+	if err := instance.Start(ctx); err != nil {
 		vmSpan.End()
 		t.Fatal("failed to start VM:", err)
 	}
+	hostBootTime := time.Now() // Sync point: ttrpc is responsive.
 	vmSpan.End()
 
-	t.Cleanup(func() {
-		instance.Shutdown(t.Context())
-	})
+	defer instance.Shutdown(t.Context())
 
 	client := instance.Client()
+
+	// Subscribe to VM trace stream and relay spans to our exporter.
+	trc, err := tracesapi.NewTTRPCTracesClient(client).Stream(ctx, &ptypes.Empty{})
+	if err != nil {
+		t.Logf("warning: failed to subscribe to VM trace stream: %v", err)
+	} else {
+		relayExp, err := otlptracehttp.New(ctx,
+			otlptracehttp.WithEndpoint("localhost:4318"),
+			otlptracehttp.WithInsecure(),
+		)
+		if err != nil {
+			t.Logf("warning: failed to create relay exporter: %v", err)
+		} else {
+			go tracing.ForwardTraces(ctx, trc, relayExp, hostBootTime)
+		}
+	}
 
 	// Span: TTRPC.System.Info
 	infoCtx, infoSpan := tracer.Start(ctx, "TTRPC.System.Info")
@@ -143,15 +162,93 @@ func traceVMBoot(ctx context.Context, t *testing.T, tracer trace.Tracer, vmm vm.
 	}
 	t.Logf("System info: version=%s kernel=%s", resp.Version, resp.KernelVersion)
 
+	// Build a minimal OCI bundle with config.json and network config.
+	// The container uses /bin/sh from the VM's initrd (no separate rootfs).
+	// Minimal OCI spec that crun can process. The bundle service creates
+	// rootfs/ as an empty dir; we pass a bind mount of / to populate it.
+	ociSpec := map[string]any{
+		"ociVersion": "1.0.2",
+		"process": map[string]any{
+			"args": []string{"/sbin/crun", "--version"},
+			"cwd":  "/",
+		},
+		"root": map[string]any{
+			"path":     "rootfs",
+			"readonly": false,
+		},
+		"mounts": []map[string]any{
+			{"destination": "/proc", "type": "proc", "source": "proc"},
+			{"destination": "/dev", "type": "tmpfs", "source": "tmpfs"},
+			{"destination": "/sys", "type": "sysfs", "source": "sysfs", "options": []string{"ro"}},
+		},
+		"linux": map[string]any{
+			"namespaces": []map[string]string{
+				{"type": "pid"},
+				{"type": "network"},
+				{"type": "mount"},
+			},
+		},
+	}
+	configJSON, err := json.Marshal(ociSpec)
+	if err != nil {
+		t.Fatal("marshaling OCI spec:", err)
+	}
+
+	// Empty network config — Connect will return nil (no networks).
+	nwCfg := nwcfg.Config{}
+	nwJSON, err := json.Marshal(nwCfg)
+	if err != nil {
+		t.Fatal("marshaling nw config:", err)
+	}
+
 	// Span: TTRPC.Bundle.Create
 	bundleCtx, bundleSpan := tracer.Start(ctx, "TTRPC.Bundle.Create")
 	bs := bundleapi.NewTTRPCBundleClient(client)
-	_, err = bs.Create(bundleCtx, &bundleapi.CreateRequest{
-		ID: "trace-test-bundle",
+	br, err := bs.Create(bundleCtx, &bundleapi.CreateRequest{
+		ID: "trace-test-ctr",
+		Files: map[string][]byte{
+			"config.json":  configJSON,
+			nwcfg.Filename: nwJSON,
+		},
 	})
 	bundleSpan.End()
 	if err != nil {
 		t.Fatal("failed to create bundle:", err)
 	}
-	t.Log("Bundle created successfully")
+	t.Logf("Bundle created at %s", br.Bundle)
+
+	// Span: TTRPC.Task.Create — exercises runc.NewContainer, crun.create,
+	// ctrnetworking.Connect, and all the VM-side spans we added.
+	createCtx, createSpan := tracer.Start(ctx, "TTRPC.Task.Create")
+	tc := taskAPI.NewTTRPCTaskClient(client)
+	createResp, err := tc.Create(createCtx, &taskAPI.CreateTaskRequest{
+		ID:     "trace-test-ctr",
+		Bundle: br.Bundle,
+		Rootfs: []*types.Mount{
+			{
+				Type:    "bind",
+				Source:  "/",
+				Options: []string{"rbind", "ro"},
+			},
+		},
+	})
+	createSpan.End()
+	if err != nil {
+		t.Fatalf("Task.Create failed: %v", err)
+	}
+	t.Logf("Task created with PID %d", createResp.Pid)
+
+	// Span: TTRPC.Task.Start — exercises container.Start, crun.start.
+	startCtx, startSpan := tracer.Start(ctx, "TTRPC.Task.Start")
+	startResp, err := tc.Start(startCtx, &taskAPI.StartRequest{
+		ID: "trace-test-ctr",
+	})
+	startSpan.End()
+	if err != nil {
+		t.Fatalf("Task.Start failed: %v", err)
+	}
+	t.Logf("Task started with PID %d", startResp.Pid)
+
+	// Wait for VM-side batcher to flush spans through the relay.
+	time.Sleep(1 * time.Second)
 }

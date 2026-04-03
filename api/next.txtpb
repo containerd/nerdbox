@@ -533,6 +533,736 @@ file: {
   }
 }
 file: {
+  name: "proto/nerdbox/services/traces/v1/traces.proto"
+  package: "nerdbox.services.traces.v1"
+  dependency: "google/protobuf/empty.proto"
+  message_type: {
+    name: "Span"
+    field: {
+      name: "trace_id"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_BYTES
+      json_name: "traceId"
+    }
+    field: {
+      name: "span_id"
+      number: 2
+      label: LABEL_OPTIONAL
+      type: TYPE_BYTES
+      json_name: "spanId"
+    }
+    field: {
+      name: "parent_span_id"
+      number: 3
+      label: LABEL_OPTIONAL
+      type: TYPE_BYTES
+      json_name: "parentSpanId"
+    }
+    field: {
+      name: "name"
+      number: 4
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "name"
+    }
+    field: {
+      name: "start_time_unix_nano"
+      number: 5
+      label: LABEL_OPTIONAL
+      type: TYPE_INT64
+      json_name: "startTimeUnixNano"
+    }
+    field: {
+      name: "end_time_unix_nano"
+      number: 6
+      label: LABEL_OPTIONAL
+      type: TYPE_INT64
+      json_name: "endTimeUnixNano"
+    }
+    field: {
+      name: "kind"
+      number: 7
+      label: LABEL_OPTIONAL
+      type: TYPE_INT32
+      json_name: "kind"
+    }
+    field: {
+      name: "status_code"
+      number: 8
+      label: LABEL_OPTIONAL
+      type: TYPE_INT32
+      json_name: "statusCode"
+    }
+    field: {
+      name: "status_message"
+      number: 9
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "statusMessage"
+    }
+    field: {
+      name: "attributes"
+      number: 10
+      label: LABEL_REPEATED
+      type: TYPE_MESSAGE
+      type_name: ".nerdbox.services.traces.v1.KeyValue"
+      json_name: "attributes"
+    }
+  }
+  message_type: {
+    name: "KeyValue"
+    field: {
+      name: "key"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "key"
+    }
+    field: {
+      name: "value"
+      number: 2
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "value"
+    }
+  }
+  service: {
+    name: "Traces"
+    method: {
+      name: "Stream"
+      input_type: ".google.protobuf.Empty"
+      output_type: ".nerdbox.services.traces.v1.Span"
+      server_streaming: true
+    }
+  }
+  options: {
+    go_package: "github.com/containerd/nerdbox/api/services/traces/v1;traces"
+  }
+  source_code_info: {
+    location: {
+      span: 16
+      span: 0
+      span: 45
+      span: 1
+    }
+    location: {
+      path: 12
+      span: 16
+      span: 0
+      span: 18
+      leading_detached_comments: "\nCopyright The containerd Authors.\n\nLicensed under the Apache License, Version 2.0 (the \"License\");\nyou may not use this file except in compliance with the License.\nYou may obtain a copy of the License at\n\nhttp://www.apache.org/licenses/LICENSE-2.0\n\nUnless required by applicable law or agreed to in writing, software\ndistributed under the License is distributed on an \"AS IS\" BASIS,\nWITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\nSee the License for the specific language governing permissions and\nlimitations under the License.\n"
+    }
+    location: {
+      path: 2
+      span: 18
+      span: 0
+      span: 35
+    }
+    location: {
+      path: 3
+      path: 0
+      span: 20
+      span: 0
+      span: 37
+    }
+    location: {
+      path: 8
+      span: 22
+      span: 0
+      span: 82
+    }
+    location: {
+      path: 8
+      path: 11
+      span: 22
+      span: 0
+      span: 82
+    }
+    location: {
+      path: 6
+      path: 0
+      span: 24
+      span: 0
+      span: 27
+      span: 1
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 1
+      span: 24
+      span: 8
+      span: 14
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      span: 26
+      span: 8
+      span: 64
+      leading_comments: " Stream exports spans from the VM to the host.\n"
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      path: 1
+      span: 26
+      span: 12
+      span: 18
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      path: 2
+      span: 26
+      span: 19
+      span: 40
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      path: 6
+      span: 26
+      span: 51
+      span: 57
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      path: 3
+      span: 26
+      span: 58
+      span: 62
+    }
+    location: {
+      path: 4
+      path: 0
+      span: 29
+      span: 0
+      span: 40
+      span: 1
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 1
+      span: 29
+      span: 8
+      span: 12
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      span: 30
+      span: 8
+      span: 27
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      path: 5
+      span: 30
+      span: 8
+      span: 13
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      path: 1
+      span: 30
+      span: 14
+      span: 22
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      path: 3
+      span: 30
+      span: 25
+      span: 26
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 1
+      span: 31
+      span: 8
+      span: 26
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 1
+      path: 5
+      span: 31
+      span: 8
+      span: 13
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 1
+      path: 1
+      span: 31
+      span: 14
+      span: 21
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 1
+      path: 3
+      span: 31
+      span: 24
+      span: 25
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 2
+      span: 32
+      span: 8
+      span: 33
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 2
+      path: 5
+      span: 32
+      span: 8
+      span: 13
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 2
+      path: 1
+      span: 32
+      span: 14
+      span: 28
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 2
+      path: 3
+      span: 32
+      span: 31
+      span: 32
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 3
+      span: 33
+      span: 8
+      span: 24
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 3
+      path: 5
+      span: 33
+      span: 8
+      span: 14
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 3
+      path: 1
+      span: 33
+      span: 15
+      span: 19
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 3
+      path: 3
+      span: 33
+      span: 22
+      span: 23
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 4
+      span: 34
+      span: 8
+      span: 39
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 4
+      path: 5
+      span: 34
+      span: 8
+      span: 13
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 4
+      path: 1
+      span: 34
+      span: 14
+      span: 34
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 4
+      path: 3
+      span: 34
+      span: 37
+      span: 38
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 5
+      span: 35
+      span: 8
+      span: 37
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 5
+      path: 5
+      span: 35
+      span: 8
+      span: 13
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 5
+      path: 1
+      span: 35
+      span: 14
+      span: 32
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 5
+      path: 3
+      span: 35
+      span: 35
+      span: 36
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 6
+      span: 36
+      span: 8
+      span: 23
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 6
+      path: 5
+      span: 36
+      span: 8
+      span: 13
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 6
+      path: 1
+      span: 36
+      span: 14
+      span: 18
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 6
+      path: 3
+      span: 36
+      span: 21
+      span: 22
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 7
+      span: 37
+      span: 8
+      span: 30
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 7
+      path: 5
+      span: 37
+      span: 8
+      span: 13
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 7
+      path: 1
+      span: 37
+      span: 14
+      span: 25
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 7
+      path: 3
+      span: 37
+      span: 28
+      span: 29
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 8
+      span: 38
+      span: 8
+      span: 34
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 8
+      path: 5
+      span: 38
+      span: 8
+      span: 14
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 8
+      path: 1
+      span: 38
+      span: 15
+      span: 29
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 8
+      path: 3
+      span: 38
+      span: 32
+      span: 33
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 9
+      span: 39
+      span: 8
+      span: 42
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 9
+      path: 4
+      span: 39
+      span: 8
+      span: 16
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 9
+      path: 6
+      span: 39
+      span: 17
+      span: 25
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 9
+      path: 1
+      span: 39
+      span: 26
+      span: 36
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 9
+      path: 3
+      span: 39
+      span: 39
+      span: 41
+    }
+    location: {
+      path: 4
+      path: 1
+      span: 42
+      span: 0
+      span: 45
+      span: 1
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 1
+      span: 42
+      span: 8
+      span: 16
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      span: 43
+      span: 8
+      span: 23
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      path: 5
+      span: 43
+      span: 8
+      span: 14
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      path: 1
+      span: 43
+      span: 15
+      span: 18
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      path: 3
+      span: 43
+      span: 21
+      span: 22
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 1
+      span: 44
+      span: 8
+      span: 25
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 1
+      path: 5
+      span: 44
+      span: 8
+      span: 14
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 1
+      path: 1
+      span: 44
+      span: 15
+      span: 20
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 1
+      path: 3
+      span: 44
+      span: 23
+      span: 24
+    }
+  }
+  syntax: "proto3"
+  buf_extension: {
+    is_import: false
+    is_syntax_unspecified: false
+  }
+}
+file: {
   name: "proto/nerdbox/services/vmevents/v1/events.proto"
   package: "nerdbox.services.vmevents.v1"
   dependency: "containerd/types/event.proto"

@@ -291,10 +291,7 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 		return fmt.Errorf("failed to add vsock port: %w", err)
 	}
 
-	// Spans use both defer (safety net for early returns) and explicit End()
-	// on the happy path so span durations reflect the actual phase, not the
-	// subsequent wait/sleep. OTel span End() is idempotent — second calls
-	// are no-ops.
+	// defer End() as a safety net for early returns.
 	tracer := otel.Tracer("nerdbox")
 	_, krunStartSpan := tracer.Start(ctx, "libkrun.VMStart")
 	defer krunStartSpan.End()
@@ -372,6 +369,7 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 		}
 	}
 
+	// Stop the spans here, don't wait for the defer. End() is idempotent.
 	krunStartSpan.End()
 	ttrpcWaitSpan.End()
 

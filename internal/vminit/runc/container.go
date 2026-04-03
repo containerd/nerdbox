@@ -36,6 +36,7 @@ import (
 	"github.com/containerd/errdefs"
 	"github.com/containerd/log"
 	"github.com/containerd/typeurl/v2"
+	"go.opentelemetry.io/otel"
 
 	"github.com/containerd/nerdbox/internal/mountutil"
 	"github.com/containerd/nerdbox/internal/vminit/process"
@@ -44,8 +45,12 @@ import (
 
 const runtimePath = "/sbin/crun"
 
+var runcTracer = otel.Tracer("nerdbox/runc")
+
 // NewContainer returns a new runc container
 func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTaskRequest, streams stream.Manager) (_ *Container, retErr error) {
+	ctx, span := runcTracer.Start(ctx, "runc.NewContainer")
+	defer span.End()
 	opts := &options.Options{}
 	if r.Options.GetValue() != nil {
 		v, err := typeurl.UnmarshalAny(r.Options)
@@ -95,10 +100,13 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 
 	if len(r.Rootfs) != 0 && (len(r.Rootfs) != 1 || r.Rootfs[0].Type != "bind" || r.Rootfs[0].Source != rootfs) {
 		log.G(ctx).WithField("mounts", r.Rootfs).Debugf("mounting rootfs components")
+		ctx, mountSpan := runcTracer.Start(ctx, "mountutil.All")
 		mdir := filepath.Join(r.Bundle, "mounts")
 		if err := mountutil.All(ctx, rootfs, mdir, r.Rootfs); err != nil {
+			mountSpan.End()
 			return nil, err
 		}
+		mountSpan.End()
 	}
 
 	p, err := newInit(

@@ -1,5 +1,3 @@
-//go:build !linux
-
 /*
    Copyright The containerd Authors.
 
@@ -16,16 +14,5 @@
    limitations under the License.
 */
 
-package task
-
-import (
-	"context"
-
-	"github.com/containerd/containerd/api/types"
-
-	"github.com/containerd/nerdbox/internal/shim/sandbox"
-)
-
-func setupMounts(ctx context.Context, id string, ms []*types.Mount, _, _ string, da *diskAllocator) ([]*types.Mount, []sandbox.Opt, error) {
-	return transformMounts(ctx, id, ms, da)
-}
+// Package mount provides the MountService for mounting filesystems inside VMs.
+package mount

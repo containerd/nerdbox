@@ -25,8 +25,137 @@ import (
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/stretchr/testify/assert"
 
+	"github.com/containerd/containerd/v2/core/mount"
+	"github.com/containerd/nerdbox/internal/shim/sandbox"
 	"github.com/containerd/nerdbox/internal/shim/task/bundle"
 )
+
+func applyOpts(opts []sandbox.Opt) sandbox.Options {
+	var o sandbox.Options
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return o
+}
+
+func TestBlockMountsProvider(t *testing.T) {
+	const id = "cid"
+
+	testcases := []struct {
+		name           string
+		mounts         []specs.Mount
+		wantDisks      []sandbox.Disk
+		wantSpecMounts []specs.Mount
+		wantVmMounts   []mount.Mount
+	}{
+		{
+			name:           "no mounts",
+			mounts:         nil,
+			wantDisks:      nil,
+			wantSpecMounts: nil,
+			wantVmMounts:   nil,
+		},
+		{
+			name: "no ext4 mounts",
+			mounts: []specs.Mount{
+				{Type: "tmpfs", Source: "tmpfs", Destination: "/tmp"},
+				{Type: "proc", Source: "proc", Destination: "/proc"},
+			},
+			wantDisks: nil,
+			wantSpecMounts: []specs.Mount{
+				{Type: "tmpfs", Source: "tmpfs", Destination: "/tmp"},
+				{Type: "proc", Source: "proc", Destination: "/proc"},
+			},
+			wantVmMounts: nil,
+		},
+		{
+			name: "single ext4 mount read-write",
+			mounts: []specs.Mount{
+				{Type: "ext4", Source: "/vol/myvolume.img", Destination: "/data"},
+			},
+			wantDisks: []sandbox.Disk{
+				{BlockID: "disk-97-cid", MountPath: "/vol/myvolume.img", Flags: 0},
+			},
+			wantSpecMounts: []specs.Mount{
+				{Type: "bind", Source: "/mnt/sda", Destination: "/data", Options: []string{"rbind"}},
+			},
+			wantVmMounts: []mount.Mount{
+				{Type: "ext4", Source: "/dev/vda", Target: "/mnt/sda"},
+			},
+		},
+		{
+			name: "single ext4 mount read-only",
+			mounts: []specs.Mount{
+				{Type: "ext4", Source: "/vol/myvolume.img", Destination: "/data", Options: []string{"ro"}},
+			},
+			wantDisks: []sandbox.Disk{
+				{BlockID: "disk-97-cid", MountPath: "/vol/myvolume.img", Flags: sandbox.DiskFlagReadonly},
+			},
+			wantSpecMounts: []specs.Mount{
+				{Type: "bind", Source: "/mnt/sda", Destination: "/data", Options: []string{"rbind", "ro"}},
+			},
+			wantVmMounts: []mount.Mount{
+				{Type: "ext4", Source: "/dev/vda", Target: "/mnt/sda", Options: []string{"ro"}},
+			},
+		},
+		{
+			name: "multiple ext4 mounts",
+			mounts: []specs.Mount{
+				{Type: "ext4", Source: "/vol/vol1.img", Destination: "/data"},
+				{Type: "ext4", Source: "/vol/vol2.img", Destination: "/logs", Options: []string{"ro"}},
+			},
+			wantDisks: []sandbox.Disk{
+				{BlockID: "disk-97-cid", MountPath: "/vol/vol1.img", Flags: 0},
+				{BlockID: "disk-98-cid", MountPath: "/vol/vol2.img", Flags: sandbox.DiskFlagReadonly},
+			},
+			wantSpecMounts: []specs.Mount{
+				{Type: "bind", Source: "/mnt/sda", Destination: "/data", Options: []string{"rbind"}},
+				{Type: "bind", Source: "/mnt/sdb", Destination: "/logs", Options: []string{"rbind", "ro"}},
+			},
+			wantVmMounts: []mount.Mount{
+				{Type: "ext4", Source: "/dev/vda", Target: "/mnt/sda"},
+				{Type: "ext4", Source: "/dev/vdb", Target: "/mnt/sdb", Options: []string{"ro"}},
+			},
+		},
+		{
+			name: "mixed mount types",
+			mounts: []specs.Mount{
+				{Type: "tmpfs", Source: "tmpfs", Destination: "/tmp"},
+				{Type: "ext4", Source: "/vol/myvolume.img", Destination: "/data"},
+				{Type: "proc", Source: "proc", Destination: "/proc"},
+			},
+			wantDisks: []sandbox.Disk{
+				{BlockID: "disk-97-cid", MountPath: "/vol/myvolume.img", Flags: 0},
+			},
+			wantSpecMounts: []specs.Mount{
+				{Type: "tmpfs", Source: "tmpfs", Destination: "/tmp"},
+				{Type: "bind", Source: "/mnt/sda", Destination: "/data", Options: []string{"rbind"}},
+				{Type: "proc", Source: "proc", Destination: "/proc"},
+			},
+			wantVmMounts: []mount.Mount{
+				{Type: "ext4", Source: "/dev/vda", Target: "/mnt/sda"},
+			},
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := &bundle.Bundle{
+				Spec: specs.Spec{Mounts: tc.mounts},
+			}
+
+			da := newDiskAllocator()
+			bm := &blockMounter{}
+			err := bm.FromBundle(context.Background(), b, id, &da)
+			assert.NoError(t, err)
+
+			opts := applyOpts(bm.SandboxOpts())
+			assert.Equal(t, tc.wantDisks, opts.Disks)
+			assert.Equal(t, tc.wantSpecMounts, b.Spec.Mounts)
+			assert.Equal(t, tc.wantVmMounts, bm.VmMounts())
+		})
+	}
+}
 
 func TestBindMountsProvider(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -48,14 +177,14 @@ func TestBindMountsProvider(t *testing.T) {
 		mounts          []specs.Mount
 		wantMounts      []bindMount
 		wantSpecSources []string // expected sources in the OCI spec after transformation
-		wantInitArgs    []string
+		wantVmMounts    []mount.Mount
 	}{
 		{
 			name:            "no mounts",
 			mounts:          nil,
 			wantMounts:      nil,
 			wantSpecSources: nil,
-			wantInitArgs:    []string{},
+			wantVmMounts:    nil,
 		},
 		{
 			name: "no bind mounts",
@@ -65,7 +194,7 @@ func TestBindMountsProvider(t *testing.T) {
 			},
 			wantMounts:      nil,
 			wantSpecSources: []string{"tmpfs", "proc"},
-			wantInitArgs:    []string{},
+			wantVmMounts:    nil,
 		},
 		{
 			name: "single bind mount",
@@ -80,7 +209,9 @@ func TestBindMountsProvider(t *testing.T) {
 				},
 			},
 			wantSpecSources: []string{"/mnt/bind-8c5eaa445dd84f17"},
-			wantInitArgs:    []string{"-mount=bind-8c5eaa445dd84f17:/mnt/bind-8c5eaa445dd84f17"},
+			wantVmMounts: []mount.Mount{
+				{Type: "virtiofs", Source: "bind-8c5eaa445dd84f17", Target: "/mnt/bind-8c5eaa445dd84f17"},
+			},
 		},
 		{
 			name: "multiple bind mounts",
@@ -104,9 +235,9 @@ func TestBindMountsProvider(t *testing.T) {
 				"/mnt/bind-8c5eaa445dd84f17",
 				"/mnt/bind-529984c9ac58b7ec",
 			},
-			wantInitArgs: []string{
-				"-mount=bind-8c5eaa445dd84f17:/mnt/bind-8c5eaa445dd84f17",
-				"-mount=bind-529984c9ac58b7ec:/mnt/bind-529984c9ac58b7ec",
+			wantVmMounts: []mount.Mount{
+				{Type: "virtiofs", Source: "bind-8c5eaa445dd84f17", Target: "/mnt/bind-8c5eaa445dd84f17"},
+				{Type: "virtiofs", Source: "bind-529984c9ac58b7ec", Target: "/mnt/bind-529984c9ac58b7ec"},
 			},
 		},
 		{
@@ -128,7 +259,9 @@ func TestBindMountsProvider(t *testing.T) {
 				"/mnt/bind-8c5eaa445dd84f17",
 				"proc",
 			},
-			wantInitArgs: []string{"-mount=bind-8c5eaa445dd84f17:/mnt/bind-8c5eaa445dd84f17"},
+			wantVmMounts: []mount.Mount{
+				{Type: "virtiofs", Source: "bind-8c5eaa445dd84f17", Target: "/mnt/bind-8c5eaa445dd84f17"},
+			},
 		},
 		{
 			name: "single file bind mount",
@@ -143,7 +276,9 @@ func TestBindMountsProvider(t *testing.T) {
 				},
 			},
 			wantSpecSources: []string{"/mnt/bind-6dace5108a719565/testfile.txt"},
-			wantInitArgs:    []string{"-mount=bind-6dace5108a719565:/mnt/bind-6dace5108a719565"},
+			wantVmMounts: []mount.Mount{
+				{Type: "virtiofs", Source: "bind-6dace5108a719565", Target: "/mnt/bind-6dace5108a719565"},
+			},
 		},
 	}
 
@@ -165,9 +300,8 @@ func TestBindMountsProvider(t *testing.T) {
 				assert.Equal(t, wantSource, b.Spec.Mounts[i].Source)
 			}
 
-			// Verify the args passed to vminitd
-			args := bm.InitArgs()
-			assert.Equal(t, tc.wantInitArgs, args)
+			// Verify the VM mounts passed via MountAll RPC
+			assert.Equal(t, tc.wantVmMounts, bm.VmMounts())
 		})
 	}
 }

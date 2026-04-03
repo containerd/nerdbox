@@ -28,7 +28,7 @@ import (
 	"github.com/containerd/nerdbox/internal/shim/sandbox"
 )
 
-func setupMounts(ctx context.Context, id string, m []*types.Mount, rootfs, lmounts string) ([]*types.Mount, []sandbox.Opt, error) {
+func setupMounts(ctx context.Context, id string, m []*types.Mount, rootfs, lmounts string, da *diskAllocator) ([]*types.Mount, []sandbox.Opt, error) {
 	// Handle mounts
 	var sbOpts []sandbox.Opt
 
@@ -65,7 +65,7 @@ func setupMounts(ctx context.Context, id string, m []*types.Mount, rootfs, lmoun
 			Source: tag,
 		}}, sbOpts, nil
 	}
-	mounts, opts, err := transformMounts(ctx, id, m)
+	mounts, opts, err := transformMounts(ctx, id, m, da)
 	if err != nil && errdefs.IsNotImplemented(err) {
 		if err := mountutil.All(ctx, rootfs, lmounts, m); err != nil {
 			return nil, nil, err

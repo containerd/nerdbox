@@ -41,6 +41,7 @@ import (
 	"github.com/containerd/ttrpc"
 
 	bundleAPI "github.com/containerd/nerdbox/api/services/bundle/v1"
+	mountAPI "github.com/containerd/nerdbox/api/services/mount/v1"
 	"github.com/containerd/nerdbox/api/services/vmevents/v1"
 	"github.com/containerd/nerdbox/internal/kvm"
 	"github.com/containerd/nerdbox/internal/nwcfg"
@@ -199,9 +200,23 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		return nil, errgrpc.ToGRPCf(err, "failed to create vm state directory %q", vmState)
 	}
 
-	m, mountOpts, err := setupMounts(ctx, r.ID, r.Rootfs, b.Rootfs, filepath.Join(r.Bundle, "mounts"))
+	// da is shared across rootfs and volume disk allocation so that all
+	// virtio-block devices within a container get unique, sequential letters.
+	da := newDiskAllocator()
+	m, mountOpts, err := setupMounts(ctx, r.ID, r.Rootfs, b.Rootfs, filepath.Join(r.Bundle, "mounts"), &da)
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
+	}
+
+	// Process ext4 volume mounts in the OCI spec after rootfs disks have been
+	// allocated, so that rootfs always gets vda/vdb and volumes get vdc+.
+	var blockM blockMounter
+	if err := blockM.FromBundle(ctx, b, r.ID, &da); err != nil {
+		return nil, errgrpc.ToGRPC(err)
+	}
+
+	if da.count() > 25 {
+		return nil, errgrpc.ToGRPCf(errdefs.ErrNotImplemented, "exceeded maximum virtio disk count: %d > 25", da.count())
 	}
 
 	var opts []sandbox.Opt
@@ -216,7 +231,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	opts = append(opts, sandbox.WithInitArgs(nwpr.InitArgs()...))
 
 	opts = append(opts, bm.SandboxOpts()...)
-	opts = append(opts, sandbox.WithInitArgs(bm.InitArgs()...))
+	opts = append(opts, blockM.SandboxOpts()...)
 
 	opts = append(opts, resCfg.SandboxOpts()...)
 	opts = append(opts, dumpInfoCfg.SandboxOpts()...)
@@ -274,6 +289,23 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	var mountSpecs []*mountAPI.MountSpec
+	for _, m := range append(bm.VmMounts(), blockM.VmMounts()...) {
+		mountSpecs = append(mountSpecs, &mountAPI.MountSpec{
+			Type:    m.Type,
+			Source:  m.Source,
+			Target:  m.Target,
+			Options: m.Options,
+		})
+	}
+	if len(mountSpecs) > 0 {
+		if _, err := mountAPI.NewTTRPCMountClient(vmc).MountAll(ctx, &mountAPI.MountAllRequest{
+			Mounts: mountSpecs,
+		}); err != nil {
+			return nil, errgrpc.ToGRPC(err)
+		}
 	}
 
 	rio := stdio.Stdio{

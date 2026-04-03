@@ -367,6 +367,7 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 		return conn.Close()
 	})
 
+	// Stop the spans here, don't wait for the defer. End() is idempotent.
 	krunStartSpan.End()
 
 	v.client = ttrpc.NewClient(conn,

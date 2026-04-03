@@ -34,11 +34,14 @@ import (
 	"github.com/containerd/log"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
+	"go.opentelemetry.io/otel"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sys/unix"
 
 	"github.com/containerd/nerdbox/internal/nwcfg"
 )
+
+var ctrNetTracer = otel.Tracer("nerdbox/ctrnetworking")
 
 // Connect sets up networking for the container with the given pid, based on
 // the configuration found at configPath.
@@ -54,6 +57,8 @@ func Connect(ctx context.Context, bundleDirname string, pid int) (func() error, 
 	eg, ctx := errgroup.WithContext(ctx)
 	for _, n := range config.Networks {
 		eg.Go(func() error {
+			_, setupSpan := ctrNetTracer.Start(ctx, "ctrnetworking.setupNetwork")
+			defer setupSpan.End()
 			nshCtr, err := netns.GetFromPid(pid)
 			if err != nil {
 				return fmt.Errorf("getting container netns: %w", err)

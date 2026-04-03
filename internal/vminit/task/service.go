@@ -51,6 +51,7 @@ import (
 	"github.com/containerd/ttrpc"
 	"github.com/containerd/typeurl/v2"
 	"github.com/moby/sys/userns"
+	"go.opentelemetry.io/otel"
 
 	"github.com/containerd/nerdbox/internal/nwcfg"
 	"github.com/containerd/nerdbox/internal/systools"
@@ -61,8 +62,9 @@ import (
 )
 
 var (
-	_     = shim.TTRPCService(&service{})
-	empty = &ptypes.Empty{}
+	_        = shim.TTRPCService(&service{})
+	empty    = &ptypes.Empty{}
+	vmTracer = otel.Tracer("nerdbox/vminit")
 )
 
 // NewTaskService creates a new instance of a task service
@@ -230,6 +232,9 @@ func (s *service) preStart(c *runc.Container) (handleStarted func(*runc.Containe
 
 // Create a new initial process and container with the underlying OCI runtime
 func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *taskAPI.CreateTaskResponse, err error) {
+	ctx, createSpan := vmTracer.Start(ctx, "task.Create")
+	defer createSpan.End()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -251,7 +256,9 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	}
 	log.G(ctx).Infof("new container %s", container.ID)
 
+	ctx, netSpan := vmTracer.Start(ctx, "ctrnetworking.Connect")
 	waitForConnect, err := ctrnetworking.Connect(ctx, r.Bundle, container.Pid())
+	netSpan.End()
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
@@ -291,9 +298,16 @@ func (s *service) RegisterTTRPC(server *ttrpc.Server) error {
 
 // Start a process
 func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.StartResponse, error) {
+	ctx, startSpan := vmTracer.Start(ctx, "task.Start")
+	defer startSpan.End()
+	startCtx := ctx // preserve parent context for starting sibling spans
+
+	ctx, waitNetSpan := vmTracer.Start(startCtx, "waitForCtrNetConnect")
 	if err := s.waitForCtrNetConnect(ctx, r.ID); err != nil {
+		waitNetSpan.End()
 		return nil, errgrpc.ToGRPC(err)
 	}
+	waitNetSpan.End()
 
 	container, err := s.getContainer(r.ID)
 	if err != nil {
@@ -315,7 +329,9 @@ func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.
 	s.lifecycleMu.Unlock()
 	defer cleanup()
 
+	ctx, containerStartSpan := vmTracer.Start(startCtx, "container.Start")
 	p, err := container.Start(ctx, r)
+	containerStartSpan.End()
 	if err != nil {
 		// If we failed to even start the process, s.runningExecs
 		// won't get decremented in s.handleProcessExit. We still need

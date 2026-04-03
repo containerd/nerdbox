@@ -39,19 +39,23 @@ import (
 	"github.com/containerd/errdefs/pkg/errgrpc"
 	"github.com/containerd/log"
 	"github.com/containerd/ttrpc"
+	"go.opentelemetry.io/otel"
 
 	bundleAPI "github.com/containerd/nerdbox/api/services/bundle/v1"
 	mountAPI "github.com/containerd/nerdbox/api/services/mount/v1"
+	tracesAPI "github.com/containerd/nerdbox/api/services/traces/v1"
 	"github.com/containerd/nerdbox/api/services/vmevents/v1"
 	"github.com/containerd/nerdbox/internal/kvm"
 	"github.com/containerd/nerdbox/internal/nwcfg"
 	"github.com/containerd/nerdbox/internal/shim/sandbox"
 	"github.com/containerd/nerdbox/internal/shim/task/bundle"
+	"github.com/containerd/nerdbox/internal/tracing"
 )
 
 var (
-	_     = shim.TTRPCService(&service{})
-	empty = &ptypes.Empty{}
+	_          = shim.TTRPCService(&service{})
+	empty      = &ptypes.Empty{}
+	shimTracer = otel.Tracer("nerdbox/shim")
 )
 
 // NewTaskService creates a new instance of a task service
@@ -161,6 +165,8 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		return nil, errgrpc.ToGRPC(err)
 	}
 
+	createCtx := ctx // preserve parent context for starting sibling spans
+	ctx, bundleLoadSpan := shimTracer.Start(createCtx, "shim.BundleLoad")
 	var (
 		nwpr        networksProvider
 		ctrNetCfg   ctrNetConfig
@@ -182,11 +188,13 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		},
 	)
 	if err != nil {
+		bundleLoadSpan.End()
 		return nil, errgrpc.ToGRPC(err)
 	}
 
 	nwJSON, err := json.Marshal(ctrNetCfg)
 	if err != nil {
+		bundleLoadSpan.End()
 		return nil, errgrpc.ToGRPC(fmt.Errorf("marshaling container networking config: %w", err))
 	}
 	b.AddExtraFile(nwcfg.Filename, nwJSON)
@@ -194,9 +202,11 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	// vmState directory should be a path under the current working directory, not specific to a single bundle
 	vmState, err := filepath.Abs("vm")
 	if err != nil {
+		bundleLoadSpan.End()
 		return nil, errgrpc.ToGRPCf(err, "failed to get absolute path for vm state directory")
 	}
 	if err := os.MkdirAll(vmState, 0700); err != nil {
+		bundleLoadSpan.End()
 		return nil, errgrpc.ToGRPCf(err, "failed to create vm state directory %q", vmState)
 	}
 
@@ -205,6 +215,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	da := newDiskAllocator()
 	m, mountOpts, err := setupMounts(ctx, r.ID, r.Rootfs, b.Rootfs, filepath.Join(r.Bundle, "mounts"), &da)
 	if err != nil {
+		bundleLoadSpan.End()
 		return nil, errgrpc.ToGRPC(err)
 	}
 
@@ -235,11 +246,14 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 
 	opts = append(opts, resCfg.SandboxOpts()...)
 	opts = append(opts, dumpInfoCfg.SandboxOpts()...)
+	bundleLoadSpan.End()
 
 	premountTime := time.Since(presetup)
 
+	ctx, vmBootSpan := shimTracer.Start(createCtx, "shim.VMBoot")
 	prestart := time.Now()
 	if err := s.sb.Start(ctx, opts...); err != nil {
+		vmBootSpan.End()
 		return nil, errgrpc.ToGRPC(err)
 	}
 	bootTime := time.Since(prestart)
@@ -247,6 +261,8 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		"bootTime":     bootTime,
 		"premountTime": premountTime,
 	}).Info("VM started")
+	hostBootTime := time.Now() // Captured when ttrpc is responsive — sync point for VM clock offset.
+	vmBootSpan.End()
 
 	vmc, err := s.sb.Client()
 	if err != nil {
@@ -282,8 +298,23 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		}
 	}(ns)
 
+	// Start relaying VM traces to the host OTel collector.
+	// Use WithoutCancel so the relay outlives the Create RPC context and
+	// can forward spans from subsequent RPCs (Start, Exec, etc.).
+	if relayExp := tracing.NewRelayExporter(ctx); relayExp != nil {
+		relayCtx := context.WithoutCancel(ctx)
+		trc, err := tracesAPI.NewTTRPCTracesClient(vmc).Stream(relayCtx, empty)
+		if err != nil {
+			log.G(ctx).WithError(err).Warn("failed to subscribe to VM trace stream")
+		} else {
+			go tracing.ForwardTraces(relayCtx, trc, relayExp, hostBootTime)
+		}
+	}
+
+	ctx, bundleTransferSpan := shimTracer.Start(createCtx, "shim.BundleTransfer")
 	bundleFiles, err := b.Files()
 	if err != nil {
+		bundleTransferSpan.End()
 		return nil, errgrpc.ToGRPC(err)
 	}
 
@@ -293,8 +324,10 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		Files: bundleFiles,
 	})
 	if err != nil {
+		bundleTransferSpan.End()
 		return nil, err
 	}
+	bundleTransferSpan.End()
 
 	var mountSpecs []*mountAPI.MountSpec
 	for _, m := range append(bm.VmMounts(), blockM.VmMounts()...) {
@@ -313,6 +346,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		}
 	}
 
+	ctx, ioSetupSpan := shimTracer.Start(createCtx, "shim.IOSetup")
 	rio := stdio.Stdio{
 		Stdin:    r.Stdin,
 		Stdout:   r.Stdout,
@@ -322,8 +356,10 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 
 	cio, ioShutdown, err := s.forwardIO(ctx, s.sb, r.ID, rio)
 	if err != nil {
+		ioSetupSpan.End()
 		return nil, errgrpc.ToGRPC(err)
 	}
+	ioSetupSpan.End()
 
 	// setupTime is the total time to setup the VM and everything needed
 	// to proxy the create task request. This measures the overall
@@ -341,6 +377,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		Options:  r.Options,
 	}
 
+	ctx, taskCreateSpan := shimTracer.Start(createCtx, "shim.TaskCreate")
 	preCreate := time.Now()
 	c := &container{
 		ioShutdown:    ioShutdown,
@@ -349,6 +386,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	tc := taskAPI.NewTTRPCTaskClient(vmc)
 	resp, err := tc.Create(ctx, vr)
 	if err != nil {
+		taskCreateSpan.End()
 		log.G(ctx).WithError(err).Error("failed to create task")
 		if c.ioShutdown != nil {
 			// TODO: stop this
@@ -358,6 +396,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		}
 		return nil, errgrpc.ToGRPC(err)
 	}
+	taskCreateSpan.End()
 
 	log.G(ctx).WithFields(log.Fields{
 		"t_boot":   bootTime,
@@ -397,6 +436,8 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 // Start a process
 func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.StartResponse, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID, "exec": r.ExecID}).Info("starting container task")
+	ctx, span := shimTracer.Start(ctx, "shim.Start")
+	defer span.End()
 	vmc, err := s.sb.Client()
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)

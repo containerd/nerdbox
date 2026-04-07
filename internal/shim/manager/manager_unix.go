@@ -186,10 +186,32 @@ func (manager) Start(ctx context.Context, bparams *bootapi.BootstrapParams) (_ *
 		cmd.ExtraFiles = append(cmd.ExtraFiles, s.f)
 	}
 
-	cloneMntNs(ctx, cmd)
+	userns := cloneMntNs(ctx, cmd)
 
-	if err := cmd.Start(); err != nil {
-		return nil, err
+	if startErr := cmd.Start(); startErr != nil {
+		if !userns {
+			return nil, startErr
+		}
+		// clone(CLONE_NEWUSER) can fail for reasons not covered by the
+		// proactive AppArmor check — e.g. seccomp filters, LSM policies,
+		// or EACCES from the child's capability recomputation when
+		// inherited socket fds cross the user namespace boundary after
+		// exec. Retry without namespace isolation rather than failing
+		// the container start.
+		//
+		// Note: we cannot log here — during "start" the logger output
+		// goes to stderr which containerd captures as part of the
+		// bootstrap response (CombinedOutput), corrupting the JSON.
+		cmd, err = newCommand(ctx, id, bparams.ContainerdGrpcAddress, bparams.ContainerdTtrpcAddress, debug)
+		if err != nil {
+			return nil, err
+		}
+		for _, s := range sockets {
+			cmd.ExtraFiles = append(cmd.ExtraFiles, s.f)
+		}
+		if err := cmd.Start(); err != nil {
+			return nil, fmt.Errorf("retry without userns failed: %w (original error: %v)", err, startErr)
+		}
 	}
 
 	defer func() {

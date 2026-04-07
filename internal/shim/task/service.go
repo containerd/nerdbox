@@ -381,8 +381,8 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	// The following line cannot return an error as the only state in which that
 	// could happen would also cause the container.Pid() call above to
 	// nil-deference panic.
-	//proc, _ := container.Process("")
-	//handleStarted(container, proc)
+	// proc, _ := container.Process("")
+	// handleStarted(container, proc)
 
 	return &taskAPI.CreateTaskResponse{
 		Pid: resp.Pid,
@@ -642,8 +642,8 @@ func (s *service) Shutdown(ctx context.Context, r *taskAPI.ShutdownRequest) (*pt
 	log.G(ctx).WithFields(log.Fields{"id": r.ID}).Info("shutdown")
 
 	// TODO: Should we forward this to VM?
-	//tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
-	//return tc.Shutdown(ctx, r)
+	// tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
+	// return tc.Shutdown(ctx, r)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

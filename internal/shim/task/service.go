@@ -221,12 +221,17 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	opts = append(opts, resCfg.SandboxOpts()...)
 	opts = append(opts, dumpInfoCfg.SandboxOpts()...)
 
+	premountTime := time.Since(presetup)
+
 	prestart := time.Now()
 	if err := s.sb.Start(ctx, opts...); err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
 	bootTime := time.Since(prestart)
-	log.G(ctx).WithField("bootTime", bootTime).Debug("VM started")
+	log.G(ctx).WithFields(log.Fields{
+		"bootTime":     bootTime,
+		"premountTime": premountTime,
+	}).Info("VM started")
 
 	vmc, err := s.sb.Client()
 	if err != nil {

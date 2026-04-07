@@ -132,6 +132,20 @@ func (vmc *vmcontext) AddVSockPort(port uint32, path string) error {
 	return nil
 }
 
+// AddVSockPortConnect maps a vsock port to a host unix socket in connect mode.
+// When the guest dials this vsock port, libkrun connects to the unix socket
+// at path, which must already be listening.
+func (vmc *vmcontext) AddVSockPortConnect(port uint32, path string) error {
+	if vmc.lib.AddVsockPort == nil {
+		return fmt.Errorf("libkrun not loaded")
+	}
+	ret := vmc.lib.AddVsockPort(vmc.ctxID, port, path, false)
+	if ret != 0 {
+		return fmt.Errorf("krun_add_vsock_port failed: %d", ret)
+	}
+	return nil
+}
+
 func (vmc *vmcontext) AddVirtiofs(tag, path string) error {
 	if vmc.lib.AddVirtiofs == nil {
 		return fmt.Errorf("libkrun not loaded")

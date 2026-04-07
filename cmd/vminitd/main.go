@@ -38,7 +38,6 @@ import (
 	"github.com/containerd/plugin"
 	"github.com/containerd/plugin/registry"
 	"github.com/containerd/ttrpc"
-	"github.com/mdlayher/vsock"
 	"golang.org/x/sys/unix"
 
 	"github.com/containerd/nerdbox/internal/systools"
@@ -286,10 +285,10 @@ func New(ctx context.Context, config ServiceConfig) (Runnable, error) {
 		// TODO: service config?
 	)
 
-	l, err := vsock.ListenContextID(uint32(config.VSockContextID), uint32(config.RPCPort), &vsock.Config{})
-	if err != nil {
-		return nil, fmt.Errorf("failed to listen on vsock port %d with context id %d: %w", config.RPCPort, config.VSockContextID, err)
-	}
+	// Dial back to the host via vsock instead of listening. The host shim
+	// is listening for this connection. CID 2 is the well-known host CID.
+	const hostCID = 2
+	l := newDialBackListener(uint32(hostCID), uint32(config.RPCPort))
 	config.Shutdown.RegisterCallback(func(ctx context.Context) error {
 		return l.Close()
 	})

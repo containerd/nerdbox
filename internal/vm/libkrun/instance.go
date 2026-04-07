@@ -34,7 +34,6 @@ import (
 	"github.com/containerd/log"
 	"github.com/containerd/ttrpc"
 
-	"github.com/containerd/nerdbox/internal/ttrpcutil"
 	"github.com/containerd/nerdbox/internal/vm"
 )
 
@@ -214,6 +213,7 @@ func (v *vmInstance) SetCPUAndMemory(ctx context.Context, cpu uint8, ram uint32)
 }
 
 func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error) {
+	startedAt := time.Now()
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.client != nil {
@@ -258,7 +258,6 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 		go io.Copy(consoleW, lr)
 	}
 
-	// Consider not using unix sockets here and directly connecting via vsock
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("failed to get cwd: %w", err)
@@ -269,15 +268,24 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 	if err != nil {
 		return fmt.Errorf("failed to get relative socket path: %w", err)
 	}
-	// When the socket path exceeds max length, it appears as if the VM didn't
-	// start properly. There's no easy way to figure this out as the only log
-	// is: "Timeout while waiting for VM to start". Thus, return an error
-	// preventively here.
 	if (runtime.GOOS == "darwin" && len(socketPath) >= 104) || len(socketPath) >= 108 {
 		return fmt.Errorf("socket path is too long: %s", socketPath)
 	}
 
-	if err := v.vmc.AddVSockPort(1025, socketPath); err != nil {
+	// Listen on the unix socket so vminitd can connect back to us.
+	// AddVSockPortConnect (listen=false) tells libkrun to connect to this
+	// socket when the guest dials the vsock port, bridging the connection.
+	// Remove any stale socket left behind by a previous crash.
+	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove stale socket: %w", err)
+	}
+	rpcListener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		return fmt.Errorf("failed to listen on socket: %w", err)
+	}
+	defer rpcListener.Close()
+
+	if err := v.vmc.AddVSockPortConnect(1025, socketPath); err != nil {
 		return fmt.Errorf("failed to add vsock port: %w", err)
 	}
 
@@ -288,6 +296,8 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 	if err := v.vmc.AddVSockPort(1026, v.streamPath); err != nil {
 		return fmt.Errorf("failed to add vsock port: %w", err)
 	}
+
+	preVMStart := time.Now()
 
 	// Start it
 	errC := make(chan error)
@@ -312,55 +322,45 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 		},
 	}
 
+	// Accept a single connection from vminitd connecting back via vsock.
+	type acceptResult struct {
+		conn net.Conn
+		err  error
+	}
+	acceptC := make(chan acceptResult, 1)
+	go func() {
+		conn, err := rpcListener.Accept()
+		acceptC <- acceptResult{conn, err}
+	}()
+
 	var conn net.Conn
-	// Initial TTRPC ping deadline. On Windows, the vsock listen-mode proxy
-	// has more overhead (host→Unix socket→vsock→guest→vsock→Unix socket→host)
-	// so we start with a longer deadline.
-	d := 2 * time.Millisecond
-	if runtime.GOOS == "windows" {
-		d = 500 * time.Millisecond
+	select {
+	case err := <-errC:
+		if err != nil {
+			return fmt.Errorf("failure running vm: %w", err)
+		}
+		return fmt.Errorf("VM exited before connecting")
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(vmStartTimeout):
+		log.G(ctx).WithField("timeout", vmStartTimeout).Warn("Timeout while waiting for VM to connect")
+		return fmt.Errorf("VM did not connect within %s", vmStartTimeout)
+	case result := <-acceptC:
+		if result.err != nil {
+			return fmt.Errorf("failed to accept connection from VM: %w", result.err)
+		}
+		conn = result.conn
 	}
-	startedAt := time.Now()
-	for {
-		select {
-		case err := <-errC:
-			if err != nil {
-				return fmt.Errorf("failure running vm: %w", err)
-			}
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Millisecond):
-		}
-		if time.Since(startedAt) > vmStartTimeout {
-			log.G(ctx).WithField("timeout", vmStartTimeout).Warn("Timeout while waiting for VM to start")
-			return fmt.Errorf("VM did not start within %s", vmStartTimeout)
-		}
-		if _, err := os.Stat(socketPath); err == nil {
-			conn, err = net.Dial("unix", socketPath)
-			if err != nil {
-				log.G(ctx).WithError(err).Debugf("VM socket not ready yet. Retrying in %s...", d)
-				continue
-			}
-			conn.SetReadDeadline(time.Now().Add(d))
-			if err := ttrpcutil.PingTTRPC(conn); err != nil {
-				conn.Close()
-				d = d + time.Millisecond
-				continue
-			}
 
-			conn.SetReadDeadline(time.Time{}) // Clear the deadline
-			// Ensure connection alive after deadline is cleared
-			if err := ttrpcutil.PingTTRPC(conn); err != nil {
-				conn.Close()
-				continue
-			}
+	log.G(ctx).WithFields(log.Fields{
+		"t_config": preVMStart.Sub(startedAt),
+		"t_boot":   time.Since(preVMStart),
+		"t_total":  time.Since(startedAt),
+	}).Info("VM connection established")
 
-			v.shutdownCallbacks = append(v.shutdownCallbacks, func(context.Context) error {
-				return conn.Close()
-			})
-			break
-		}
-	}
+	v.shutdownCallbacks = append(v.shutdownCallbacks, func(context.Context) error {
+		return conn.Close()
+	})
 
 	v.client = ttrpc.NewClient(conn)
 

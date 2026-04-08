@@ -48,23 +48,21 @@ import (
 	"github.com/containerd/errdefs/pkg/errgrpc"
 	runcC "github.com/containerd/go-runc"
 	"github.com/containerd/log"
-	"github.com/containerd/ttrpc"
-	"github.com/containerd/typeurl/v2"
-	"github.com/moby/sys/userns"
-	"go.opentelemetry.io/otel"
-
 	"github.com/containerd/nerdbox/internal/nwcfg"
 	"github.com/containerd/nerdbox/internal/systools"
+	"github.com/containerd/nerdbox/internal/tracing"
 	"github.com/containerd/nerdbox/internal/vminit/ctrnetworking"
 	"github.com/containerd/nerdbox/internal/vminit/process"
 	"github.com/containerd/nerdbox/internal/vminit/runc"
 	"github.com/containerd/nerdbox/internal/vminit/stream"
+	"github.com/containerd/ttrpc"
+	"github.com/containerd/typeurl/v2"
+	"github.com/moby/sys/userns"
 )
 
 var (
-	_        = shim.TTRPCService(&service{})
-	empty    = &ptypes.Empty{}
-	vmTracer = otel.Tracer("nerdbox/vminit")
+	_     = shim.TTRPCService(&service{})
+	empty = &ptypes.Empty{}
 )
 
 // NewTaskService creates a new instance of a task service
@@ -232,7 +230,7 @@ func (s *service) preStart(c *runc.Container) (handleStarted func(*runc.Containe
 
 // Create a new initial process and container with the underlying OCI runtime
 func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *taskAPI.CreateTaskResponse, err error) {
-	ctx, createSpan := vmTracer.Start(ctx, "task.Create")
+	ctx, createSpan := tracing.Start(ctx, "task.Create")
 	defer createSpan.End()
 
 	s.mu.Lock()
@@ -256,7 +254,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	}
 	log.G(ctx).Infof("new container %s", container.ID)
 
-	ctx, netSpan := vmTracer.Start(ctx, "ctrnetworking.Connect")
+	ctx, netSpan := tracing.Start(ctx, "ctrnetworking.Connect")
 	waitForConnect, err := ctrnetworking.Connect(ctx, r.Bundle, container.Pid())
 	netSpan.End()
 	if err != nil {
@@ -298,11 +296,11 @@ func (s *service) RegisterTTRPC(server *ttrpc.Server) error {
 
 // Start a process
 func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.StartResponse, error) {
-	ctx, startSpan := vmTracer.Start(ctx, "task.Start")
+	ctx, startSpan := tracing.Start(ctx, "task.Start")
 	defer startSpan.End()
 	startCtx := ctx // preserve parent context for starting sibling spans
 
-	ctx, waitNetSpan := vmTracer.Start(startCtx, "waitForCtrNetConnect")
+	ctx, waitNetSpan := tracing.Start(startCtx, "waitForCtrNetConnect")
 	if err := s.waitForCtrNetConnect(ctx, r.ID); err != nil {
 		waitNetSpan.End()
 		return nil, errgrpc.ToGRPC(err)
@@ -329,7 +327,7 @@ func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.
 	s.lifecycleMu.Unlock()
 	defer cleanup()
 
-	ctx, containerStartSpan := vmTracer.Start(startCtx, "container.Start")
+	ctx, containerStartSpan := tracing.Start(startCtx, "container.Start")
 	p, err := container.Start(ctx, r)
 	containerStartSpan.End()
 	if err != nil {

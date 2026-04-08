@@ -38,9 +38,6 @@ import (
 	"github.com/containerd/errdefs"
 	"github.com/containerd/errdefs/pkg/errgrpc"
 	"github.com/containerd/log"
-	"github.com/containerd/ttrpc"
-	"go.opentelemetry.io/otel"
-
 	bundleAPI "github.com/containerd/nerdbox/api/services/bundle/v1"
 	mountAPI "github.com/containerd/nerdbox/api/services/mount/v1"
 	tracesAPI "github.com/containerd/nerdbox/api/services/traces/v1"
@@ -50,12 +47,12 @@ import (
 	"github.com/containerd/nerdbox/internal/shim/sandbox"
 	"github.com/containerd/nerdbox/internal/shim/task/bundle"
 	"github.com/containerd/nerdbox/internal/tracing"
+	"github.com/containerd/ttrpc"
 )
 
 var (
-	_          = shim.TTRPCService(&service{})
-	empty      = &ptypes.Empty{}
-	shimTracer = otel.Tracer("nerdbox/shim")
+	_     = shim.TTRPCService(&service{})
+	empty = &ptypes.Empty{}
 )
 
 // NewTaskService creates a new instance of a task service
@@ -166,7 +163,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	}
 
 	createCtx := ctx // preserve parent context for starting sibling spans
-	ctx, bundleLoadSpan := shimTracer.Start(createCtx, "shim.BundleLoad")
+	ctx, bundleLoadSpan := tracing.Start(createCtx, "shim.BundleLoad")
 	var (
 		nwpr        networksProvider
 		ctrNetCfg   ctrNetConfig
@@ -250,7 +247,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 
 	premountTime := time.Since(presetup)
 
-	ctx, vmBootSpan := shimTracer.Start(createCtx, "shim.VMBoot")
+	ctx, vmBootSpan := tracing.Start(createCtx, "shim.VMBoot")
 	prestart := time.Now()
 	if err := s.sb.Start(ctx, opts...); err != nil {
 		vmBootSpan.End()
@@ -301,17 +298,17 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	// Start relaying VM traces to the host OTel collector.
 	// Use WithoutCancel so the relay outlives the Create RPC context and
 	// can forward spans from subsequent RPCs (Start, Exec, etc.).
-	if relayExp := tracing.NewRelayExporter(ctx); relayExp != nil {
+	if endpoint := tracing.OTLPEndpoint(); endpoint != "" {
 		relayCtx := context.WithoutCancel(ctx)
 		trc, err := tracesAPI.NewTTRPCTracesClient(vmc).Stream(relayCtx, empty)
 		if err != nil {
 			log.G(ctx).WithError(err).Warn("failed to subscribe to VM trace stream")
 		} else {
-			go tracing.ForwardTraces(relayCtx, trc, relayExp, hostBootTime)
+			go tracing.ForwardTraces(relayCtx, trc, endpoint, hostBootTime)
 		}
 	}
 
-	ctx, bundleTransferSpan := shimTracer.Start(createCtx, "shim.BundleTransfer")
+	ctx, bundleTransferSpan := tracing.Start(createCtx, "shim.BundleTransfer")
 	bundleFiles, err := b.Files()
 	if err != nil {
 		bundleTransferSpan.End()
@@ -346,7 +343,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		}
 	}
 
-	ctx, ioSetupSpan := shimTracer.Start(createCtx, "shim.IOSetup")
+	ctx, ioSetupSpan := tracing.Start(createCtx, "shim.IOSetup")
 	rio := stdio.Stdio{
 		Stdin:    r.Stdin,
 		Stdout:   r.Stdout,
@@ -377,7 +374,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		Options:  r.Options,
 	}
 
-	ctx, taskCreateSpan := shimTracer.Start(createCtx, "shim.TaskCreate")
+	ctx, taskCreateSpan := tracing.Start(createCtx, "shim.TaskCreate")
 	preCreate := time.Now()
 	c := &container{
 		ioShutdown:    ioShutdown,
@@ -436,7 +433,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 // Start a process
 func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.StartResponse, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID, "exec": r.ExecID}).Info("starting container task")
-	ctx, span := shimTracer.Start(ctx, "shim.Start")
+	ctx, span := tracing.Start(ctx, "shim.Start")
 	defer span.End()
 	vmc, err := s.sb.Client()
 	if err != nil {

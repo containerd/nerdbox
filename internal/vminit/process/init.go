@@ -37,14 +37,12 @@ import (
 	runc "github.com/containerd/go-runc"
 	"github.com/containerd/log"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
-	"go.opentelemetry.io/otel"
 	"golang.org/x/sys/unix"
 
 	"github.com/containerd/nerdbox/internal/systools"
+	"github.com/containerd/nerdbox/internal/tracing"
 	"github.com/containerd/nerdbox/internal/vminit/stream"
 )
-
-var processTracer = otel.Tracer("nerdbox/process")
 
 // Init represents an initial process for a container
 type Init struct {
@@ -154,7 +152,7 @@ func (p *Init) Create(ctx context.Context, r *CreateConfig) (retError error) {
 		opts.ConsoleSocket = socket
 	}
 
-	_, crunCreateSpan := processTracer.Start(ctx, "crun.create")
+	_, crunCreateSpan := tracing.Start(ctx, "crun.create")
 	if err := p.runtime.Create(context.WithoutCancel(ctx), r.ID, r.Bundle, opts); err != nil {
 		crunCreateSpan.End()
 		systools.DumpFile(ctx, p.runtime.Log)
@@ -249,7 +247,7 @@ func (p *Init) Start(ctx context.Context) error {
 }
 
 func (p *Init) start(ctx context.Context) error {
-	_, crunStartSpan := processTracer.Start(ctx, "crun.start")
+	_, crunStartSpan := tracing.Start(ctx, "crun.start")
 	err := p.runtime.Start(ctx, p.id)
 	crunStartSpan.End()
 	return p.runtimeError(err, "OCI runtime start failed")

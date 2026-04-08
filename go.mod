@@ -12,7 +12,7 @@ require (
 	github.com/containerd/errdefs/pkg v0.3.0
 	github.com/containerd/fifo v1.1.0
 	github.com/containerd/go-runc v1.1.0
-	github.com/containerd/log v0.1.0
+	github.com/containerd/log v0.1.1-0.20260403072107-cb1839ebf76b
 	github.com/containerd/otelttrpc v0.1.0
 	github.com/containerd/plugin v1.0.0
 	github.com/containerd/ttrpc v1.2.8

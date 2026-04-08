@@ -34,17 +34,9 @@ import (
 	"github.com/containerd/nerdbox/internal/nwcfg"
 	"github.com/containerd/nerdbox/internal/tracing"
 	"github.com/containerd/nerdbox/internal/vm"
-
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
-	"go.opentelemetry.io/otel/propagation"
-	"go.opentelemetry.io/otel/sdk/resource"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.40.0"
-	"go.opentelemetry.io/otel/trace"
 )
 
-// TestTraceVMBoot boots a VM and exercises the TTRPC API with OTel tracing
+// TestTraceVMBoot boots a VM and exercises the TTRPC API with tracing
 // exported to a local Jaeger instance (localhost:4318).
 //
 // Run with: make test-tracing
@@ -52,64 +44,26 @@ func TestTraceVMBoot(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
 
-	// Set up OTLP exporter pointing at Jaeger.
-	exp, err := otlptracehttp.New(ctx,
-		otlptracehttp.WithEndpoint("localhost:4318"),
-		otlptracehttp.WithInsecure(),
-	)
-	if err != nil {
-		t.Fatal("creating OTLP exporter:", err)
-	}
-	t.Cleanup(func() {
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer shutdownCancel()
-		if err := exp.Shutdown(shutdownCtx); err != nil {
-			t.Logf("exporter shutdown: %v", err)
-		}
-	})
-
-	res, err := resource.Merge(
-		resource.Default(),
-		resource.NewWithAttributes(
-			semconv.SchemaURL,
-			semconv.ServiceName("nerdbox"),
-		),
-	)
-	if err != nil {
-		t.Fatal("creating OTel resource:", err)
-	}
-
-	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exp),
-		sdktrace.WithResource(res),
-	)
-	otel.SetTracerProvider(tp)
-	otel.SetTextMapPropagator(propagation.TraceContext{})
-
+	// Initialise the internal tracing package (sets up OTLP export).
+	shutdownTracing := tracing.Init(ctx, "nerdbox")
 	defer func() {
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer shutdownCancel()
-		if err := tp.Shutdown(shutdownCtx); err != nil {
-			t.Logf("tracer provider shutdown: %v", err)
+		// Give the background flusher time to batch and send spans.
+		time.Sleep(1 * time.Second)
+		if err := shutdownTracing(ctx); err != nil {
+			t.Logf("tracing shutdown: %v", err)
 		}
 	}()
 
-	tracer := otel.Tracer("nerdbox-test")
 	for _, backend := range vmBackends {
 		t.Run(backend.name, func(t *testing.T) {
-			traceVMBoot(ctx, t, tracer, backend.vmm)
+			traceVMBoot(ctx, t, backend.vmm)
 		})
-	}
-
-	// Force flush so all spans are sent to Jaeger before test ends.
-	if err := tp.ForceFlush(ctx); err != nil {
-		t.Logf("traces export: %v (expected when no collector is running)", err)
 	}
 
 	t.Log("Traces sent to Jaeger. Open http://localhost:16686 to view.")
 }
 
-func traceVMBoot(ctx context.Context, t *testing.T, tracer trace.Tracer, vmm vm.Manager) {
+func traceVMBoot(ctx context.Context, t *testing.T, vmm vm.Manager) {
 	td := t.TempDir()
 	t.Chdir(td)
 	// Use Getwd to resolve symlinks (e.g., /var -> /private/var on macOS)
@@ -119,7 +73,7 @@ func traceVMBoot(ctx context.Context, t *testing.T, tracer trace.Tracer, vmm vm.
 	}
 
 	// Span: VM.NewInstance+Start — this becomes the trace root.
-	ctx, vmSpan := tracer.Start(ctx, "VM.NewInstance+Start")
+	ctx, vmSpan := tracing.Start(ctx, "VM.NewInstance+Start")
 	instance, err := vmm.NewInstance(ctx, resolvedTd)
 	if err != nil {
 		vmSpan.End()
@@ -141,19 +95,11 @@ func traceVMBoot(ctx context.Context, t *testing.T, tracer trace.Tracer, vmm vm.
 	if err != nil {
 		t.Logf("warning: failed to subscribe to VM trace stream: %v", err)
 	} else {
-		relayExp, err := otlptracehttp.New(ctx,
-			otlptracehttp.WithEndpoint("localhost:4318"),
-			otlptracehttp.WithInsecure(),
-		)
-		if err != nil {
-			t.Logf("warning: failed to create relay exporter: %v", err)
-		} else {
-			go tracing.ForwardTraces(ctx, trc, relayExp, hostBootTime)
-		}
+		go tracing.ForwardTraces(ctx, trc, tracing.OTLPEndpoint(), hostBootTime)
 	}
 
 	// Span: TTRPC.System.Info
-	infoCtx, infoSpan := tracer.Start(ctx, "TTRPC.System.Info")
+	infoCtx, infoSpan := tracing.Start(ctx, "TTRPC.System.Info")
 	ss := systemapi.NewTTRPCSystemClient(client)
 	resp, err := ss.Info(infoCtx, nil)
 	infoSpan.End()
@@ -202,7 +148,7 @@ func traceVMBoot(ctx context.Context, t *testing.T, tracer trace.Tracer, vmm vm.
 	}
 
 	// Span: TTRPC.Bundle.Create
-	bundleCtx, bundleSpan := tracer.Start(ctx, "TTRPC.Bundle.Create")
+	bundleCtx, bundleSpan := tracing.Start(ctx, "TTRPC.Bundle.Create")
 	bs := bundleapi.NewTTRPCBundleClient(client)
 	br, err := bs.Create(bundleCtx, &bundleapi.CreateRequest{
 		ID: "trace-test-ctr",
@@ -219,7 +165,7 @@ func traceVMBoot(ctx context.Context, t *testing.T, tracer trace.Tracer, vmm vm.
 
 	// Span: TTRPC.Task.Create — exercises runc.NewContainer, crun.create,
 	// ctrnetworking.Connect, and all the VM-side spans we added.
-	createCtx, createSpan := tracer.Start(ctx, "TTRPC.Task.Create")
+	createCtx, createSpan := tracing.Start(ctx, "TTRPC.Task.Create")
 	tc := taskAPI.NewTTRPCTaskClient(client)
 	createResp, err := tc.Create(createCtx, &taskAPI.CreateTaskRequest{
 		ID:     "trace-test-ctr",
@@ -239,7 +185,7 @@ func traceVMBoot(ctx context.Context, t *testing.T, tracer trace.Tracer, vmm vm.
 	t.Logf("Task created with PID %d", createResp.Pid)
 
 	// Span: TTRPC.Task.Start — exercises container.Start, crun.start.
-	startCtx, startSpan := tracer.Start(ctx, "TTRPC.Task.Start")
+	startCtx, startSpan := tracing.Start(ctx, "TTRPC.Task.Start")
 	startResp, err := tc.Start(startCtx, &taskAPI.StartRequest{
 		ID: "trace-test-ctr",
 	})

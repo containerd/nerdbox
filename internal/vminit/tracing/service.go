@@ -25,17 +25,18 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	tracespb "github.com/containerd/nerdbox/api/services/traces/v1"
+	"github.com/containerd/nerdbox/internal/tracing"
 )
 
-// Service implements the TTRPCTracesService by streaming spans from an
-// Exporter's channel to the host.
+// Service implements the TTRPCTracesService by streaming spans from a
+// Collector's channel to the host.
 type Service struct {
-	exporter *Exporter
+	collector *tracing.Collector
 }
 
 // NewService creates a new traces streaming service.
-func NewService(exp *Exporter) *Service {
-	return &Service{exporter: exp}
+func NewService(c *tracing.Collector) *Service {
+	return &Service{collector: c}
 }
 
 // RegisterTTRPC registers the service with the ttrpc server.
@@ -44,15 +45,15 @@ func (s *Service) RegisterTTRPC(server *ttrpc.Server) error {
 	return nil
 }
 
-// Stream sends spans from the exporter channel to the client.
+// Stream sends spans from the collector channel to the client.
 func (s *Service) Stream(ctx context.Context, _ *emptypb.Empty, ss tracespb.TTRPCTraces_StreamServer) error {
 	for {
 		select {
-		case span := <-s.exporter.Chan():
+		case span := <-s.collector.Chan():
 			if err := ss.Send(span); err != nil {
 				return err
 			}
-		case <-s.exporter.Done():
+		case <-s.collector.Done():
 			return nil
 		case <-ctx.Done():
 			return ctx.Err()

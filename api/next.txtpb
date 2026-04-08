@@ -851,6 +851,611 @@ file: {
   }
 }
 file: {
+  name: "proto/nerdbox/services/socketforward/v1/socketforward.proto"
+  package: "nerdbox.services.socketforward.v1"
+  dependency: "google/protobuf/empty.proto"
+  message_type: {
+    name: "BindRequest"
+    field: {
+      name: "sockets"
+      number: 1
+      label: LABEL_REPEATED
+      type: TYPE_MESSAGE
+      type_name: ".nerdbox.services.socketforward.v1.Socket"
+      json_name: "sockets"
+    }
+  }
+  message_type: {
+    name: "Socket"
+    field: {
+      name: "forward_id"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "forwardId"
+    }
+    field: {
+      name: "socket_path"
+      number: 2
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "socketPath"
+    }
+  }
+  message_type: {
+    name: "ConnectRequest"
+    field: {
+      name: "stream_id"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "streamId"
+    }
+    field: {
+      name: "forward_id"
+      number: 2
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "forwardId"
+    }
+  }
+  message_type: {
+    name: "ConnectResult"
+    field: {
+      name: "stream_id"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "streamId"
+    }
+    field: {
+      name: "error"
+      number: 2
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "error"
+    }
+  }
+  service: {
+    name: "SocketForward"
+    method: {
+      name: "Bind"
+      input_type: ".nerdbox.services.socketforward.v1.BindRequest"
+      output_type: ".google.protobuf.Empty"
+    }
+    method: {
+      name: "Accept"
+      input_type: ".nerdbox.services.socketforward.v1.ConnectResult"
+      output_type: ".nerdbox.services.socketforward.v1.ConnectRequest"
+      client_streaming: true
+      server_streaming: true
+    }
+  }
+  options: {
+    go_package: "github.com/containerd/nerdbox/api/services/socketforward/v1;socketforward"
+  }
+  source_code_info: {
+    location: {
+      span: 16
+      span: 0
+      span: 94
+      span: 1
+    }
+    location: {
+      path: 12
+      span: 16
+      span: 0
+      span: 18
+      leading_detached_comments: "\nCopyright The containerd Authors.\n\nLicensed under the Apache License, Version 2.0 (the \"License\");\nyou may not use this file except in compliance with the License.\nYou may obtain a copy of the License at\n\nhttp://www.apache.org/licenses/LICENSE-2.0\n\nUnless required by applicable law or agreed to in writing, software\ndistributed under the License is distributed on an \"AS IS\" BASIS,\nWITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\nSee the License for the specific language governing permissions and\nlimitations under the License.\n"
+    }
+    location: {
+      path: 2
+      span: 18
+      span: 0
+      span: 42
+    }
+    location: {
+      path: 3
+      path: 0
+      span: 20
+      span: 0
+      span: 37
+    }
+    location: {
+      path: 8
+      span: 22
+      span: 0
+      span: 96
+    }
+    location: {
+      path: 8
+      path: 11
+      span: 22
+      span: 0
+      span: 96
+    }
+    location: {
+      path: 6
+      path: 0
+      span: 38
+      span: 0
+      span: 52
+      span: 1
+      leading_comments: " SocketForward provides UNIX domain socket forwarding across the VM boundary\n over vsock streams. Container processes connect to listener sockets created\n by vminitd; connections are relayed to the corresponding host-side socket.\n\n The ttrpc server runs inside the VM (vminitd) and the ttrpc client runs on\n the host (shim). All RPCs are initiated by the host:\n\n   - Bind: the host tells the VM which sockets to set up. The VM creates\n     UNIX listener sockets in the root mount ns so that crun can bind-mount\n     them into the container. This must be called before the container is\n     created.\n   - Accept: the host opens a bidirectional streaming channel. The VM sends\n     ConnectRequest messages when a process inside the container connects to\n     a forwarded socket, and the host replies with ConnectResult messages.\n"
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 1
+      span: 38
+      span: 8
+      span: 21
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      span: 43
+      span: 8
+      span: 62
+      leading_comments: " Bind sets up the socket forward entries on the VM side. The VM creates\n UNIX listener sockets at the paths given in socket_path. This RPC returns\n only after all socket files have been created, so the caller can safely\n proceed with container creation (crun bind mounts).\n"
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      path: 1
+      span: 43
+      span: 12
+      span: 16
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      path: 2
+      span: 43
+      span: 17
+      span: 28
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      path: 3
+      span: 43
+      span: 39
+      span: 60
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 1
+      span: 51
+      span: 8
+      span: 73
+      leading_comments: " Accept is a bidirectional streaming RPC used to coordinate forwarded\n connections. The VM sends a ConnectRequest when a container process\n connects to a forwarded socket; the host resolves the forward_id,\n dials the target host socket, opens a vsock stream, and sends back a\n ConnectResult reporting success or failure. On failure the VM closes\n the pending container connection immediately.\n"
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 1
+      path: 1
+      span: 51
+      span: 12
+      span: 18
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 1
+      path: 5
+      span: 51
+      span: 19
+      span: 25
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 1
+      path: 2
+      span: 51
+      span: 26
+      span: 39
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 1
+      path: 6
+      span: 51
+      span: 50
+      span: 56
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 1
+      path: 3
+      span: 51
+      span: 57
+      span: 71
+    }
+    location: {
+      path: 4
+      path: 0
+      span: 56
+      span: 0
+      span: 58
+      span: 1
+      leading_comments: " BindRequest is sent by the host before container creation to set up socket\n forwards on the VM side.\n"
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 1
+      span: 56
+      span: 8
+      span: 19
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      span: 57
+      span: 8
+      span: 36
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      path: 4
+      span: 57
+      span: 8
+      span: 16
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      path: 6
+      span: 57
+      span: 17
+      span: 23
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      path: 1
+      span: 57
+      span: 24
+      span: 31
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      path: 3
+      span: 57
+      span: 34
+      span: 35
+    }
+    location: {
+      path: 4
+      path: 1
+      span: 61
+      span: 0
+      span: 70
+      span: 1
+      leading_comments: " Socket describes a single forwarded UNIX socket.\n"
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 1
+      span: 61
+      span: 8
+      span: 14
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      span: 64
+      span: 8
+      span: 30
+      leading_comments: " Opaque identifier for this forward. Each side uses it to resolve the local\n socket path from its own configuration.\n"
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      path: 5
+      span: 64
+      span: 8
+      span: 14
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      path: 1
+      span: 64
+      span: 15
+      span: 25
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      path: 3
+      span: 64
+      span: 28
+      span: 29
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 1
+      span: 69
+      span: 8
+      span: 31
+      leading_comments: " Path of the UNIX listener socket in the VM's root filesystem (e.g.\n /run/socketfwd/{forward_id}.sock). vminitd creates the socket here;\n the shim has already rewritten the uds mount to a bind mount from\n this path to the user-specified destination inside the container.\n"
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 1
+      path: 5
+      span: 69
+      span: 8
+      span: 14
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 1
+      path: 1
+      span: 69
+      span: 15
+      span: 26
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 1
+      path: 3
+      span: 69
+      span: 29
+      span: 30
+    }
+    location: {
+      path: 4
+      path: 2
+      span: 74
+      span: 0
+      span: 82
+      span: 1
+      leading_comments: " ConnectRequest is sent by the VM on the Accept stream to notify the host of\n a new container-initiated connection.\n"
+    }
+    location: {
+      path: 4
+      path: 2
+      path: 1
+      span: 74
+      span: 8
+      span: 22
+    }
+    location: {
+      path: 4
+      path: 2
+      path: 2
+      path: 0
+      span: 77
+      span: 8
+      span: 29
+      leading_comments: " ID of the vsock stream. The host must open a stream with this ID after\n a successful ConnectResult so that the relay can start.\n"
+    }
+    location: {
+      path: 4
+      path: 2
+      path: 2
+      path: 0
+      path: 5
+      span: 77
+      span: 8
+      span: 14
+    }
+    location: {
+      path: 4
+      path: 2
+      path: 2
+      path: 0
+      path: 1
+      span: 77
+      span: 15
+      span: 24
+    }
+    location: {
+      path: 4
+      path: 2
+      path: 2
+      path: 0
+      path: 3
+      span: 77
+      span: 27
+      span: 28
+    }
+    location: {
+      path: 4
+      path: 2
+      path: 2
+      path: 1
+      span: 81
+      span: 8
+      span: 30
+      leading_comments: " Identifier of the socket forward entry. The host uses this to resolve the\n target host socket path from its own configuration rather than trusting a\n path supplied by the VM.\n"
+    }
+    location: {
+      path: 4
+      path: 2
+      path: 2
+      path: 1
+      path: 5
+      span: 81
+      span: 8
+      span: 14
+    }
+    location: {
+      path: 4
+      path: 2
+      path: 2
+      path: 1
+      path: 1
+      span: 81
+      span: 15
+      span: 25
+    }
+    location: {
+      path: 4
+      path: 2
+      path: 2
+      path: 1
+      path: 3
+      span: 81
+      span: 28
+      span: 29
+    }
+    location: {
+      path: 4
+      path: 3
+      span: 88
+      span: 0
+      span: 94
+      span: 1
+      leading_comments: " ConnectResult is sent by the host on the Accept stream in response to each\n ConnectRequest. It reports whether the host successfully dialed the target\n socket. On failure the VM closes the pending container connection\n immediately.\n"
+    }
+    location: {
+      path: 4
+      path: 3
+      path: 1
+      span: 88
+      span: 8
+      span: 21
+    }
+    location: {
+      path: 4
+      path: 3
+      path: 2
+      path: 0
+      span: 90
+      span: 8
+      span: 29
+      leading_comments: " ID of the vsock stream from the corresponding ConnectRequest.\n"
+    }
+    location: {
+      path: 4
+      path: 3
+      path: 2
+      path: 0
+      path: 5
+      span: 90
+      span: 8
+      span: 14
+    }
+    location: {
+      path: 4
+      path: 3
+      path: 2
+      path: 0
+      path: 1
+      span: 90
+      span: 15
+      span: 24
+    }
+    location: {
+      path: 4
+      path: 3
+      path: 2
+      path: 0
+      path: 3
+      span: 90
+      span: 27
+      span: 28
+    }
+    location: {
+      path: 4
+      path: 3
+      path: 2
+      path: 1
+      span: 93
+      span: 8
+      span: 25
+      leading_comments: " Non-empty if the host failed to dial the target socket. The VM closes\n the pending connection when error is set.\n"
+    }
+    location: {
+      path: 4
+      path: 3
+      path: 2
+      path: 1
+      path: 5
+      span: 93
+      span: 8
+      span: 14
+    }
+    location: {
+      path: 4
+      path: 3
+      path: 2
+      path: 1
+      path: 1
+      span: 93
+      span: 15
+      span: 20
+    }
+    location: {
+      path: 4
+      path: 3
+      path: 2
+      path: 1
+      path: 3
+      span: 93
+      span: 23
+      span: 24
+    }
+  }
+  syntax: "proto3"
+  buf_extension: {
+    is_import: false
+    is_syntax_unspecified: false
+  }
+}
+file: {
   name: "proto/nerdbox/services/system/v1/info.proto"
   package: "containerd.vminitd.services.system.v1"
   dependency: "google/protobuf/empty.proto"

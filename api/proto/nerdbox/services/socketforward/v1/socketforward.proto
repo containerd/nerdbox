@@ -1,0 +1,95 @@
+/*
+	Copyright The containerd Authors.
+
+	Licensed under the Apache License, Version 2.0 (the "License");
+	you may not use this file except in compliance with the License.
+	You may obtain a copy of the License at
+
+		http://www.apache.org/licenses/LICENSE-2.0
+
+	Unless required by applicable law or agreed to in writing, software
+	distributed under the License is distributed on an "AS IS" BASIS,
+	WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+	See the License for the specific language governing permissions and
+	limitations under the License.
+*/
+
+syntax = "proto3";
+
+package nerdbox.services.socketforward.v1;
+
+import "google/protobuf/empty.proto";
+
+option go_package = "github.com/containerd/nerdbox/api/services/socketforward/v1;socketforward";
+
+// SocketForward provides UNIX domain socket forwarding across the VM boundary
+// over vsock streams. Container processes connect to listener sockets created
+// by vminitd; connections are relayed to the corresponding host-side socket.
+//
+// The ttrpc server runs inside the VM (vminitd) and the ttrpc client runs on
+// the host (shim). All RPCs are initiated by the host:
+//
+//   - Bind: the host tells the VM which sockets to set up. The VM creates
+//     UNIX listener sockets in the root mount ns so that crun can bind-mount
+//     them into the container. This must be called before the container is
+//     created.
+//   - Accept: the host opens a bidirectional streaming channel. The VM sends
+//     ConnectRequest messages when a process inside the container connects to
+//     a forwarded socket, and the host replies with ConnectResult messages.
+service SocketForward {
+	// Bind sets up the socket forward entries on the VM side. The VM creates
+	// UNIX listener sockets at the paths given in socket_path. This RPC returns
+	// only after all socket files have been created, so the caller can safely
+	// proceed with container creation (crun bind mounts).
+	rpc Bind(BindRequest) returns (google.protobuf.Empty);
+
+	// Accept is a bidirectional streaming RPC used to coordinate forwarded
+	// connections. The VM sends a ConnectRequest when a container process
+	// connects to a forwarded socket; the host resolves the forward_id,
+	// dials the target host socket, opens a vsock stream, and sends back a
+	// ConnectResult reporting success or failure. On failure the VM closes
+	// the pending container connection immediately.
+	rpc Accept(stream ConnectResult) returns (stream ConnectRequest);
+}
+
+// BindRequest is sent by the host before container creation to set up socket
+// forwards on the VM side.
+message BindRequest {
+	repeated Socket sockets = 1;
+}
+
+// Socket describes a single forwarded UNIX socket.
+message Socket {
+	// Opaque identifier for this forward. Each side uses it to resolve the local
+	// socket path from its own configuration.
+	string forward_id = 1;
+	// Path of the UNIX listener socket in the VM's root filesystem (e.g.
+	// /run/socketfwd/{forward_id}.sock). vminitd creates the socket here;
+	// the shim has already rewritten the uds mount to a bind mount from
+	// this path to the user-specified destination inside the container.
+	string socket_path = 2;
+}
+
+// ConnectRequest is sent by the VM on the Accept stream to notify the host of
+// a new container-initiated connection.
+message ConnectRequest {
+	// ID of the vsock stream. The host must open a stream with this ID after
+	// a successful ConnectResult so that the relay can start.
+	string stream_id = 1;
+	// Identifier of the socket forward entry. The host uses this to resolve the
+	// target host socket path from its own configuration rather than trusting a
+	// path supplied by the VM.
+	string forward_id = 2;
+}
+
+// ConnectResult is sent by the host on the Accept stream in response to each
+// ConnectRequest. It reports whether the host successfully dialed the target
+// socket. On failure the VM closes the pending container connection
+// immediately.
+message ConnectResult {
+	// ID of the vsock stream from the corresponding ConnectRequest.
+	string stream_id = 1;
+	// Non-empty if the host failed to dial the target socket. The VM closes
+	// the pending connection when error is set.
+	string error = 2;
+}

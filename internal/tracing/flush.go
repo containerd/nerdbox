@@ -3,19 +3,16 @@ package tracing
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/containerd/log"
-	collectorpb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
-	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
-	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
-	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
-	"google.golang.org/protobuf/proto"
 )
 
 // Flusher collects finished spans and periodically exports them via OTLP HTTP.
@@ -82,37 +79,54 @@ func (f *Flusher) flush(ctx context.Context) error {
 		return nil
 	}
 
-	protoSpans := make([]*tracepb.Span, 0, len(spans))
+	otlpSpans := make([]otlpSpan, 0, len(spans))
 	for _, s := range spans {
-		protoSpans = append(protoSpans, spanToOTLP(s))
+		otlpSpans = append(otlpSpans, spanToOTLPJSON(s))
 	}
 
-	req := &collectorpb.ExportTraceServiceRequest{
-		ResourceSpans: []*tracepb.ResourceSpans{{
-			Resource: &resourcepb.Resource{
-				Attributes: []*commonpb.KeyValue{{
+	req := otlpExportRequest{
+		ResourceSpans: []otlpResourceSpans{{
+			Resource: otlpResource{
+				Attributes: []otlpKeyValue{{
 					Key:   "service.name",
-					Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: f.serviceName}},
+					Value: otlpAnyValue{StringValue: f.serviceName},
 				}},
 			},
-			ScopeSpans: []*tracepb.ScopeSpans{{
-				Spans: protoSpans,
+			ScopeSpans: []otlpScopeSpans{{
+				Spans: otlpSpans,
 			}},
 		}},
 	}
 
-	data, err := proto.Marshal(req)
+	return postOTLP(ctx, f.client, f.endpoint, req)
+}
+
+func spanToOTLPJSON(s *Span) otlpSpan {
+	return otlpSpan{
+		TraceID:           s.TraceID.String(),
+		SpanID:            s.SpanID.String(),
+		ParentSpanID:      s.ParentSpanID.String(),
+		Name:              s.Name,
+		Kind:              1, // SPAN_KIND_INTERNAL
+		StartTimeUnixNano: strconv.FormatInt(s.StartTime.UnixNano(), 10),
+		EndTimeUnixNano:   strconv.FormatInt(s.EndTime.UnixNano(), 10),
+		Status:            otlpStatus{Code: 1}, // STATUS_CODE_OK
+	}
+}
+
+func postOTLP(ctx context.Context, client *http.Client, endpoint string, req otlpExportRequest) error {
+	data, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("marshal OTLP request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, f.endpoint, bytes.NewReader(data))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("create HTTP request: %w", err)
 	}
-	httpReq.Header.Set("Content-Type", "application/x-protobuf")
+	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := f.client.Do(httpReq)
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("send OTLP request: %w", err)
 	}
@@ -122,19 +136,6 @@ func (f *Flusher) flush(ctx context.Context) error {
 		return fmt.Errorf("OTLP export failed: %s", resp.Status)
 	}
 	return nil
-}
-
-func spanToOTLP(s *Span) *tracepb.Span {
-	return &tracepb.Span{
-		TraceId:           s.TraceID[:],
-		SpanId:            s.SpanID[:],
-		ParentSpanId:      s.ParentSpanID[:],
-		Name:              s.Name,
-		Kind:              tracepb.Span_SPAN_KIND_INTERNAL,
-		StartTimeUnixNano: uint64(s.StartTime.UnixNano()),
-		EndTimeUnixNano:   uint64(s.EndTime.UnixNano()),
-		Status:            &tracepb.Status{Code: tracepb.Status_STATUS_CODE_OK},
-	}
 }
 
 // OTLPEndpoint returns the OTLP traces endpoint URL derived from

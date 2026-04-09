@@ -1,7 +1,5 @@
 package tracing
 
-import "encoding/hex"
-
 // OTLP JSON types for ExportTraceServiceRequest.
 // See https://opentelemetry.io/docs/specs/otlp/#json-protobuf-encoding
 
@@ -46,8 +44,4 @@ type otlpKeyValue struct {
 
 type otlpAnyValue struct {
 	StringValue string `json:"stringValue"`
-}
-
-func hexEncode(b []byte) string {
-	return hex.EncodeToString(b)
 }

@@ -1,7 +1,8 @@
-# OTel Tracing
+# Tracing
 
-Nerdbox supports OpenTelemetry tracing across the full container startup path,
-including spans that originate inside the VM.
+Nerdbox supports distributed tracing across the full container startup path,
+including spans that originate inside the VM. Traces are exported via
+OTLP/HTTP (JSON) to any compatible collector (e.g., Jaeger).
 
 ## Tracing with Jaeger
 
@@ -28,19 +29,18 @@ gantt
     title Trace for nerdbox-vm
 
     section VM.NewInstance+Start
-    nerdbox/VM.NewInstance+Start :VM_NewInstance+Start_9f6fda, 0, 83
-    . nerdbox/libkrun.VMStart :libkrun_VMStart_90885a, 5, 82
-    . nerdbox/libkrun.WaitForTTRPC :libkrun_WaitForTTRPC_10af7c, 5, 82
-    . nerdbox/TTRPC.Task.Create :TTRPC_Task_Create_5e832c, 83, 85
-    . . nerdbox/containerd.task.v3.Task/Create :containerd_task_v3_Task_Create_3a4175, 84, 85
-    . . . containerd.task.v3.Task/Create :containerd_task_v3_Task_Create_61f5b3, 83, 85
-    . . . . task.Create :task_Create_a0b789, 84, 85
-    . . . . . runc.NewContainer :runc_NewContainer_f4a190, 84, 85
-    . . . . . . crun.create :crun_create_beaf4f, 84, 85
-    . nerdbox/TTRPC.Task.Start :TTRPC_Task_Start_c8de57, 85, 87
-    . . nerdbox/containerd.task.v3.Task/Start :containerd_task_v3_Task_Start_f0139b, 85, 87
-    . . . containerd.task.v3.Task/Start :containerd_task_v3_Task_Start_1d5297, 85, 87
-    . . . . task.Start :task_Start_84961b, 85, 87
-    . . . . . . container.Start :container_Start_5372d6, 85, 87
-    . . . . . . . crun.start :crun_start_ce160c, 85, 87
+    nerdbox/VM.NewInstance+Start :VM_NewInstance+Start_6f2822, 0, 76
+    . nerdbox/libkrun.VMStart :libkrun_VMStart_ae5193, 5, 76
+    . nerdbox/TTRPC.Task.Create :TTRPC_Task_Create_902d0f, 77, 93
+    . . nerdbox//containerd.task.v3.Task/Create :_containerd_task_v3_Task_Create_16dfce, 77, 93
+    . . . /containerd.task.v3.Task/Create :_containerd_task_v3_Task_Create_71056a, 77, 80
+    . . . . task.Create :task_Create_451e10, 77, 80
+    . . . . . runc.NewContainer :runc_NewContainer_52991d, 77, 80
+    . . . . . . crun.create :crun_create_d919ef, 77, 80
+    . nerdbox/TTRPC.Task.Start :TTRPC_Task_Start_9e039e, 93, 95
+    . . nerdbox//containerd.task.v3.Task/Start :_containerd_task_v3_Task_Start_b248bf, 93, 95
+    . . . /containerd.task.v3.Task/Start :_containerd_task_v3_Task_Start_55073e, 93, 95
+    . . . . task.Start :task_Start_f96cf6, 93, 95
+    . . . . . container.Start :container_Start_f896e9, 93, 95
+    . . . . . . crun.start :crun_start_9680f1, 93, 95
 ```

@@ -23,7 +23,7 @@ func init() {
 			ctx := ic.Context
 
 			shutdownTracing := tracing.Init(ctx, "nerdbox")
-			if tracing.OTLPEndpoint() == "" {
+			if tracing.ParseOTLPEndpoint() == nil {
 				log.G(ctx).Debug("OTEL_EXPORTER_OTLP_ENDPOINT not set, shim tracing disabled")
 			}
 

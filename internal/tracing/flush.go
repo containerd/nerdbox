@@ -1,11 +1,10 @@
 package tracing
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
@@ -17,9 +16,9 @@ import (
 
 // Flusher collects finished spans and periodically exports them via OTLP HTTP.
 type Flusher struct {
-	endpoint    string
+	addr        string // host:port
+	path        string // e.g. "/v1/traces"
 	serviceName string
-	client      *http.Client
 
 	mu      sync.Mutex
 	pending []*Span
@@ -28,11 +27,11 @@ type Flusher struct {
 
 // NewFlusher creates a flusher that exports to the given OTLP endpoint.
 // Call Shutdown to flush remaining spans and stop the background goroutine.
-func NewFlusher(ctx context.Context, endpoint, serviceName string, interval time.Duration) *Flusher {
+func NewFlusher(ctx context.Context, addr, path, serviceName string, interval time.Duration) *Flusher {
 	f := &Flusher{
-		endpoint:    endpoint,
+		addr:        addr,
+		path:        path,
 		serviceName: serviceName,
-		client:      &http.Client{},
 		done:        make(chan struct{}),
 	}
 	go f.loop(ctx, interval)
@@ -98,7 +97,7 @@ func (f *Flusher) flush(ctx context.Context) error {
 		}},
 	}
 
-	return postOTLP(ctx, f.client, f.endpoint, req)
+	return postOTLP(f.addr, f.path, req)
 }
 
 func spanToOTLPJSON(s *Span) otlpSpan {
@@ -114,54 +113,89 @@ func spanToOTLPJSON(s *Span) otlpSpan {
 	}
 }
 
-func postOTLP(ctx context.Context, client *http.Client, endpoint string, req otlpExportRequest) error {
-	data, err := json.Marshal(req)
+// postOTLP sends an OTLP JSON request via a raw HTTP/1.1 POST over TCP.
+// This avoids importing net/http (and its transitive crypto/tls stack).
+func postOTLP(addr, path string, req otlpExportRequest) error {
+	body, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("marshal OTLP request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
+	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 	if err != nil {
-		return fmt.Errorf("create HTTP request: %w", err)
+		return fmt.Errorf("connect to %s: %w", addr, err)
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
 
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return fmt.Errorf("send OTLP request: %w", err)
+	// Write a minimal HTTP/1.1 request.
+	var buf []byte
+	buf = append(buf, "POST "...)
+	buf = append(buf, path...)
+	buf = append(buf, " HTTP/1.1\r\nHost: "...)
+	buf = append(buf, addr...)
+	buf = append(buf, "\r\nContent-Type: application/json\r\nContent-Length: "...)
+	buf = strconv.AppendInt(buf, int64(len(body)), 10)
+	buf = append(buf, "\r\nConnection: close\r\n\r\n"...)
+	buf = append(buf, body...)
+
+	if _, err := conn.Write(buf); err != nil {
+		return fmt.Errorf("write OTLP request: %w", err)
 	}
-	resp.Body.Close()
 
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("OTLP export failed: %s", resp.Status)
+	// Read just the status line to check for errors.
+	var resp [128]byte
+	n, _ := conn.Read(resp[:])
+	if n < 12 {
+		return fmt.Errorf("OTLP response too short")
+	}
+	// "HTTP/1.1 200" — status code starts at byte 9
+	if resp[9] >= '4' {
+		return fmt.Errorf("OTLP export failed: %s", string(resp[:n]))
 	}
 	return nil
 }
 
-// OTLPEndpoint returns the OTLP traces endpoint URL derived from
-// OTEL_EXPORTER_OTLP_ENDPOINT, or "" if the env var is unset.
-func OTLPEndpoint() string {
+// OTLPEndpoint holds the parsed host:port and path for an OTLP endpoint.
+type OTLPEndpoint struct {
+	addr string // host:port
+	path string // e.g. "/v1/traces"
+}
+
+// ParseOTLPEndpoint parses OTEL_EXPORTER_OTLP_ENDPOINT into addr and path.
+// Returns nil if the env var is unset.
+func ParseOTLPEndpoint() *OTLPEndpoint {
 	endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
 	if endpoint == "" {
-		return ""
+		return nil
 	}
-	if u, err := url.Parse(endpoint); err != nil || u.Scheme == "" {
-		endpoint = "http://" + endpoint
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Host == "" {
+		// Treat as host:port directly.
+		return &OTLPEndpoint{addr: endpoint, path: "/v1/traces"}
 	}
-	return endpoint + "/v1/traces"
+	addr := u.Host
+	if u.Port() == "" {
+		if u.Scheme == "https" {
+			addr += ":443"
+		} else {
+			addr += ":80"
+		}
+	}
+	return &OTLPEndpoint{addr: addr, path: "/v1/traces"}
 }
 
 // Init sets up the global span sink with an OTLP HTTP flusher.
 // Returns a shutdown function. If OTEL_EXPORTER_OTLP_ENDPOINT is unset,
 // tracing is disabled and the returned shutdown is a no-op.
 func Init(ctx context.Context, serviceName string) func(context.Context) error {
-	endpoint := OTLPEndpoint()
-	if endpoint == "" {
+	ep := ParseOTLPEndpoint()
+	if ep == nil {
 		return func(context.Context) error { return nil }
 	}
-	f := NewFlusher(ctx, endpoint, serviceName, 100*time.Millisecond)
+	f := NewFlusher(ctx, ep.addr, ep.path, serviceName, 100*time.Millisecond)
 	SetSink(f)
-	log.G(ctx).WithField("endpoint", endpoint).Debug("tracing enabled")
+	log.G(ctx).WithField("endpoint", ep.addr).Debug("tracing enabled")
 	return func(ctx context.Context) error {
 		SetSink(nil)
 		return f.Shutdown(ctx)

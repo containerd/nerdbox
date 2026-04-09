@@ -98,7 +98,7 @@ func traceVMBoot(ctx context.Context, t *testing.T, vmm vm.Manager) {
 	if err != nil {
 		t.Logf("warning: failed to subscribe to VM trace stream: %v", err)
 	} else {
-		go tracing.ForwardTraces(ctx, trc, tracing.OTLPEndpoint(), hostBootTime)
+		go tracing.ForwardTraces(ctx, trc, tracing.ParseOTLPEndpoint(), hostBootTime)
 	}
 
 	// Span: TTRPC.System.Info

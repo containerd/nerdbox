@@ -298,13 +298,13 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	// Start relaying VM traces to the host OTel collector.
 	// Use WithoutCancel so the relay outlives the Create RPC context and
 	// can forward spans from subsequent RPCs (Start, Exec, etc.).
-	if endpoint := tracing.OTLPEndpoint(); endpoint != "" {
+	if ep := tracing.ParseOTLPEndpoint(); ep != nil {
 		relayCtx := context.WithoutCancel(ctx)
 		trc, err := tracesAPI.NewTTRPCTracesClient(vmc).Stream(relayCtx, empty)
 		if err != nil {
 			log.G(ctx).WithError(err).Warn("failed to subscribe to VM trace stream")
 		} else {
-			go tracing.ForwardTraces(relayCtx, trc, endpoint, hostBootTime)
+			go tracing.ForwardTraces(relayCtx, trc, ep, hostBootTime)
 		}
 	}
 

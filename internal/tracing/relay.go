@@ -19,7 +19,6 @@ package tracing
 import (
 	"context"
 	"encoding/hex"
-	"net/http"
 	"strconv"
 	"time"
 
@@ -31,9 +30,7 @@ import (
 // ForwardTraces reads spans from the VM trace stream and exports them
 // to the OTLP endpoint as JSON. hostBootTime is the host wall-clock time
 // captured when ttrpc became responsive, used to correct VM-vs-host clock skew.
-func ForwardTraces(ctx context.Context, stream tracespb.TTRPCTraces_StreamClient, endpoint string, hostBootTime time.Time) {
-	client := &http.Client{}
-
+func ForwardTraces(ctx context.Context, stream tracespb.TTRPCTraces_StreamClient, ep *OTLPEndpoint, hostBootTime time.Time) {
 	// The VM's RTC has only second-level resolution, so its wall clock
 	// can be up to ~1s behind the host. We compute the offset from the
 	// first interceptor span (which is created at the moment the first
@@ -57,13 +54,13 @@ func ForwardTraces(ctx context.Context, stream tracespb.TTRPCTraces_StreamClient
 			log.G(ctx).WithField("offset", clockOffset).Debug("VM clock offset computed")
 		}
 
-		if err := exportVMSpan(ctx, client, endpoint, span, clockOffset); err != nil {
+		if err := exportVMSpan(ep, span, clockOffset); err != nil {
 			log.G(ctx).WithError(err).Warn("trace relay export")
 		}
 	}
 }
 
-func exportVMSpan(ctx context.Context, client *http.Client, endpoint string, s *tracespb.Span, clockOffset time.Duration) error {
+func exportVMSpan(ep *OTLPEndpoint, s *tracespb.Span, clockOffset time.Duration) error {
 	startNano := time.Unix(0, s.StartTimeUnixNano).Add(clockOffset).UnixNano()
 	endNano := time.Unix(0, s.EndTimeUnixNano).Add(clockOffset).UnixNano()
 
@@ -102,5 +99,5 @@ func exportVMSpan(ctx context.Context, client *http.Client, endpoint string, s *
 		}},
 	}
 
-	return postOTLP(ctx, client, endpoint, req)
+	return postOTLP(ep.addr, ep.path, req)
 }

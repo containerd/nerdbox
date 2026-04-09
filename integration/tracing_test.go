@@ -44,6 +44,9 @@ func TestTraceVMBoot(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
 
+	// Point tracing at the local Jaeger instance.
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
+
 	// Initialise the internal tracing package (sets up OTLP export).
 	shutdownTracing := tracing.Init(ctx, "nerdbox")
 	defer func() {

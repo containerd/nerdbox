@@ -30,6 +30,7 @@ import (
 	"syscall"
 	"time"
 
+	bootapi "github.com/containerd/containerd/api/runtime/bootstrap/v1"
 	"github.com/containerd/containerd/v2/defaults"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/containerd/v2/pkg/shim"
@@ -130,19 +131,18 @@ func newShimSocket(ctx context.Context, root, path, id string, debug bool) (*shi
 	return s, nil
 }
 
-func (manager) Start(ctx context.Context, id string, opts shim.StartOpts) (_ shim.BootstrapParams, retErr error) {
-	var params shim.BootstrapParams
-	params.Version = 3
-	params.Protocol = "ttrpc"
+func (manager) Start(ctx context.Context, bparams *bootapi.BootstrapParams) (_ *bootapi.BootstrapResult, retErr error) {
+	id := bparams.InstanceID
+	debug := bparams.LogLevel <= bootapi.LogLevel_LOG_LEVEL_DEBUG
 
-	cmd, err := newCommand(ctx, id, opts.Address, opts.TTRPCAddress, opts.Debug)
+	cmd, err := newCommand(ctx, id, bparams.ContainerdGrpcAddress, bparams.ContainerdTtrpcAddress, debug)
 	if err != nil {
-		return params, err
+		return nil, err
 	}
 	grouping := id
 	spec, err := readSpec()
 	if err != nil {
-		return params, err
+		return nil, err
 	}
 	for _, group := range groupLabels {
 		if groupID, ok := spec.Annotations[group]; ok {
@@ -159,25 +159,28 @@ func (manager) Start(ctx context.Context, id string, opts shim.StartOpts) (_ shi
 			}
 		}
 	}()
-	socketDir := opts.SocketDir
+	socketDir := bparams.GetSocketDir()
 	if socketDir == "" {
 		socketDir = filepath.Join(defaults.DefaultStateDir, "s")
 	}
-	s, err := newShimSocket(ctx, socketDir, opts.Address, grouping, false)
+	s, err := newShimSocket(ctx, socketDir, bparams.ContainerdGrpcAddress, grouping, false)
 	if err != nil {
 		if errdefs.IsAlreadyExists(err) {
-			params.Address = s.addr
-			return params, nil
+			return &bootapi.BootstrapResult{
+				Version:  3,
+				Address:  s.addr,
+				Protocol: "ttrpc",
+			}, nil
 		}
-		return params, err
+		return nil, err
 	}
 	sockets = append(sockets, s)
 	cmd.ExtraFiles = append(cmd.ExtraFiles, s.f)
 
-	if opts.Debug {
-		s, err = newShimSocket(ctx, socketDir, opts.Address, grouping, true)
+	if debug {
+		s, err = newShimSocket(ctx, socketDir, bparams.ContainerdGrpcAddress, grouping, true)
 		if err != nil {
-			return params, err
+			return nil, err
 		}
 		sockets = append(sockets, s)
 		cmd.ExtraFiles = append(cmd.ExtraFiles, s.f)
@@ -186,7 +189,7 @@ func (manager) Start(ctx context.Context, id string, opts shim.StartOpts) (_ shi
 	cloneMntNs(ctx, cmd)
 
 	if err := cmd.Start(); err != nil {
-		return params, err
+		return nil, err
 	}
 
 	defer func() {
@@ -203,34 +206,37 @@ func (manager) Start(ctx context.Context, id string, opts shim.StartOpts) (_ shi
 					if cgroups.Mode() == cgroups.Unified {
 						cg, err := cgroupsv2.Load(opts.ShimCgroup)
 						if err != nil {
-							return params, fmt.Errorf("failed to load cgroup %s: %w", opts.ShimCgroup, err)
+							return nil, fmt.Errorf("failed to load cgroup %s: %w", opts.ShimCgroup, err)
 						}
 						if err := cg.AddProc(uint64(cmd.Process.Pid)); err != nil {
-							return params, fmt.Errorf("failed to join cgroup %s: %w", opts.ShimCgroup, err)
+							return nil, fmt.Errorf("failed to join cgroup %s: %w", opts.ShimCgroup, err)
 						}
 					} else {
 						cg, err := cgroup1.Load(cgroup1.StaticPath(opts.ShimCgroup))
 						if err != nil {
-							return params, fmt.Errorf("failed to load cgroup %s: %w", opts.ShimCgroup, err)
+							return nil, fmt.Errorf("failed to load cgroup %s: %w", opts.ShimCgroup, err)
 						}
 						if err := cg.AddProc(uint64(cmd.Process.Pid)); err != nil {
-							return params, fmt.Errorf("failed to join cgroup %s: %w", opts.ShimCgroup, err)
+							return nil, fmt.Errorf("failed to join cgroup %s: %w", opts.ShimCgroup, err)
 						}
 					}
 				}
 		}
 
 		if err := shim.AdjustOOMScore(cmd.Process.Pid); err != nil {
-			return params, fmt.Errorf("failed to adjust OOM score for shim: %w", err)
+			return nil, fmt.Errorf("failed to adjust OOM score for shim: %w", err)
 		}
 	*/
 
 	if err = shim.WritePidFile("shim.pid", cmd.Process.Pid); err != nil {
-		return params, err
+		return nil, err
 	}
 
-	params.Address = sockets[0].addr
-	return params, nil
+	return &bootapi.BootstrapResult{
+		Version:  3,
+		Address:  sockets[0].addr,
+		Protocol: "ttrpc",
+	}, nil
 }
 
 func (manager) Stop(ctx context.Context, id string) (shim.StopStatus, error) {

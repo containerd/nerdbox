@@ -14,23 +14,5 @@
    limitations under the License.
 */
 
-package main
-
-import (
-	"context"
-
-	"github.com/containerd/containerd/v2/pkg/shim"
-
-	"github.com/containerd/nerdbox/internal/shim/manager"
-
-	_ "github.com/containerd/nerdbox/plugins/shim/sandbox"
-	_ "github.com/containerd/nerdbox/plugins/shim/streaming"
-	_ "github.com/containerd/nerdbox/plugins/shim/task"
-	_ "github.com/containerd/nerdbox/plugins/shim/tracing"
-	_ "github.com/containerd/nerdbox/plugins/shim/transfer"
-	_ "github.com/containerd/nerdbox/plugins/vm/libkrun"
-)
-
-func main() {
-	shim.Run(context.Background(), manager.NewShimManager("io.containerd.nerdbox.v1"))
-}
+// Package traces relays OTel spans from the VM to the host.
+package traces

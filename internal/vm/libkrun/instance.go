@@ -34,6 +34,7 @@ import (
 	"github.com/containerd/log"
 	"github.com/containerd/ttrpc"
 
+	"github.com/containerd/nerdbox/internal/tracing"
 	"github.com/containerd/nerdbox/internal/vm"
 )
 
@@ -297,10 +298,12 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 		return fmt.Errorf("failed to add vsock port: %w", err)
 	}
 
+	_, krunStartSpan := tracing.Start(ctx, "libkrun.VMStart")
+	defer krunStartSpan.End()
+
 	preVMStart := time.Now()
 
-	// Start it
-	errC := make(chan error)
+	errC := make(chan error, 1)
 	go func() {
 		defer close(errC)
 		if err := v.vmc.Start(); err != nil {
@@ -362,7 +365,12 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 		return conn.Close()
 	})
 
-	v.client = ttrpc.NewClient(conn)
+	// Stop the spans here, don't wait for the defer. End() is idempotent.
+	krunStartSpan.End()
+
+	v.client = ttrpc.NewClient(conn,
+		ttrpc.WithUnaryClientInterceptor(tracing.UnaryClientInterceptor()),
+	)
 
 	return nil
 }

@@ -40,6 +40,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/containerd/nerdbox/internal/systools"
+	"github.com/containerd/nerdbox/internal/tracing"
 	"github.com/containerd/nerdbox/internal/vminit/stream"
 )
 
@@ -151,10 +152,13 @@ func (p *Init) Create(ctx context.Context, r *CreateConfig) (retError error) {
 		opts.ConsoleSocket = socket
 	}
 
+	_, crunCreateSpan := tracing.Start(ctx, "crun.create")
 	if err := p.runtime.Create(context.WithoutCancel(ctx), r.ID, r.Bundle, opts); err != nil {
+		crunCreateSpan.End()
 		systools.DumpFile(ctx, p.runtime.Log)
 		return p.runtimeError(err, "OCI runtime create failed")
 	}
+	crunCreateSpan.End()
 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -243,7 +247,9 @@ func (p *Init) Start(ctx context.Context) error {
 }
 
 func (p *Init) start(ctx context.Context) error {
+	_, crunStartSpan := tracing.Start(ctx, "crun.start")
 	err := p.runtime.Start(ctx, p.id)
+	crunStartSpan.End()
 	return p.runtimeError(err, "OCI runtime start failed")
 }
 

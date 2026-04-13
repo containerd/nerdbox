@@ -38,6 +38,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/containerd/nerdbox/internal/nwcfg"
+	"github.com/containerd/nerdbox/internal/tracing"
 )
 
 // Connect sets up networking for the container with the given pid, based on
@@ -54,6 +55,8 @@ func Connect(ctx context.Context, bundleDirname string, pid int) (func() error, 
 	eg, ctx := errgroup.WithContext(ctx)
 	for _, n := range config.Networks {
 		eg.Go(func() error {
+			_, setupSpan := tracing.Start(ctx, "ctrnetworking.setupNetwork")
+			defer setupSpan.End()
 			nshCtr, err := netns.GetFromPid(pid)
 			if err != nil {
 				return fmt.Errorf("getting container netns: %w", err)

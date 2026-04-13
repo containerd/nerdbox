@@ -34,7 +34,7 @@ import (
 	"github.com/containerd/containerd/v2/pkg/sys/reaper"
 	cplugins "github.com/containerd/containerd/v2/plugins"
 	"github.com/containerd/log"
-	"github.com/containerd/otelttrpc"
+	"github.com/containerd/nerdbox/internal/tracing"
 	"github.com/containerd/plugin"
 	"github.com/containerd/plugin/registry"
 	"github.com/containerd/ttrpc"
@@ -52,6 +52,7 @@ import (
 	_ "github.com/containerd/nerdbox/plugins/vminit/events"
 	_ "github.com/containerd/nerdbox/plugins/vminit/streaming"
 	_ "github.com/containerd/nerdbox/plugins/vminit/task"
+	_ "github.com/containerd/nerdbox/plugins/vminit/tracing"
 )
 
 func main() {
@@ -289,7 +290,7 @@ func New(ctx context.Context, config ServiceConfig) (Runnable, error) {
 	})
 
 	ts, err := ttrpc.NewServer(
-		ttrpc.WithUnaryServerInterceptor(otelttrpc.UnaryServerInterceptor()),
+		ttrpc.WithUnaryServerInterceptor(tracing.UnaryServerInterceptor()),
 	)
 	if err != nil {
 		return nil, err

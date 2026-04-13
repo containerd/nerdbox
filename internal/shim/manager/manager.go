@@ -28,7 +28,7 @@ import (
 
 // NewShimManager returns an implementation of the shim manager
 // using run_vminitd
-func NewShimManager(name string) shim.Manager {
+func NewShimManager(name string) shim.Shim {
 	return &manager{
 		name: name,
 	}

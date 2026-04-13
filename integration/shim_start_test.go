@@ -19,8 +19,8 @@
 package integration
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
 	"io"
 	"net"
 	"os"
@@ -32,21 +32,17 @@ import (
 	"testing"
 	"time"
 
+	bootapi "github.com/containerd/containerd/api/runtime/bootstrap/v1"
 	"github.com/containerd/nerdbox/internal/ttrpcutil"
+	"google.golang.org/protobuf/proto"
 )
 
 const shimBinary = "containerd-shim-nerdbox-v1"
 
-type shimParams struct {
-	Version  int    `json:"version"`
-	Address  string `json:"address"`
-	Protocol string `json:"protocol"`
-}
-
 // startShim launches the shim binary with the "start" subcommand and returns
-// the bootstrap parameters. It registers a cleanup function to kill the
+// the bootstrap result. It registers a cleanup function to kill the
 // spawned shim process.
-func startShim(t *testing.T) shimParams {
+func startShim(t *testing.T) *bootapi.BootstrapResult {
 	t.Helper()
 
 	shimPath, err := exec.LookPath(shimBinary)
@@ -82,19 +78,30 @@ func startShim(t *testing.T) shimParams {
 	defer cancel()
 
 	shimID := strings.ReplaceAll(t.Name(), "/", "-")
+	containerdAddr := filepath.Join(socketDir, "containerd.sock")
 	cmd := exec.CommandContext(ctx, shimPath,
 		"-namespace", "test",
 		"-id", shimID,
-		"-address", filepath.Join(socketDir, "containerd.sock"),
+		"-address", containerdAddr,
 		"start",
 	)
 	cmd.Dir = bundleDir
-	cmd.Env = append(os.Environ(),
-		// SHIM_SOCKET_DIR is read by the containerd shim framework (our
-		// fork) to populate StartOpts.SocketDir so the shim creates its
-		// sockets in a writable directory instead of /run/containerd/s.
-		"SHIM_SOCKET_DIR="+socketDir,
-	)
+	cmd.Env = append(os.Environ(), "GOMAXPROCS=4")
+
+	// Pass bootstrap params via stdin using the new bootstrap protocol.
+	// The shim framework reads BootstrapParams from stdin to get the
+	// socket directory and other configuration.
+	bparams := &bootapi.BootstrapParams{
+		InstanceID:            shimID,
+		Namespace:             "test",
+		ContainerdGrpcAddress: containerdAddr,
+		SocketDir:             &socketDir,
+	}
+	bdata, err := proto.Marshal(bparams)
+	if err != nil {
+		t.Fatalf("failed to marshal bootstrap params: %v", err)
+	}
+	cmd.Stdin = bytes.NewReader(bdata)
 
 	// Register cleanup before cmd.Output() so that the spawned shim child
 	// is killed even if later assertions fail or the test times out.
@@ -119,22 +126,22 @@ func startShim(t *testing.T) shimParams {
 		t.Fatalf("shim start failed: %v\nstderr: %s", err, stderr)
 	}
 
-	var params shimParams
-	if err := json.Unmarshal(out, &params); err != nil {
-		t.Fatalf("failed to parse shim output: %v\nraw: %s", err, out)
+	var result bootapi.BootstrapResult
+	if err := proto.Unmarshal(out, &result); err != nil {
+		t.Fatalf("failed to parse shim output: %v\nraw: %x", err, out)
 	}
-	if params.Address == "" {
+	if result.Address == "" {
 		t.Fatal("shim returned empty address")
 	}
-	return params
+	return &result
 }
 
 // TestShimStart exercises the shim manager's Start() code path by invoking
 // the real shim binary with the "start" subcommand. This is the same
 // invocation containerd uses to launch a shim.
 func TestShimStart(t *testing.T) {
-	params := startShim(t)
-	t.Logf("shim started: version=%d protocol=%s address=%s", params.Version, params.Protocol, params.Address)
+	result := startShim(t)
+	t.Logf("shim started: version=%d protocol=%s address=%s", result.Version, result.Protocol, result.Address)
 }
 
 // TestShimConnect verifies that the shim's TTRPC server is reachable after
@@ -143,10 +150,10 @@ func TestShimStart(t *testing.T) {
 // "failed to create TTRPC connection: dial unix …: connect: no such file or
 // directory" error seen in CI.
 func TestShimConnect(t *testing.T) {
-	params := startShim(t)
-	t.Logf("shim started: version=%d protocol=%s address=%s", params.Version, params.Protocol, params.Address)
+	result := startShim(t)
+	t.Logf("shim started: version=%d protocol=%s address=%s", result.Version, result.Protocol, result.Address)
 
-	socketPath := strings.TrimPrefix(params.Address, "unix://")
+	socketPath := strings.TrimPrefix(result.Address, "unix://")
 
 	// Poll for the TTRPC server to become ready, same as containerd does
 	// after the shim's Start returns.

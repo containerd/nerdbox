@@ -30,6 +30,7 @@ import (
 	"time"
 
 	winio "github.com/Microsoft/go-winio"
+	bootapi "github.com/containerd/containerd/api/runtime/bootstrap/v1"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/containerd/v2/pkg/shim"
 )
@@ -78,19 +79,18 @@ func shimPipeAddress(ctx context.Context, containerdAddress, grouping string) (s
 	return fmt.Sprintf(`\\.\pipe\containerd-shim-%x`, d[:16]), nil
 }
 
-func (manager) Start(ctx context.Context, id string, opts shim.StartOpts) (_ shim.BootstrapParams, retErr error) {
-	var params shim.BootstrapParams
-	params.Version = 3
-	params.Protocol = "ttrpc"
+func (manager) Start(ctx context.Context, bparams *bootapi.BootstrapParams) (_ *bootapi.BootstrapResult, retErr error) {
+	id := bparams.InstanceID
+	debug := bparams.LogLevel <= bootapi.LogLevel_LOG_LEVEL_DEBUG
 
-	cmd, err := newCommand(ctx, id, opts.Address, opts.TTRPCAddress, opts.Debug)
+	cmd, err := newCommand(ctx, id, bparams.ContainerdGrpcAddress, bparams.ContainerdTtrpcAddress, debug)
 	if err != nil {
-		return params, err
+		return nil, err
 	}
 	grouping := id
 	spec, err := readSpec()
 	if err != nil {
-		return params, err
+		return nil, err
 	}
 	for _, group := range groupLabels {
 		if groupID, ok := spec.Annotations[group]; ok {
@@ -100,9 +100,9 @@ func (manager) Start(ctx context.Context, id string, opts shim.StartOpts) (_ shi
 	}
 
 	// Generate a named pipe address for the shim TTRPC socket.
-	address, err := shimPipeAddress(ctx, opts.Address, grouping)
+	address, err := shimPipeAddress(ctx, bparams.ContainerdGrpcAddress, grouping)
 	if err != nil {
-		return params, err
+		return nil, err
 	}
 
 	// Pass the pipe address to the child shim process via environment variable.
@@ -110,7 +110,7 @@ func (manager) Start(ctx context.Context, id string, opts shim.StartOpts) (_ shi
 	cmd.Env = append(cmd.Env, "TTRPC_SOCKET="+address)
 
 	if err := cmd.Start(); err != nil {
-		return params, err
+		return nil, err
 	}
 
 	defer func() {
@@ -122,7 +122,7 @@ func (manager) Start(ctx context.Context, id string, opts shim.StartOpts) (_ shi
 	go cmd.Wait()
 
 	if err = shim.WritePidFile("shim.pid", cmd.Process.Pid); err != nil {
-		return params, err
+		return nil, err
 	}
 
 	// Wait for the child shim to create the TTRPC named pipe.
@@ -130,20 +130,28 @@ func (manager) Start(ctx context.Context, id string, opts shim.StartOpts) (_ shi
 	// the child starts. On Windows, the child creates the pipe after startup,
 	// so we must wait for it before returning the address to containerd.
 	deadline := time.Now().Add(10 * time.Second)
+	var ready bool
 	for time.Now().Before(deadline) {
 		conn, err := winio.DialPipe(address, nil)
 		if err == nil {
 			conn.Close()
+			ready = true
 			break
 		}
 		if !os.IsNotExist(err) {
-			return params, fmt.Errorf("waiting for shim pipe %s: %w", address, err)
+			return nil, fmt.Errorf("waiting for shim pipe %s: %w", address, err)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	if !ready {
+		return nil, fmt.Errorf("timed out waiting for shim pipe %s", address)
+	}
 
-	params.Address = address
-	return params, nil
+	return &bootapi.BootstrapResult{
+		Version:  3,
+		Address:  address,
+		Protocol: "ttrpc",
+	}, nil
 }
 
 func (manager) Stop(ctx context.Context, id string) (shim.StopStatus, error) {

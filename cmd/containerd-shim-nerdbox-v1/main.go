@@ -31,5 +31,5 @@ import (
 )
 
 func main() {
-	shim.Run(context.Background(), manager.NewShimManager("io.containerd.nerdbox.v1"))
+	shim.RunShim(context.Background(), manager.NewShimManager("io.containerd.nerdbox.v1"))
 }

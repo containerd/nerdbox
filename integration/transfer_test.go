@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"testing"
 
 	transferapi "github.com/containerd/containerd/api/services/transfer/v1"
@@ -132,10 +133,14 @@ func (sc *vmStreamCreator) Create(ctx context.Context, id string) (streaming.Str
 	return &framedStream{conn: conn}, nil
 }
 
+// maxFrameSize is the maximum allowed frame payload (10 MiB).
+const maxFrameSize = 10 << 20
+
 // framedStream implements streaming.Stream over a net.Conn using
 // length-prefixed proto framing (matching the vminitd vsockStream protocol).
 type framedStream struct {
 	conn net.Conn
+	once sync.Once
 }
 
 func (s *framedStream) Send(a typeurl.Any) error {
@@ -157,6 +162,13 @@ func (s *framedStream) Recv() (typeurl.Any, error) {
 	if err := binary.Read(s.conn, binary.BigEndian, &length); err != nil {
 		return nil, err
 	}
+	// A zero-length frame is an application-level EOF marker.
+	if length == 0 {
+		return nil, io.EOF
+	}
+	if length > maxFrameSize {
+		return nil, fmt.Errorf("frame size %d exceeds maximum %d", length, maxFrameSize)
+	}
 	data := make([]byte, length)
 	if _, err := io.ReadFull(s.conn, data); err != nil {
 		return nil, fmt.Errorf("failed to read frame data: %w", err)
@@ -169,14 +181,15 @@ func (s *framedStream) Recv() (typeurl.Any, error) {
 }
 
 func (s *framedStream) Close() error {
-	// Use half-close (shutdown write) instead of full close. SendStream
-	// calls Close() after sending all data; a full close can discard
-	// buffered data the VM hasn't read yet. Shutdown SHUT_WR signals
-	// EOF to the reader while letting buffered data drain.
-	if sc, ok := s.conn.(interface{ CloseWrite() error }); ok {
-		return sc.CloseWrite()
-	}
-	return s.conn.Close()
+	var err error
+	s.once.Do(func() {
+		// Send a zero-length frame as an application-level EOF signal.
+		// We avoid CloseWrite()/Close() here because the vsock proxy
+		// sends a full bidirectional SHUTDOWN when it sees transport-level
+		// EOF, which kills the reverse direction (window updates) too.
+		err = binary.Write(s.conn, binary.BigEndian, uint32(0))
+	})
+	return err
 }
 
 // nopWriteCloser wraps an io.Writer with a no-op Close method.

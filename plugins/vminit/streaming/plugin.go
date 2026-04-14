@@ -211,11 +211,16 @@ func (sg *streamGetter) Get(ctx context.Context, name string) (streaming.Stream,
 	return &vsockStream{conn: conn}, nil
 }
 
+// maxFrameSize is the maximum allowed frame payload (10 MiB). Frames
+// larger than this are rejected to prevent OOM from buggy/malicious peers.
+const maxFrameSize = 10 << 20
+
 // vsockStream wraps a net.Conn with length-prefixed proto framing to
 // implement the streaming.Stream interface. Each message is framed as
 // a 4-byte big-endian length prefix followed by serialized proto bytes.
 type vsockStream struct {
 	conn net.Conn
+	once sync.Once // ensures Close sends EOF exactly once
 }
 
 func (s *vsockStream) Send(a typeurl.Any) error {
@@ -237,6 +242,13 @@ func (s *vsockStream) Recv() (typeurl.Any, error) {
 	if err := binary.Read(s.conn, binary.BigEndian, &length); err != nil {
 		return nil, err
 	}
+	// A zero-length frame is an application-level EOF marker.
+	if length == 0 {
+		return nil, io.EOF
+	}
+	if length > maxFrameSize {
+		return nil, fmt.Errorf("frame size %d exceeds maximum %d", length, maxFrameSize)
+	}
 	data := make([]byte, length)
 	if _, err := io.ReadFull(s.conn, data); err != nil {
 		return nil, fmt.Errorf("failed to read frame data: %w", err)
@@ -249,5 +261,15 @@ func (s *vsockStream) Recv() (typeurl.Any, error) {
 }
 
 func (s *vsockStream) Close() error {
-	return s.conn.Close()
+	var err error
+	s.once.Do(func() {
+		// Send a zero-length frame as an application-level EOF marker.
+		// Do NOT close the underlying connection here — Close() is called
+		// by the send direction while the receive direction may still be
+		// reading from the same conn. The shim-side bridge defers
+		// vmConn.Close() when both directions complete, which tears down
+		// the kernel-level vsock connection.
+		err = binary.Write(s.conn, binary.BigEndian, uint32(0))
+	})
+	return err
 }

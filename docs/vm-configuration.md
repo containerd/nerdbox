@@ -74,7 +74,7 @@ You must build it from source following the instructions set in that repository.
 ```
 (terminal 1) $ bin/gvproxy -debug -listen unix:///tmp/network.sock -listen-vfkit unixgram:///tmp/gvisor.sock
 (terminal 2) $ ctr run -t --net-host --cap-add CAP_NET_ADMIN --rm --snapshotter erofs --runtime io.containerd.nerdbox.v1 \
-  --annotation io.containerd.nerdbox.network.0=socket=/tmp/gvisor.sock,mode=unixgram,mac=fa:43:25:5d:6f:b4,addr=192.168.127.2 \
+  --annotation io.containerd.nerdbox.network.0=socket=/tmp/gvisor.sock,mode=unixgram,mac=fa:43:25:5d:6f:b4,addr=192.168.127.2/16 \
   docker.io/nicolaka/netshoot:latest test
 ```
 

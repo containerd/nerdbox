@@ -52,19 +52,18 @@ import (
 // filesystem setup.
 //
 // If namespace creation is not possible (e.g. AppArmor restricts
-// unprivileged user namespaces), the function logs a warning and the shim
-// will run without mount isolation.
-func cloneMntNs(_ context.Context, cmd *exec.Cmd) {
+// unprivileged user namespaces), the shim runs without mount isolation
+// and this function returns false.
+// cloneMntNs returns true if user namespace clone flags were set.
+func cloneMntNs(_ context.Context, cmd *exec.Cmd) bool {
 	if restricted, err := apparmorRestrictsUserns(); err != nil {
 		// Failed to check apparmor userns restriction, skipping mount namespace isolation")
 		// We can't log anything here as it will break the TTRPC protocol!
-		// TODO(vvoland): Find a better way to surface this to the user.
-		return
+		return false
 	} else if restricted {
 		// apparmor_restrict_unprivileged_userns=1 prevents user namespace creation; shim will run without mount namespace isolation
 		// We can't log anything here as it will break the TTRPC protocol!
-		// TODO(vvoland): Find a better way to surface this to the user.
-		return
+		return false
 	}
 
 	uid := os.Getuid()
@@ -76,6 +75,7 @@ func cloneMntNs(_ context.Context, cmd *exec.Cmd) {
 	cmd.SysProcAttr.GidMappings = []syscall.SysProcIDMap{
 		{ContainerID: gid, HostID: gid, Size: 1},
 	}
+	return true
 }
 
 // apparmorRestrictsUserns checks if the kernel sysctl

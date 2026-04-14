@@ -23,4 +23,4 @@ import (
 	"os/exec"
 )
 
-func cloneMntNs(_ context.Context, _ *exec.Cmd) {}
+func cloneMntNs(_ context.Context, _ *exec.Cmd) bool { return false }

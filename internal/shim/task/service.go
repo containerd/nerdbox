@@ -85,7 +85,32 @@ func NewTaskService(ctx context.Context, sb sandbox.Sandbox, publisher shim.Publ
 type container struct {
 	ioShutdown func(context.Context) error
 
+	// forwarder is the UNIX socket forwarder for this specific container.
+	forwarder *socketForwarder
+
 	execShutdowns map[string]func(context.Context) error
+}
+
+// shutdown shuts down the container's IO streams, socket forwarding, and all
+// exec IO streams.
+func (c *container) shutdown(ctx context.Context) error {
+	var errs []error
+	if c.ioShutdown != nil {
+		if err := c.ioShutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("io shutdown: %w", err))
+		}
+	}
+	if c.forwarder != nil {
+		if err := c.forwarder.shutdown(); err != nil {
+			errs = append(errs, fmt.Errorf("socket forward shutdown: %w", err))
+		}
+	}
+	for execID, ioShutdown := range c.execShutdowns {
+		if err := ioShutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("exec %q io shutdown: %w", execID, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // service is the shim implementation of a remote shim over GRPC
@@ -115,15 +140,8 @@ func (s *service) shutdown(ctx context.Context) error {
 	var errs []error
 
 	for id, c := range s.containers {
-		if c.ioShutdown != nil {
-			if err := c.ioShutdown(ctx); err != nil {
-				errs = append(errs, fmt.Errorf("container %q io shutdown: %w", id, err))
-			}
-		}
-		for execID, ioShutdown := range c.execShutdowns {
-			if err := ioShutdown(ctx); err != nil {
-				errs = append(errs, fmt.Errorf("container %q exec %q io shutdown: %w", id, execID, err))
-			}
+		if err := c.shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("container %q shutdown: %w", id, err))
 		}
 	}
 
@@ -167,6 +185,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		resCfg      resourceConfig
 		dumpInfoCfg dumpInfoConfig
 		bm          bindMounter
+		sfpr        = socketForwardsProvider{containerID: r.ID}
 	)
 	// Load the OCI bundle and apply transformers to get the bundle that'll be
 	// set up on the VM side.
@@ -176,6 +195,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		ctrNetCfg.fromBundle,
 		resCfg.FromBundle,
 		dumpInfoCfg.FromBundle,
+		sfpr.FromBundle,
 		func(ctx context.Context, b *bundle.Bundle) error {
 			// If there are no VM networks, try falling back to host's resolv.conf (for TSI).
 			return addResolvConf(ctx, b, len(nwpr.nws) == 0)
@@ -325,12 +345,28 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		return nil, errgrpc.ToGRPC(err)
 	}
 
+	// Bind socket forwards on the VM before container creation so
+	// that crun can bind-mount the listener sockets into the container.
+	if err := bindSockets(ctx, s.sb, sfpr.entries); err != nil {
+		if err := ioShutdown(ctx); err != nil {
+			log.G(ctx).WithError(err).Error("failed to shutdown io after socket forwarding failure")
+		}
+		return nil, errgrpc.ToGRPC(err)
+	}
+
 	// setupTime is the total time to setup the VM and everything needed
 	// to proxy the create task request. This measures the overall
 	// overhead of creating the container inside the VM.
 	setupTime := time.Since(presetup)
 
-	vr := &taskAPI.CreateTaskRequest{
+	preCreate := time.Now()
+	c := &container{
+		ioShutdown:    ioShutdown,
+		execShutdowns: make(map[string]func(context.Context) error),
+	}
+
+	tc := taskAPI.NewTTRPCTaskClient(vmc)
+	resp, err := tc.Create(ctx, &taskAPI.CreateTaskRequest{
 		ID:       r.ID,
 		Bundle:   br.Bundle,
 		Rootfs:   m,
@@ -339,25 +375,26 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		Stdout:   cio.Stdout,
 		Stderr:   cio.Stderr,
 		Options:  r.Options,
-	}
-
-	preCreate := time.Now()
-	c := &container{
-		ioShutdown:    ioShutdown,
-		execShutdowns: make(map[string]func(context.Context) error),
-	}
-	tc := taskAPI.NewTTRPCTaskClient(vmc)
-	resp, err := tc.Create(ctx, vr)
+	})
 	if err != nil {
 		log.G(ctx).WithError(err).Error("failed to create task")
-		if c.ioShutdown != nil {
-			// TODO: stop this
-			if err := c.ioShutdown(ctx); err != nil {
-				log.G(ctx).WithError(err).Error("failed to shutdown io after create failure")
-			}
+		if err := c.shutdown(ctx); err != nil {
+			log.G(ctx).WithError(err).Error("failed to shutdown container after create failure")
 		}
 		return nil, errgrpc.ToGRPC(err)
 	}
+
+	// Start the Accept stream after the container has been created so the
+	// host can relay forwarded connections from the VM.
+	fwder, err := startSocketForwarding(context.Background(), s.sb, r.ID, sfpr.entries)
+	if err != nil {
+		log.G(ctx).WithError(err).Error("failed to start socket forwarding")
+		if err := c.shutdown(ctx); err != nil {
+			log.G(ctx).WithError(err).Error("failed to shutdown container after socket forwarding failure")
+		}
+		return nil, errgrpc.ToGRPC(err)
+	}
+	c.forwarder = fwder
 
 	log.G(ctx).WithFields(log.Fields{
 		"t_boot":   bootTime,
@@ -425,15 +462,8 @@ func (s *service) Delete(ctx context.Context, r *taskAPI.DeleteRequest) (*taskAP
 					delete(c.execShutdowns, r.ExecID)
 				}
 			} else {
-				if c.ioShutdown != nil {
-					if err := c.ioShutdown(ctx); err != nil {
-						log.G(ctx).WithError(err).Error("failed to shutdown io after delete")
-					}
-				}
-				for execID, ioShutdown := range c.execShutdowns {
-					if err := ioShutdown(ctx); err != nil {
-						log.G(ctx).WithError(err).WithField("exec", execID).Error("failed to shutdown exec io after delete")
-					}
+				if err := c.shutdown(ctx); err != nil {
+					log.G(ctx).WithError(err).Error("failed to shutdown container after delete")
 				}
 				delete(s.containers, r.ID)
 			}

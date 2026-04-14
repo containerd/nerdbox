@@ -140,11 +140,13 @@ below), the streaming plugin also exposes a `StreamGetter`
 in a `vsockStream` providing `Send(typeurl.Any)` / `Recv() typeurl.Any`
 with length-prefixed protobuf framing.
 
-## Coordination pattern
+## Coordination patterns
 
 The host and guest must agree on a stream ID before either side can use
 the connection. Since the stream channel itself has no signaling mechanism,
 the ID is always exchanged over the **TTRPC control channel** (port 1025).
+
+### Host-initiated streams
 
 The host generates a stream ID, opens the stream via `StartStream`, and then
 sends the ID to the guest through a TTRPC request. The guest calls
@@ -161,8 +163,28 @@ RPC(streamID) ----TTRPC--->         receive RPC
 <-- bidirectional I/O -->
 ```
 
-Currently all stream users follow this pattern -- stream IDs are embedded
-in TTRPC request fields (e.g. `stream://` URIs for container stdio).
+This is the most common pattern. Container stdio uses it.
+
+### Guest-initiated streams
+
+The guest generates a stream ID and notifies the host through a
+bidirectional streaming TTRPC RPC. The host then opens the stream using the
+ID it received.
+
+```
+Host                                Guest
+----                                -----
+                                    streamID = generate()
+                                    send streamID via streaming RPC
+receive streamID <--TTRPC---
+conn = StartStream(streamID)
+                                    (stream registered by accept loop)
+                                    conn = streams.Get(streamID)
+<-- bidirectional I/O -->
+```
+
+Socket forwarding uses this pattern: the guest sends a `ConnectRequest`
+through the `Accept` stream, and the host opens the vsock stream in response.
 
 ## Existing stream users
 
@@ -211,6 +233,14 @@ Inside the VM, the `vsockStream` wrapper
 (`plugins/vminit/streaming/plugin.go`) implements
 `Send` / `Recv` with the same framing, providing a `streaming.Stream`
 interface to guest-side plugins.
+
+### Socket forwarding
+
+UNIX domain sockets can be forwarded across the VM boundary. Each forwarded
+connection uses a dedicated vsock stream for the data relay, using the
+guest-initiated pattern: the VM notifies the host via the `Accept` stream,
+then the host opens a vsock stream to complete the relay. See
+[Socket Forwarding](socket-forwarding.md) for full details.
 
 ## Adding a new stream type
 

@@ -4,7 +4,7 @@ on:
   # See https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue#triggering-merge-group-checks-with-github-actions
   merge_group:
   pull_request:
-    branches: ['main', 'release/**']
+    branches: ["main", "release/**"]
 
 permissions:  # added using https://github.com/step-security/secure-workflows
   contents: read
@@ -56,7 +56,7 @@ jobs:
 
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
         with:
-          go-version-file: 'src/github.com/containerd/nerdbox/.github/.tool-versions'
+          go-version-file: "src/github.com/containerd/nerdbox/.github/.tool-versions"
 
       - uses: containerd/project-checks@d7751f3c375b8fe4a84c02a068184ee4c1f59bc4  # v1.2.2
         if: github.repository == 'containerd/nerdbox'
@@ -118,7 +118,7 @@ jobs:
 
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
         with:
-          go-version-file: 'src/github.com/containerd/nerdbox/.github/.tool-versions'
+          go-version-file: "src/github.com/containerd/nerdbox/.github/.tool-versions"
 
       - name: Set env
         shell: bash

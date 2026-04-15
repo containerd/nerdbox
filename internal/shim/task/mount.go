@@ -230,16 +230,24 @@ func (bm *bindMounter) FromBundle(ctx context.Context, b *bundle.Bundle) error {
 		tag := fmt.Sprintf("bind-%x", hash[:8])
 		vmTarget := "/mnt/" + tag
 
+		// Resolve symlinks in the source path because libkrun opens shared
+		// directories with O_NOFOLLOW, which rejects symlinks
+		// (e.g., /etc -> /private/etc and /etc/resolv.conf -> ../var/run/resolv.conf on macOS).
+		resolvedSource, err := filepath.EvalSymlinks(m.Source)
+		if err != nil {
+			return fmt.Errorf("failed to resolve symlinks for bind mount source %s: %w", m.Source, err)
+		}
+
 		// For files, share the parent directory via virtiofs since virtiofs
 		// operates on directories. The spec source points to the file within
 		// the mounted directory.
-		hostSrc := m.Source
+		hostSrc := resolvedSource
 		specSrc := vmTarget
 		if !fi.IsDir() {
-			hostSrc = filepath.Dir(m.Source)
+			hostSrc = filepath.Dir(resolvedSource)
 			// Use path.Join (not filepath.Join) because this path is used
 			// inside the Linux VM where forward slashes are required.
-			specSrc = path.Join(vmTarget, filepath.Base(m.Source))
+			specSrc = path.Join(vmTarget, filepath.Base(resolvedSource))
 		}
 
 		transformed := bindMount{

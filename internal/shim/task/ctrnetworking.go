@@ -187,8 +187,11 @@ func addResolvConf(ctx context.Context, b *bundle.Bundle, fallbackToHostRC bool)
 			_, _ = rcBuf.WriteRune('\n')
 		}
 		rcBytes = rcBuf.Bytes()
-	} else if fallbackToHostRC {
+	} else {
 		// Try giving the VM a copy of the host's resolv.conf.
+		// This is always attempted (not only as a fallback) because on some
+		// platforms (e.g., macOS) the host path /etc/resolv.conf may contain
+		// symlinks that prevent it from being shared via virtiofs.
 		if c, err := os.ReadFile("/etc/resolv.conf"); err == nil {
 			rcBytes = c
 		}

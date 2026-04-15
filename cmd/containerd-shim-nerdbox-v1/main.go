@@ -21,6 +21,7 @@ import (
 
 	"github.com/containerd/containerd/v2/pkg/shim"
 
+	"github.com/containerd/nerdbox/internal/logging"
 	"github.com/containerd/nerdbox/internal/shim/manager"
 
 	_ "github.com/containerd/nerdbox/plugins/shim/sandbox"
@@ -30,6 +31,14 @@ import (
 	_ "github.com/containerd/nerdbox/plugins/vm/libkrun"
 )
 
+func init() {
+	logging.SetupShimLog()
+}
+
 func main() {
-	shim.RunShim(context.Background(), manager.NewShimManager("io.containerd.nerdbox.v1"))
+	shim.RunShim(context.Background(), manager.NewShimManager("io.containerd.nerdbox.v1"),
+		func(c *shim.Config) {
+			c.NoSetupLogger = true
+		},
+	)
 }

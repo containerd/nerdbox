@@ -265,4 +265,5 @@ jobs:
           _output/userns-check
 
       - name: Run integration tests
-        run: go test -v ./integration/...
+        shell: bash
+        run: ./integration/test.sh

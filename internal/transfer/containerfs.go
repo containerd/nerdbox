@@ -33,7 +33,7 @@ import (
 const mediaTypeTar = "application/x-tar"
 
 // NewContainerFSTransferrer returns a Transferrer that handles
-// ContainerFilesystem + ReadStream/WriteStream transfer pairs.
+// ContainerPath + ReadStream/WriteStream transfer pairs.
 func NewContainerFSTransferrer(bundleDir string) ctransfer.Transferrer {
 	return &containerFSTransferrer{bundleDir: bundleDir}
 }
@@ -44,8 +44,8 @@ type containerFSTransferrer struct {
 
 func (t *containerFSTransferrer) Transfer(ctx context.Context, src, dst any, opts ...ctransfer.Opt) error {
 	switch s := src.(type) {
-	case *ContainerFilesystem:
-		// Copy-from: ContainerFilesystem -> WriteStream
+	case *ContainerPath:
+		// Copy-from: ContainerPath -> WriteStream
 		d, ok := dst.(*WriteStream)
 		if !ok {
 			return errdefs.ErrNotImplemented
@@ -56,8 +56,8 @@ func (t *containerFSTransferrer) Transfer(ctx context.Context, src, dst any, opt
 		return writePath(rootfs, s.Path, w, d.MediaType, s.NoWalk)
 
 	case *ReadStream:
-		// Copy-to: ReadStream -> ContainerFilesystem
-		d, ok := dst.(*ContainerFilesystem)
+		// Copy-to: ReadStream -> ContainerPath
+		d, ok := dst.(*ContainerPath)
 		if !ok {
 			return errdefs.ErrNotImplemented
 		}

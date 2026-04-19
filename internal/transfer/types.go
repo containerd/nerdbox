@@ -21,33 +21,32 @@ import (
 	"context"
 	"io"
 
+	transferpb "github.com/containerd/containerd/api/types/transfer"
 	"github.com/containerd/containerd/v2/core/streaming"
 	tplugins "github.com/containerd/containerd/v2/core/transfer/plugins"
 	tstreaming "github.com/containerd/containerd/v2/core/transfer/streaming"
 	"github.com/containerd/typeurl/v2"
-
-	transferpb "github.com/containerd/nerdbox/api/types/transfer/v1"
 )
 
 func init() {
-	tplugins.Register(&transferpb.ContainerFilesystem{}, ContainerFilesystem{})
+	tplugins.Register(&transferpb.ContainerPath{}, ContainerPath{})
 	tplugins.Register(&transferpb.ReadStream{}, ReadStream{})
 	tplugins.Register(&transferpb.WriteStream{}, WriteStream{})
 }
 
-// ContainerFilesystem represents a path within a running container's
+// ContainerPath represents a path within a running container's
 // filesystem. It acts as either a source or destination in a transfer
 // operation, identifying the container and path for archive operations.
-type ContainerFilesystem struct {
+type ContainerPath struct {
 	ContainerID       string
 	Path              string
 	NoWalk            bool
 	PreserveOwnership bool
 }
 
-// MarshalAny marshals the ContainerFilesystem to a typeurl.Any.
-func (cf *ContainerFilesystem) MarshalAny(ctx context.Context, sm streaming.StreamCreator) (typeurl.Any, error) {
-	return typeurl.MarshalAny(&transferpb.ContainerFilesystem{
+// MarshalAny marshals the ContainerPath to a typeurl.Any.
+func (cf *ContainerPath) MarshalAny(ctx context.Context, sm streaming.StreamCreator) (typeurl.Any, error) {
+	return typeurl.MarshalAny(&transferpb.ContainerPath{
 		ContainerID:       cf.ContainerID,
 		Path:              cf.Path,
 		NoWalk:            cf.NoWalk,
@@ -55,9 +54,9 @@ func (cf *ContainerFilesystem) MarshalAny(ctx context.Context, sm streaming.Stre
 	})
 }
 
-// UnmarshalAny unmarshals a ContainerFilesystem from a typeurl.Any.
-func (cf *ContainerFilesystem) UnmarshalAny(ctx context.Context, sg streaming.StreamGetter, a typeurl.Any) error {
-	var p transferpb.ContainerFilesystem
+// UnmarshalAny unmarshals a ContainerPath from a typeurl.Any.
+func (cf *ContainerPath) UnmarshalAny(ctx context.Context, sg streaming.StreamGetter, a typeurl.Any) error {
+	var p transferpb.ContainerPath
 	if err := typeurl.UnmarshalTo(a, &p); err != nil {
 		return err
 	}

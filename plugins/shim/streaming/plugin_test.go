@@ -19,6 +19,7 @@ package streaming
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -187,8 +188,8 @@ func TestStreamReturnsOnVMClose(t *testing.T) {
 		}
 		if !errors.Is(err, io.EOF) && err.Error() != "EOF" {
 			// Different ttrpc builds may surface the close as either
-			// io.EOF or a typed EOF status; accept both.
-			t.Logf("stream closed with: %v", err)
+			// io.EOF or a typed EOF status; anything else is a regression.
+			t.Fatalf("expected io.EOF or similar, got unexpected error: %v", err)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("shim Stream handler did not release the TTRPC stream after VM closed its side — #701 regression")
@@ -220,7 +221,7 @@ func TestMultipleStreamsDoNotAccumulate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Stream %d: %v", i, err)
 		}
-		initMsg, err := typeurl.MarshalAnyToProto(&streamapi.StreamInit{ID: "s"})
+		initMsg, err := typeurl.MarshalAnyToProto(&streamapi.StreamInit{ID: fmt.Sprintf("s-%d", i)})
 		if err != nil {
 			t.Fatalf("MarshalAny StreamInit %d: %v", i, err)
 		}
@@ -241,7 +242,13 @@ func TestMultipleStreamsDoNotAccumulate(t *testing.T) {
 			recvDone <- err
 		}()
 		select {
-		case <-recvDone:
+		case err := <-recvDone:
+			if err == nil {
+				t.Fatalf("stream %d: expected close error, got nil", i)
+			}
+			if !errors.Is(err, io.EOF) && err.Error() != "EOF" {
+				t.Fatalf("stream %d: expected io.EOF or similar, got %v", i, err)
+			}
 		case <-time.After(2 * time.Second):
 			t.Fatalf("stream %d not released within 2s — #701 regression", i)
 		}

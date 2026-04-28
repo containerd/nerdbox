@@ -19,6 +19,7 @@ package streaming
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 
@@ -120,25 +121,29 @@ func (s *service) Stream(ctx context.Context, srv streamapi.TTRPCStreaming_Strea
 		done <- bridgeVMToTTRPC(vmConn, srv)
 	}()
 
-	// Wait for both bridge directions to finish or context cancellation.
-	// We must not return early after just one direction finishes, because:
-	// 1. Returning closes the TTRPC server stream which can race with
-	//    other in-flight RPCs (e.g. Transfer) on the same connection.
-	// 2. Closing vmConn eagerly can truncate in-flight data that the
-	//    VM hasn't read yet.
-	// Instead, wait for both to finish naturally. For unidirectional
-	// streams, one direction will block until context cancellation
-	// (shim shutdown), which is correct — the stream stays alive as
-	// long as the connection does.
-	for n := 0; n < 2; n++ {
-		select {
-		case err := <-done:
-			if err != nil {
-				log.G(ctx).WithError(err).WithField("stream", i.ID).Debug("stream bridge direction ended")
-			}
-		case <-ctx.Done():
-			return nil
+	// Return as soon as one bridge direction finishes. That is the
+	// signal that the stream's useful work is done:
+	//   - bridgeVMToTTRPC EOF  → VM closed its side; all data delivered.
+	//   - bridgeTTRPCToVM EOF  → daemon closed its send; the zero-length
+	//                            frame above already signaled EOF to the VM.
+	//
+	// Returning here closes the TTRPC server stream, which the daemon's
+	// ReceiveStream needs to unblock (stream.Recv returns io.EOF). If we
+	// waited for both directions, bridgeTTRPCToVM would stay blocked on
+	// srv.Recv whenever the daemon has stopped sending (e.g. for small
+	// transfers where its flow-control window is not depleted), leaving
+	// the server stream open indefinitely.
+	//
+	// The other goroutine cleans up on its own: defer vmConn.Close
+	// below unblocks any pending Write, and ttrpc cancels the stream's
+	// context after this handler returns, which unblocks any pending
+	// srv.Recv.
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, io.EOF) {
+			log.G(ctx).WithError(err).WithField("stream", i.ID).Debug("stream bridge direction ended")
 		}
+	case <-ctx.Done():
 	}
 
 	return nil

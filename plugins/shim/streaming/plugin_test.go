@@ -26,7 +26,6 @@ import (
 	"time"
 
 	streamapi "github.com/containerd/containerd/api/services/streaming/v1"
-	ptypes "github.com/containerd/containerd/v2/pkg/protobuf/types"
 	"github.com/containerd/ttrpc"
 	"github.com/containerd/typeurl/v2"
 
@@ -73,14 +72,21 @@ func newTTRPCPair(t *testing.T) (srv *ttrpc.Server, cli *ttrpc.Client, cleanup f
 	}
 
 	l := &onceListener{conn: serverConn, done: make(chan struct{})}
-	go func() { _ = s.Serve(context.Background(), l) }()
+	serveErrCh := make(chan error, 1)
+	go func() {
+		serveErrCh <- s.Serve(context.Background(), l)
+	}()
 
 	c := ttrpc.NewClient(clientConn)
 
 	return s, c, func() {
+		t.Helper()
 		c.Close()
 		s.Close()
 		close(l.done)
+		if err := <-serveErrCh; err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, ttrpc.ErrServerClosed) {
+			t.Errorf("ttrpc server exited unexpectedly: %v", err)
+		}
 	}
 }
 
@@ -214,7 +220,10 @@ func TestMultipleStreamsDoNotAccumulate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Stream %d: %v", i, err)
 		}
-		initMsg, _ := typeurl.MarshalAnyToProto(&streamapi.StreamInit{ID: "s"})
+		initMsg, err := typeurl.MarshalAnyToProto(&streamapi.StreamInit{ID: "s"})
+		if err != nil {
+			t.Fatalf("MarshalAny StreamInit %d: %v", i, err)
+		}
 		if err := stream.Send(initMsg); err != nil {
 			t.Fatalf("Send StreamInit %d: %v", i, err)
 		}
@@ -238,6 +247,3 @@ func TestMultipleStreamsDoNotAccumulate(t *testing.T) {
 		}
 	}
 }
-
-// unused import guards in case ptypes is removed by a future refactor.
-var _ = ptypes.Empty{}

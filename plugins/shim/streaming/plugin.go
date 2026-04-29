@@ -134,8 +134,8 @@ func (s *service) Stream(ctx context.Context, srv streamapi.TTRPCStreaming_Strea
 	// transfers where its flow-control window is not depleted), leaving
 	// the server stream open indefinitely.
 	//
-	// The other goroutine cleans up on its own: defer vmConn.Close
-	// below unblocks any pending Write, and ttrpc cancels the stream's
+	// The other goroutine cleans up on its own: the deferred vmConn.Close
+	// unblocks any pending Write, and ttrpc cancels the stream's
 	// context after this handler returns, which unblocks any pending
 	// srv.Recv.
 	select {

@@ -1,0 +1,30 @@
+name: "Kernel Cache Key"
+description: "Calculate a deterministic cache key from the kernel config and patches"
+inputs:
+  kernel_version:
+    description: 'Kernel version'
+    required: true
+  kernel_arch:
+    description: 'Kernel architecture (x86_64, arm64)'
+    required: true
+outputs:
+  cache-key:
+    description: "The calculated cache key"
+    value: ${{ steps.calc.outputs.cache-key }}
+
+runs:
+  using: composite
+  steps:
+    - name: Calculate kernel cache key
+      id: calc
+      shell: bash
+      run: |
+        CONFIG_FILE="kernel/config-${{ inputs.kernel_version }}-${{ inputs.kernel_arch }}"
+        if [ ! -f "$CONFIG_FILE" ]; then
+          echo "Error: Kernel config file $CONFIG_FILE not found"
+          exit 1
+        fi
+        CONFIG_HASH=$(sha256sum "$CONFIG_FILE" | cut -d' ' -f1)
+        PATCHES_HASH=$(find kernel/patches -type f -name "*.patch" -exec sha256sum {} \; | sort | sha256sum | cut -d' ' -f1)
+        CACHE_KEY="kernel-${{ inputs.kernel_version }}-${{ inputs.kernel_arch }}-${CONFIG_HASH:0:8}-${PATCHES_HASH:0:8}"
+        echo "cache-key=${CACHE_KEY}" >> $GITHUB_OUTPUT

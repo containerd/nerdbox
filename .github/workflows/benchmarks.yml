@@ -74,19 +74,10 @@ jobs:
 
       - name: Calculate kernel cache key
         id: cache-key
-        run: |
-          CONFIG_FILE="kernel/config-${{ needs.setup.outputs.kernel-version }}-${{ matrix.arch }}"
-
-          if [ ! -f "$CONFIG_FILE" ]; then
-            echo "Error: Kernel config file $CONFIG_FILE not found"
-            exit 1
-          fi
-
-          CONFIG_HASH=$(sha256sum "$CONFIG_FILE" | cut -d' ' -f1)
-          PATCHES_HASH=$(find kernel/patches -type f -name "*.patch" -exec sha256sum {} \; | sort | sha256sum | cut -d' ' -f1)
-          CACHE_KEY="kernel-${{ needs.setup.outputs.kernel-version }}-${{ matrix.arch }}-${CONFIG_HASH:0:8}-${PATCHES_HASH:0:8}"
-
-          echo "cache-key=${CACHE_KEY}" >> $GITHUB_OUTPUT
+        uses: ./.github/actions/kernel-cache-key
+        with:
+          kernel_version: ${{ needs.setup.outputs.kernel-version }}
+          kernel_arch: ${{ matrix.arch }}
 
       - name: Restore cached kernel
         id: cache-kernel

@@ -31,8 +31,12 @@ fi
 # Run each test individually
 tests=(
     "TestSystemInfo"
+    "TestConsoleOutput"
+    "TestBootDiagnostics"
     "TestStreamInitialization"
     "TestTransferEcho"
+    "TestShimStart"
+    "TestShimConnect"
 )
 
 for test in "${tests[@]}"; do

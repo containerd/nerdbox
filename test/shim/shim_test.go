@@ -80,9 +80,9 @@ func TestMain(m *testing.M) {
 //	-run TestShim/Exec
 //	-run TestShim/Lifecycle
 //
-// LayersSuite (HundredLayers) is omitted: it requires 102 separate virtio-blk
-// devices, exceeding libkrun's IRQ limit. Multi-layer support in nerdbox uses
-// erofs VMDK multi-device descriptors and is tested separately.
+// LayersSuite (HundredLayers) packs 101 erofs layers into a single
+// GPT-partitioned VMDK, consuming only one virtio-blk device regardless
+// of layer count.
 func TestShim(t *testing.T) {
 	cfg := shimConfig()
 	shimtest.NewRunSuite(cfg).Run(t)
@@ -90,6 +90,7 @@ func TestShim(t *testing.T) {
 	shimtest.NewTransferSuite(cfg).Run(t)
 	shimtest.NewOOMSuite(cfg).Run(t)
 	shimtest.NewUDSSuite(cfg).Run(t)
+	shimtest.NewLayersSuite(cfg).Run(t)
 }
 
 // FuzzTransferMissing exercises the transfer service with arbitrary paths

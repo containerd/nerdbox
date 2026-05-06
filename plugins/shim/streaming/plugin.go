@@ -22,10 +22,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"sync"
+	"time"
 
 	streamapi "github.com/containerd/containerd/api/services/streaming/v1"
 	ptypes "github.com/containerd/containerd/v2/pkg/protobuf/types"
+	"github.com/containerd/containerd/v2/pkg/shutdown"
 	cplugins "github.com/containerd/containerd/v2/plugins"
+	"github.com/containerd/errdefs"
 	"github.com/containerd/log"
 	"github.com/containerd/plugin"
 	"github.com/containerd/plugin/registry"
@@ -43,17 +48,24 @@ func init() {
 		Type: cplugins.TTRPCPlugin,
 		ID:   "streaming",
 		Requires: []plugin.Type{
+			cplugins.InternalPlugin,
 			plugins.SandboxPlugin,
 		},
 		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
+			ss, err := ic.GetByID(cplugins.InternalPlugin, "shutdown")
+			if err != nil {
+				return nil, err
+			}
 			sb, err := ic.GetSingle(plugins.SandboxPlugin)
 			if err != nil {
 				return nil, err
 			}
-
-			return &service{
-				sb: sb.(sandbox.Sandbox),
-			}, nil
+			s := &service{
+				sb:      sb.(sandbox.Sandbox),
+				streams: make(map[string]net.Conn),
+			}
+			ss.(shutdown.Service).RegisterCallback(s.shutdown)
+			return s, nil
 		},
 	})
 }
@@ -63,6 +75,11 @@ const maxFrameSize = 10 << 20
 
 type service struct {
 	sb sandbox.Sandbox
+
+	mu      sync.Mutex
+	streams map[string]net.Conn
+	closing bool
+	wg      sync.WaitGroup
 }
 
 func (s *service) RegisterTTRPC(server *ttrpc.Server) error {
@@ -88,7 +105,28 @@ func (s *service) Stream(ctx context.Context, srv streamapi.TTRPCStreaming_Strea
 	if err != nil {
 		return fmt.Errorf("failed to start vm stream: %w", err)
 	}
-	defer vmConn.Close()
+
+	// Track the stream so the shim shutdown callback can drain all
+	// in-flight bridges via SetReadDeadline before sandbox.Stop tears
+	// down the VM. If the shim is already shutting down, reject the
+	// new stream rather than racing against teardown.
+	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		vmConn.Close()
+		return fmt.Errorf("streaming plugin is shutting down: %w", errdefs.ErrUnavailable)
+	}
+	s.streams[i.ID] = vmConn
+	s.wg.Add(1)
+	s.mu.Unlock()
+
+	defer func() {
+		s.mu.Lock()
+		delete(s.streams, i.ID)
+		s.mu.Unlock()
+		vmConn.Close()
+		s.wg.Done()
+	}()
 
 	log.G(ctx).WithField("stream", i.ID).Debug("stream bridge established")
 
@@ -148,9 +186,56 @@ func (s *service) Stream(ctx context.Context, srv streamapi.TTRPCStreaming_Strea
 			log.G(ctx).WithError(err).WithField("stream", i.ID).Debug("server->client bridge ended")
 		}
 	case <-ctx.Done():
+		// On Windows, the AF_UNIX <-> vsock proxy turns vmConn.Close()
+		// into a vsock SHUTDOWN that cascades into Task.Kill ->
+		// Delete -> Shutdown when fired while the VM is mid-stream.
+		// SetReadDeadline interrupts the bridge's binary.Read via the
+		// Go runtime poller (no wire-level packet) so v2t drains
+		// cleanly before the deferred Close() runs. See
+		// docker/sandboxes#2529.
+		if err := vmConn.SetReadDeadline(time.Now()); err != nil {
+			log.G(ctx).WithError(err).WithField("stream", i.ID).Debug("failed to set read deadline on vm conn")
+		}
+		<-v2t
 	}
 
 	return nil
+}
+
+// shutdown is registered as a shim shutdown callback. It drains every
+// in-flight Stream handler before sandbox.Stop tears down the VM so
+// that all bridges have exited cleanly and the deferred vmConn.Close()
+// calls have already fired by the time the shim/ttrpc transport goes
+// away. Without this serialisation, N concurrent Stream handlers race
+// the transport teardown on shim shutdown and leak partially-drained
+// bridges that re-trigger the Windows SHUTDOWN cascade documented in
+// docker/sandboxes#2529.
+func (s *service) shutdown(ctx context.Context) error {
+	s.mu.Lock()
+	s.closing = true
+	streams := make([]net.Conn, 0, len(s.streams))
+	for _, c := range s.streams {
+		streams = append(streams, c)
+	}
+	s.mu.Unlock()
+
+	for _, c := range streams {
+		if err := c.SetReadDeadline(time.Now()); err != nil {
+			log.G(ctx).WithError(err).Debug("failed to set read deadline on vm conn during shutdown")
+		}
+	}
+
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // bridgeTTRPCToVM reads typeurl.Any messages from the TTRPC stream and

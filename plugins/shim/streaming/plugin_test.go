@@ -164,7 +164,7 @@ func startStream(t *testing.T, ctx context.Context, id string) (srv *fakeStreamS
 	srv = newFakeStreamServer(ctx)
 	srv.recvCh <- streamInitAny(t, id)
 
-	svc := &service{sb: &fakeSandbox{conn: shimSide}}
+	svc := &service{sb: &fakeSandbox{conn: shimSide}, streams: make(map[string]net.Conn)}
 
 	d := make(chan error, 1)
 	go func() { d <- svc.Stream(ctx, srv) }()
@@ -325,6 +325,223 @@ func TestStreamForwardsBothDirections(t *testing.T) {
 	}
 }
 
+// TestStreamReturnsAfterContextCancelOnIdleStream covers the abandoned-
+// exec scenario: a client disconnects (per-RPC ctx cancels) while the
+// VM holds the stream open but is not sending any data. The handler
+// must drain via the SetReadDeadline-driven exit path on <-ctx.Done()
+// rather than leak its goroutines and the vmConn FD waiting for a VM
+// EOF that will never come.
+//
+// The c2v goroutine exits cleanly when srv.Recv() observes ctx.Err(),
+// but its zero-length EOF marker is written into the shim->VM half of
+// the pipe; v2t reads from the VM->shim half and therefore never sees
+// it. The handler's <-ctx.Done() branch must SetReadDeadline on vmConn
+// to unblock v2t's binary.Read.
+func TestStreamReturnsAfterContextCancelOnIdleStream(t *testing.T) {
+	parent := t.Context()
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+
+	_, _, done := startStream(t, ctx, "stream-cancel-idle")
+
+	// Neither side ever sends a frame. The handler is now waiting on
+	// v2t. Cancelling the per-RPC ctx mimics ttrpc tearing down the
+	// stream after the caller has gone away.
+	cancel()
+
+	select {
+	case err := <-done:
+		// Either nil (clean drain) or context.Canceled (propagated
+		// from srv.Recv) is acceptable; what matters is that the
+		// handler returned at all.
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("Stream returned unexpected error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stream handler did not return after ctx cancel; v2t is still blocked in binary.Read(vmConn). The fix must give ctx.Done() a controlled exit path that unblocks the VM->client bridge (e.g. SetReadDeadline) without firing vmConn.Close() before v2t has drained.")
+	}
+}
+
+// blockingStartSandbox blocks in StartStream until ctx is cancelled or
+// release is closed, mimicking the real libkrun StartStream retry loop
+// that polls for the guest stream socket to appear and observes
+// ctx.Done() between attempts.
+type blockingStartSandbox struct {
+	called  chan struct{}
+	release chan struct{}
+}
+
+func (s *blockingStartSandbox) Start(context.Context, ...sandbox.Opt) error {
+	return errdefs.ErrNotImplemented
+}
+func (s *blockingStartSandbox) Stop(context.Context) error     { return errdefs.ErrNotImplemented }
+func (s *blockingStartSandbox) Client() (*ttrpc.Client, error) { return nil, errdefs.ErrNotImplemented }
+func (s *blockingStartSandbox) StartStream(ctx context.Context, _ string) (net.Conn, error) {
+	close(s.called)
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-s.release:
+		return nil, errdefs.ErrNotImplemented
+	}
+}
+
+// TestStreamPreservesStartStreamCancel asserts that StartStream observes
+// the caller's ctx cancellation: a timed-out or cancelled RPC must abort
+// connection establishment promptly rather than block in libkrun's
+// retry loop for the full polling window.
+func TestStreamPreservesStartStreamCancel(t *testing.T) {
+	parent := t.Context()
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+
+	sb := &blockingStartSandbox{
+		called:  make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	t.Cleanup(func() { close(sb.release) })
+
+	srv := newFakeStreamServer(ctx)
+	srv.recvCh <- streamInitAny(t, "slow-start")
+
+	svc := &service{sb: sb, streams: make(map[string]net.Conn)}
+
+	done := make(chan error, 1)
+	go func() { done <- svc.Stream(ctx, srv) }()
+
+	select {
+	case <-sb.called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("StartStream was never invoked")
+	}
+
+	// Caller is gone. StartStream must observe and abort.
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled propagation, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stream did not return after ctx cancel during StartStream; the retry loop ignored the cancel signal. The handler must pass the caller's ctx to StartStream so its retry loop aborts on cancel/timeout.")
+	}
+}
+
+// TestShutdownDrainsAllInFlightStreams covers the shim shutdown drain
+// path: when ContainerStop tears down the kit shim, multiple Stream
+// handlers may be in flight simultaneously (dockerd healthcheck poll,
+// readiness exec, sentinel hold, ...) and their bridges race the
+// transport teardown. The shutdown callback must SetReadDeadline on
+// every tracked vmConn and wait for all handlers to exit before
+// returning, so that vmConn.Close() has fired on every stream by the
+// time sandbox.Stop tears down the VM.
+func TestShutdownDrainsAllInFlightStreams(t *testing.T) {
+	ctx := t.Context()
+
+	const n = 3
+	shimSides := make([]net.Conn, n)
+	vmSides := make([]net.Conn, n)
+	conns := make(map[string]net.Conn, n)
+	for i := 0; i < n; i++ {
+		shim, vm := net.Pipe()
+		shimSides[i] = shim
+		vmSides[i] = vm
+		conns[fmt.Sprintf("stream-%d", i)] = shim
+		t.Cleanup(func() { shim.Close(); vm.Close() })
+	}
+
+	svc := &service{
+		sb:      &fakeMultiSandbox{conns: conns},
+		streams: make(map[string]net.Conn),
+	}
+
+	// Open n concurrent streams; none send any data so all handlers
+	// are blocked in v2t's binary.Read.
+	dones := make([]<-chan error, n)
+	srvs := make([]*fakeStreamServer, n)
+	for i := 0; i < n; i++ {
+		srvs[i] = newFakeStreamServer(ctx)
+		srvs[i].recvCh <- streamInitAny(t, fmt.Sprintf("stream-%d", i))
+		d := make(chan error, 1)
+		go func(i int) { d <- svc.Stream(ctx, srvs[i]) }(i)
+		dones[i] = d
+		select {
+		case <-srvs[i].sendCh:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("stream %d: timed out waiting for ack", i)
+		}
+	}
+
+	// Confirm all n streams are tracked.
+	svc.mu.Lock()
+	if len(svc.streams) != n {
+		svc.mu.Unlock()
+		t.Fatalf("expected %d tracked streams, got %d", n, len(svc.streams))
+	}
+	svc.mu.Unlock()
+
+	// Trigger the shim shutdown drain. It must SetReadDeadline on each
+	// vmConn (unblocking every v2t bridge) and wait for every handler
+	// to return before reporting back.
+	shutDone := make(chan error, 1)
+	go func() { shutDone <- svc.shutdown(ctx) }()
+
+	select {
+	case err := <-shutDone:
+		if err != nil {
+			t.Fatalf("shutdown returned %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("shutdown did not return; some Stream handlers are still in flight (their v2t bridges blocked in binary.Read). The shutdown callback must SetReadDeadline on every tracked vmConn and wait for all handlers to exit.")
+	}
+
+	// All Stream handlers must have returned.
+	for i, d := range dones {
+		select {
+		case <-d:
+		case <-time.After(time.Second):
+			t.Fatalf("stream %d: handler did not return after shutdown", i)
+		}
+	}
+
+	// Tracking map must be empty (every handler's defer ran).
+	svc.mu.Lock()
+	if got := len(svc.streams); got != 0 {
+		svc.mu.Unlock()
+		t.Fatalf("expected streams map empty after shutdown, got %d remaining", got)
+	}
+	svc.mu.Unlock()
+}
+
+// TestStreamRejectedAfterShutdown asserts that the streaming service
+// refuses new Stream RPCs once shutdown has marked it closing, so that
+// late-arriving requests cannot register a vmConn that the shutdown
+// drain has already finished waiting for.
+func TestStreamRejectedAfterShutdown(t *testing.T) {
+	ctx := t.Context()
+
+	shimSide, vmSide := net.Pipe()
+	t.Cleanup(func() { shimSide.Close(); vmSide.Close() })
+
+	svc := &service{
+		sb:      &fakeSandbox{conn: shimSide},
+		streams: make(map[string]net.Conn),
+	}
+
+	if err := svc.shutdown(ctx); err != nil {
+		t.Fatalf("shutdown returned %v", err)
+	}
+
+	srv := newFakeStreamServer(ctx)
+	srv.recvCh <- streamInitAny(t, "post-shutdown")
+
+	err := svc.Stream(ctx, srv)
+	if !errors.Is(err, errdefs.ErrUnavailable) {
+		t.Fatalf("expected ErrUnavailable, got %v", err)
+	}
+}
+
 // fakeMultiSandbox returns a different net.Conn from StartStream for
 // each registered stream ID, allowing a single ttrpc connection to host
 // multiple streams with different VM-side behavior in the same test.
@@ -405,7 +622,7 @@ func TestSlowStreamDoesNotBlockOtherStreams(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	streamapi.RegisterTTRPCStreamingService(server, &service{sb: sb})
+	streamapi.RegisterTTRPCStreamingService(server, &service{sb: sb, streams: make(map[string]net.Conn)})
 
 	// Stay under the AF_UNIX 104-byte sun_path limit on macOS:
 	// t.TempDir() embeds the full test name, pushing the path over the

@@ -70,12 +70,6 @@ func NewTaskService(ctx context.Context, sb sandbox.Sandbox, publisher shim.Publ
 	}
 	sd.RegisterCallback(s.shutdown)
 
-	if address, err := shim.ReadAddress("address"); err == nil {
-		sd.RegisterCallback(func(context.Context) error {
-			return shim.RemoveSocket(address)
-		})
-	}
-
 	go s.forward(ctx, publisher)
 
 	return s, nil
@@ -714,6 +708,12 @@ func (s *service) Shutdown(ctx context.Context, r *taskAPI.ShutdownRequest) (*pt
 		// for cleanup before calling shutdown
 		s.initiateShutdown()
 		s.initiateShutdown = nil
+
+		// Remove the shim socket so that if shutdown is slow, containerd doesn't try to
+		// re-use this shim.
+		if address, err := shim.ReadAddress("address"); err == nil {
+			shim.RemoveSocket(address)
+		}
 	}
 
 	return empty, nil

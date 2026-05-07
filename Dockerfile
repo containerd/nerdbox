@@ -259,6 +259,11 @@ RUN go install github.com/go-delve/delve/cmd/dlv@latest
 
 FROM "${RUST_IMAGE}" AS libkrun-build
 ARG LIBKRUN_VERSION=v1.18.1
+# Pin to the commit that fixes get_extent_at binary search at extent
+# boundaries (merged into imago main as 1907e11b).  A [patch.crates-io]
+# git override substitutes by crate name regardless of version, so this
+# replaces the 0.2.1 locked by libkrun's Cargo.lock without any sed patching.
+ARG IMAGO_FIX_REV=1907e11b2e1420bd3a6aec1d697a2301c6916f74
 
 RUN --mount=type=cache,sharing=locked,id=libkrun-aptlib,target=/var/lib/apt \
     --mount=type=cache,sharing=locked,id=libkrun-aptcache,target=/var/cache/apt \
@@ -266,6 +271,9 @@ RUN --mount=type=cache,sharing=locked,id=libkrun-aptlib,target=/var/lib/apt \
 
 RUN git clone --depth 1 --branch ${LIBKRUN_VERSION} https://github.com/containers/libkrun.git && \
     cd libkrun && \
+    printf '\n[patch.crates-io]\nimago = { git = "https://gitlab.com/hreitz/imago.git", rev = "%s" }\n' \
+        "${IMAGO_FIX_REV}" >> Cargo.toml && \
+    cargo update imago && \
     make -j$(nproc) BLK=1 NET=1
 
 FROM scratch AS libkrun

@@ -67,6 +67,7 @@ func NewTaskService(ctx context.Context, sb sandbox.Sandbox, publisher shim.Publ
 		containers:       make(map[string]*container),
 		debug:            debug,
 		initiateShutdown: sd.Shutdown,
+		shutdownDone:     sd.Done(),
 	}
 	sd.RegisterCallback(s.shutdown)
 
@@ -124,8 +125,10 @@ type service struct {
 
 	containers map[string]*container
 
-	debug            bool
-	initiateShutdown func()
+	debug                bool
+	initiateShutdown     func()
+	initiateShutdownOnce sync.Once
+	shutdownDone         <-chan struct{}
 }
 
 func (s *service) RegisterTTRPC(server *ttrpc.Server) error {
@@ -706,17 +709,14 @@ func (s *service) Shutdown(ctx context.Context, r *taskAPI.ShutdownRequest) (*pt
 	// tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
 	// return tc.Shutdown(ctx, r)
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.initiateShutdownOnce.Do(s.initiateShutdown)
 
-	if s.initiateShutdown != nil {
-		// please make sure that temporary resource has been cleanup or registered
-		// for cleanup before calling shutdown
-		s.initiateShutdown()
-		s.initiateShutdown = nil
+	select {
+	case <-s.shutdownDone:
+		return empty, nil
+	case <-ctx.Done():
+		return nil, errgrpc.ToGRPC(ctx.Err())
 	}
-
-	return empty, nil
 }
 
 func (s *service) Stats(ctx context.Context, r *taskAPI.StatsRequest) (*taskAPI.StatsResponse, error) {

@@ -35,6 +35,7 @@ import (
 	"github.com/containerd/ttrpc"
 
 	"github.com/containerd/nerdbox/internal/kvm"
+	"github.com/containerd/nerdbox/internal/logging"
 	"github.com/containerd/nerdbox/pkg/vm"
 )
 
@@ -262,11 +263,7 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 		return fmt.Errorf("failed to set up console: %w", err)
 	}
 	if lr != nil {
-		consoleW := io.Writer(os.Stderr)
-		if startOpts.ConsoleWriter != nil {
-			consoleW = io.MultiWriter(os.Stderr, startOpts.ConsoleWriter)
-		}
-		go io.Copy(consoleW, lr)
+		go logging.ForwardConsoleLogs(lr, startOpts.ConsoleWriter)
 	}
 
 	cwd, err := os.Getwd()

@@ -23,6 +23,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
@@ -55,6 +56,21 @@ import (
 	_ "github.com/containerd/nerdbox/plugins/vminit/task"
 )
 
+// logLevel controls the slog handler level for vminitd.
+var logLevel = &slog.LevelVar{}
+
+func init() {
+	log.UseSlog()
+	// Write structured logs to /dev/console rather than stderr so that
+	// output does not end up in the kernel message buffer (kmsg).
+	console, err := os.OpenFile("/dev/console", os.O_WRONLY, 0644)
+	if err != nil {
+		console = os.Stderr
+	}
+	handler := slog.NewJSONHandler(console, &slog.HandlerOptions{Level: logLevel})
+	slog.SetDefault(slog.New(handler).With("component", "vminitd"))
+}
+
 func main() {
 	t1 := time.Now()
 	var (
@@ -74,18 +90,10 @@ func main() {
 	}
 	flag.CommandLine.Parse(args)
 
-	/*
-		c, err := os.OpenFile("/dev/console", os.O_WRONLY, 0644)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to open /dev/console: %v\n", err)
-			os.Exit(1)
-		}
-		defer c.Close()
-		log.L.Logger.SetOutput(c)
-	*/
 	var err error
 
 	if *dev || config.Debug {
+		logLevel.Set(slog.LevelDebug)
 		log.SetLevel("debug")
 	}
 

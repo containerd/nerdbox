@@ -16,7 +16,7 @@
    limitations under the License.
 */
 
-package main
+package initd
 
 import (
 	"fmt"

@@ -16,7 +16,7 @@
    limitations under the License.
 */
 
-package main
+package initd
 
 import (
 	"fmt"
@@ -28,9 +28,11 @@ import (
 	"github.com/containerd/nerdbox/internal/vminit/vmnetworking"
 )
 
-type networks []vmnetworking.Network
+// Networks is a flag.Value implementation for repeated -network arguments,
+// parsing each value into a vmnetworking.Network and appending to the slice.
+type Networks []vmnetworking.Network
 
-func (n *networks) String() string {
+func (n *Networks) String() string {
 	ss := make([]string, 0, len(*n))
 	for _, nw := range *n {
 		fields := []string{"mac=" + nw.MAC.String()}
@@ -48,7 +50,7 @@ func (n *networks) String() string {
 	return strings.Join(ss, " ")
 }
 
-func (n *networks) Set(value string) error {
+func (n *Networks) Set(value string) error {
 	var nw vmnetworking.Network
 	for _, kv := range strings.Split(value, ",") {
 		parts := strings.Split(kv, "=")

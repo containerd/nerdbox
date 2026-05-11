@@ -16,7 +16,7 @@
    limitations under the License.
 */
 
-package main
+package initd
 
 import (
 	"net"
@@ -30,12 +30,12 @@ func TestParseNetwork(t *testing.T) {
 	testscases := []struct {
 		name  string
 		input string
-		want  networks
+		want  Networks
 	}{
 		{
 			name:  "ipv4 only",
 			input: "mac=72:e2:03:9b:d8:0d,addr=172.17.0.2/16",
-			want: networks{
+			want: Networks{
 				{
 					MAC:   net.HardwareAddr{0x72, 0xe2, 0x03, 0x9b, 0xd8, 0x0d},
 					Addr4: netip.MustParsePrefix("172.17.0.2/16"),
@@ -45,7 +45,7 @@ func TestParseNetwork(t *testing.T) {
 		{
 			name:  "ipv6 only",
 			input: "mac=72:e2:03:9b:d8:0d,addr=fd06:322:d419::2/64",
-			want: networks{
+			want: Networks{
 				{
 					MAC:   net.HardwareAddr{0x72, 0xe2, 0x03, 0x9b, 0xd8, 0x0d},
 					Addr6: netip.MustParsePrefix("fd06:322:d419::2/64"),
@@ -55,7 +55,7 @@ func TestParseNetwork(t *testing.T) {
 		{
 			name:  "dual stack",
 			input: "mac=72:e2:03:9b:d8:0d,addr=172.17.0.2/16,addr=fd06:322:d419::2/64",
-			want: networks{
+			want: Networks{
 				{
 					MAC:   net.HardwareAddr{0x72, 0xe2, 0x03, 0x9b, 0xd8, 0x0d},
 					Addr4: netip.MustParsePrefix("172.17.0.2/16"),
@@ -66,7 +66,7 @@ func TestParseNetwork(t *testing.T) {
 		{
 			name:  "with dhcp",
 			input: "mac=72:e2:03:9b:d8:0d,dhcp=true",
-			want: networks{
+			want: Networks{
 				{
 					MAC:  net.HardwareAddr{0x72, 0xe2, 0x03, 0x9b, 0xd8, 0x0d},
 					DHCP: true,
@@ -77,7 +77,7 @@ func TestParseNetwork(t *testing.T) {
 
 	for _, tc := range testscases {
 		t.Run(tc.name, func(t *testing.T) {
-			var n networks
+			var n Networks
 			err := n.Set(tc.input)
 			assert.NoError(t, err)
 			assert.Equal(t, tc.want, n)

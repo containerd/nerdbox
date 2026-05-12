@@ -27,6 +27,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -130,18 +131,10 @@ func Run(ctx context.Context) error {
 
 	ctx, shutdownSvc := shutdown.WithShutdown(ctx)
 
-	dhcpRenewer, err := systemInit(ctx, config, shutdownSvc)
-	if err != nil {
+	if err := systemInit(ctx, config, shutdownSvc); err != nil {
 		runErr = err
 		return err
 	}
-
-	go func() {
-		if err := dhcpRenewer(ctx); err != nil {
-			log.G(ctx).WithError(err).Error("failed to renew DHCP leases")
-			shutdownSvc.Shutdown()
-		}
-	}()
 
 	if config.DumpInfo {
 		systools.DumpInfo(ctx)
@@ -193,33 +186,86 @@ func Run(ctx context.Context) error {
 	}
 }
 
-func systemInit(ctx context.Context, config Config, shutdownSvc shutdown.Service) (func(context.Context) error, error) {
-	if err := systemMounts(); err != nil {
-		return nil, err
+func systemInit(ctx context.Context, config Config, shutdownSvc shutdown.Service) error {
+	t := time.Now()
+	if err := switchRoot(ctx); err != nil {
+		return fmt.Errorf("failed to switch root: %w", err)
 	}
-
-	if err := setupCgroupControl(); err != nil {
-		return nil, err
-	}
-
-	if err := os.Mkdir("/etc", 0755); err != nil && !os.IsExist(err) {
-		return nil, fmt.Errorf("failed to create /etc: %w", err)
-	}
+	log.G(ctx).WithField("elapsed", time.Since(t)).Debug("switch root completed")
 
 	dhcpRenewer, dhcpReleaser, err := vmnetworking.SetupVM(ctx, config.Networks, config.Debug)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	shutdownSvc.RegisterCallback(func(ctx context.Context) error {
 		return dhcpReleaser()
 	})
 
-	return dhcpRenewer, nil
+	go func() {
+		if err := dhcpRenewer(ctx); err != nil {
+			log.G(ctx).WithError(err).Error("failed to renew DHCP leases")
+			shutdownSvc.Shutdown()
+		}
+	}()
+
+	log.G(ctx).WithField("elapsed", time.Since(t)).Info("system init completed")
+	return nil
 }
 
-func systemMounts() error {
-	return mount.All([]mount.Mount{
+// switchRoot builds a new tmpfs root filesystem, mounts all pseudo-filesystems
+// directly into it, copies crun, configures cgroups, then switches root using
+// MS_MOVE + chroot. By mounting directly into the new root from the start no
+// mount moves are required — the pseudo-filesystems are never on the old root.
+// This detaches the initramfs so its pages can be reclaimed and gives
+// containers a distinct filesystem so pivot_root works correctly.
+func switchRoot(ctx context.Context) error {
+	const root = "/newroot"
+
+	if err := os.Mkdir(root, 0755); err != nil {
+		return fmt.Errorf("create new root dir: %w", err)
+	}
+	if err := unix.Mount("tmpfs", root, "tmpfs", 0, "size=128m,mode=0755"); err != nil {
+		return fmt.Errorf("mount tmpfs at new root: %w", err)
+	}
+
+	// Create mount-point directories and /etc directly. We just mounted a
+	// fresh tmpfs so none of these exist yet — os.Mkdir is sufficient and
+	// avoids the stat walk that os.MkdirAll does per path. /sys/fs/cgroup
+	// is not pre-created here: sysfs provides that directory via the kernel's
+	// cgroup2 kobject registered at boot, so it exists once sysfs is mounted.
+	for _, dir := range []string{
+		root + "/sbin",
+		root + "/proc",
+		root + "/sys",
+		root + "/dev",
+		root + "/run",
+		root + "/tmp",
+		root + "/etc",
+	} {
+		if err := os.Mkdir(dir, 0755); err != nil {
+			return fmt.Errorf("create dir %s: %w", dir, err)
+		}
+	}
+
+	tCopy := time.Now()
+	if err := copyCrun("/sbin/crun", root+"/sbin/crun"); err != nil {
+		return fmt.Errorf("copy crun to new root: %w", err)
+	}
+	// Remove the initramfs copy of crun to reclaim its pages before the
+	// root switch. The init binary is intentionally left — deleting it
+	// would only make it inaccessible to userspace, not free memory, since
+	// its pages are already pinned by the running process.
+	if err := os.Remove("/sbin/crun"); err != nil {
+		return fmt.Errorf("remove old crun: %w", err)
+	}
+	log.G(ctx).WithField("elapsed", time.Since(tCopy)).Debug("crun copied")
+
+	// Mount pseudo-filesystems directly into the new root — no moves needed.
+	// sysfs must be mounted before cgroup2: the kernel's cgroup2 kobject
+	// populates /sys/fs/cgroup inside sysfs, which serves as the cgroup2
+	// mountpoint.
+	if err := mount.All([]mount.Mount{
 		{
 			Type:    "proc",
 			Source:  "proc",
@@ -241,25 +287,66 @@ func systemMounts() error {
 			Type:    "tmpfs",
 			Source:  "tmpfs",
 			Target:  "/run",
-			Options: []string{"nosuid", "noexec", "nodev"},
-		},
-		{
-			Type:    "tmpfs",
-			Source:  "tmpsfs",
-			Target:  "/tmp",
-			Options: []string{"nosuid", "noexec", "nodev"},
+			Options: []string{"nosuid", "noexec", "nodev", "size=64m", "mode=0755"},
 		},
 		{
 			Type:    "devtmpfs",
-			Source:  "devtmpsfs",
+			Source:  "devtmpfs",
 			Target:  "/dev",
 			Options: []string{"nosuid", "noexec"},
 		},
-	}, "/")
+	}, root); err != nil {
+		return fmt.Errorf("mount pseudo-filesystems: %w", err)
+	}
+
+	// Configure cgroup v2 controllers while the path is still explicit.
+	if err := os.WriteFile(root+"/sys/fs/cgroup/cgroup.subtree_control",
+		[]byte("+cpu +cpuset +io +memory +pids"), 0644); err != nil {
+		return fmt.Errorf("setup cgroup control: %w", err)
+	}
+
+	// Make the root mount private so MS_MOVE does not propagate to any peer
+	// groups before we replace it.
+	if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
+		return fmt.Errorf("make root mounts private: %w", err)
+	}
+
+	// Atomically replace the root mount with the new tmpfs, then update the
+	// process root via chroot. MS_MOVE + chroot is the busybox switch_root
+	// approach — no pivot_root required, works on any kernel version.
+	if err := os.Chdir(root); err != nil {
+		return fmt.Errorf("chdir to new root: %w", err)
+	}
+	if err := unix.Mount(".", "/", "", unix.MS_MOVE, ""); err != nil {
+		return fmt.Errorf("move new root to /: %w", err)
+	}
+	if err := unix.Chroot("."); err != nil {
+		return fmt.Errorf("chroot to new root: %w", err)
+	}
+	if err := os.Chdir("/"); err != nil {
+		return fmt.Errorf("chdir to /: %w", err)
+	}
+
+	return nil
 }
 
-func setupCgroupControl() error {
-	return os.WriteFile("/sys/fs/cgroup/cgroup.subtree_control", []byte("+cpu +cpuset +io +memory +pids"), 0644)
+func copyCrun(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0755)
+	if err != nil {
+		return err
+	}
+
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 // ttrpcService allows TTRPC services to be registered with the underlying server

@@ -92,7 +92,11 @@ func (vmc *vmcontext) SetKernel(kernelPath string, initrdPath string, kernelCmdl
 	} else {
 		format = kernelFormatElf
 	}
-	ret := vmc.lib.SetKernel(vmc.ctxID, kernelPath, format, initrdPath, kernelCmdline)
+	// cString returns nil for an empty string, which libkrun interprets as
+	// "no initramfs".  Passing an empty Go string directly via purego would
+	// produce a non-null pointer to an empty C string, causing libkrun to
+	// try (and fail) to open a file at path "".
+	ret := vmc.lib.SetKernel(vmc.ctxID, kernelPath, format, vmc.cString(initrdPath), kernelCmdline)
 	if ret != 0 {
 		return fmt.Errorf("krun_set_kernel failed: %d", ret)
 	}
@@ -250,16 +254,16 @@ func (vmc *vmcontext) cStringArray(a []string) unsafe.Pointer {
 }
 
 type libkrun struct {
-	SetLogLevel      func(level uint32) int32                                                               `C:"krun_set_log_level"`
-	InitLog          func(fd uintptr, level uint32, style uint32, options uint32) int32                     `C:"krun_init_log"`
-	CreateCtx        func() int32                                                                           `C:"krun_create_ctx"`
-	FreeCtx          func(ctxID uint32) int32                                                               `C:"krun_free_ctx"`
-	SetVMConfig      func(ctxID uint32, cpu uint8, ram uint32) int32                                        `C:"krun_set_vm_config"`
-	SetKernel        func(ctxID uint32, path string, format uint32, initramfs string, cmdline string) int32 `C:"krun_set_kernel"`
-	SetExec          func(ctxID uint32, path string, args unsafe.Pointer, env unsafe.Pointer) int32         `C:"krun_set_exec"`
-	SetConsoleOutput func(ctxID uint32, path string) int32                                                  `C:"krun_set_console_output"`
-	StartEnter       func(ctxID uint32) int32                                                               `C:"krun_start_enter"`
-	AddVsockPort     func(ctxID, port uint32, path string, listen bool) int32                               `C:"krun_add_vsock_port2"`
+	SetLogLevel      func(level uint32) int32                                                                       `C:"krun_set_log_level"`
+	InitLog          func(fd uintptr, level uint32, style uint32, options uint32) int32                             `C:"krun_init_log"`
+	CreateCtx        func() int32                                                                                   `C:"krun_create_ctx"`
+	FreeCtx          func(ctxID uint32) int32                                                                       `C:"krun_free_ctx"`
+	SetVMConfig      func(ctxID uint32, cpu uint8, ram uint32) int32                                                `C:"krun_set_vm_config"`
+	SetKernel        func(ctxID uint32, path string, format uint32, initramfs unsafe.Pointer, cmdline string) int32 `C:"krun_set_kernel"`
+	SetExec          func(ctxID uint32, path string, args unsafe.Pointer, env unsafe.Pointer) int32                 `C:"krun_set_exec"`
+	SetConsoleOutput func(ctxID uint32, path string) int32                                                          `C:"krun_set_console_output"`
+	StartEnter       func(ctxID uint32) int32                                                                       `C:"krun_start_enter"`
+	AddVsockPort     func(ctxID, port uint32, path string, listen bool) int32                                       `C:"krun_add_vsock_port2"`
 	// AddVirtiofs3 forwards a virtio-fs share with explicit flags. shmSize
 	// requests a DAX window size in bytes for the share; 0 means "use the
 	// libkrun default" (which is what every call site here passes). Plumb a

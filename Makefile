@@ -75,8 +75,8 @@ _output/vminitd: cmd/vminitd FORCE
 	@echo "$(WHALE) $@"
 	$(GO) build ${DEBUG_GO_GCFLAGS} ${GO_GCFLAGS} ${GO_BUILD_FLAGS} -o $@ ${GO_STATIC_LDFLAGS} ${GO_STATIC_TAGS}  ./$<
 
-_output/nerdbox-initrd: cmd/vminitd FORCE
-	@task build:initrd
+_output/nerdbox-rootfs.erofs: cmd/vminitd FORCE
+	@task build:rootfs
 
 _output/integration.test: integration FORCE
 	@task build:integration

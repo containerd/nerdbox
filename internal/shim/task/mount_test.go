@@ -80,10 +80,10 @@ func TestBlockMountsProvider(t *testing.T) {
 				{BlockID: "disk-97-cid", MountPath: "/vol/myvolume.img", Flags: 0},
 			},
 			wantSpecMounts: []specs.Mount{
-				{Type: "bind", Source: "/mnt/sda", Destination: "/data", Options: []string{"rbind"}},
+				{Type: "bind", Source: "/run/mnt/sda", Destination: "/data", Options: []string{"rbind"}},
 			},
 			wantVmMounts: []mount.Mount{
-				{Type: "ext4", Source: "/dev/vda", Target: "/mnt/sda"},
+				{Type: "ext4", Source: "/dev/vda", Target: "/run/mnt/sda"},
 			},
 		},
 		{
@@ -95,10 +95,10 @@ func TestBlockMountsProvider(t *testing.T) {
 				{BlockID: "disk-97-cid", MountPath: "/vol/myvolume.img", Flags: sandbox.DiskFlagReadonly},
 			},
 			wantSpecMounts: []specs.Mount{
-				{Type: "bind", Source: "/mnt/sda", Destination: "/data", Options: []string{"rbind", "ro"}},
+				{Type: "bind", Source: "/run/mnt/sda", Destination: "/data", Options: []string{"rbind", "ro"}},
 			},
 			wantVmMounts: []mount.Mount{
-				{Type: "ext4", Source: "/dev/vda", Target: "/mnt/sda", Options: []string{"ro"}},
+				{Type: "ext4", Source: "/dev/vda", Target: "/run/mnt/sda", Options: []string{"ro"}},
 			},
 		},
 		{
@@ -112,12 +112,12 @@ func TestBlockMountsProvider(t *testing.T) {
 				{BlockID: "disk-98-cid", MountPath: "/vol/vol2.img", Flags: sandbox.DiskFlagReadonly},
 			},
 			wantSpecMounts: []specs.Mount{
-				{Type: "bind", Source: "/mnt/sda", Destination: "/data", Options: []string{"rbind"}},
-				{Type: "bind", Source: "/mnt/sdb", Destination: "/logs", Options: []string{"rbind", "ro"}},
+				{Type: "bind", Source: "/run/mnt/sda", Destination: "/data", Options: []string{"rbind"}},
+				{Type: "bind", Source: "/run/mnt/sdb", Destination: "/logs", Options: []string{"rbind", "ro"}},
 			},
 			wantVmMounts: []mount.Mount{
-				{Type: "ext4", Source: "/dev/vda", Target: "/mnt/sda"},
-				{Type: "ext4", Source: "/dev/vdb", Target: "/mnt/sdb", Options: []string{"ro"}},
+				{Type: "ext4", Source: "/dev/vda", Target: "/run/mnt/sda"},
+				{Type: "ext4", Source: "/dev/vdb", Target: "/run/mnt/sdb", Options: []string{"ro"}},
 			},
 		},
 		{
@@ -132,11 +132,11 @@ func TestBlockMountsProvider(t *testing.T) {
 			},
 			wantSpecMounts: []specs.Mount{
 				{Type: "tmpfs", Source: "tmpfs", Destination: "/tmp"},
-				{Type: "bind", Source: "/mnt/sda", Destination: "/data", Options: []string{"rbind"}},
+				{Type: "bind", Source: "/run/mnt/sda", Destination: "/data", Options: []string{"rbind"}},
 				{Type: "proc", Source: "proc", Destination: "/proc"},
 			},
 			wantVmMounts: []mount.Mount{
-				{Type: "ext4", Source: "/dev/vda", Target: "/mnt/sda"},
+				{Type: "ext4", Source: "/dev/vda", Target: "/run/mnt/sda"},
 			},
 		},
 	}
@@ -147,7 +147,7 @@ func TestBlockMountsProvider(t *testing.T) {
 				Spec: specs.Spec{Mounts: tc.mounts},
 			}
 
-			da := newDiskAllocator()
+			da := newDiskAllocator(0)
 			bm := &blockMounter{}
 			err := bm.FromBundle(context.Background(), b, id, &da)
 			assert.NoError(t, err)
@@ -209,12 +209,12 @@ func TestBindMountsProvider(t *testing.T) {
 				{
 					tag:      "bind-8c5eaa445dd84f17",
 					hostSrc:  testdirData,
-					vmTarget: "/mnt/bind-8c5eaa445dd84f17",
+					vmTarget: "/run/mnt/bind-8c5eaa445dd84f17",
 				},
 			},
-			wantSpecSources: []string{"/mnt/bind-8c5eaa445dd84f17"},
+			wantSpecSources: []string{"/run/mnt/bind-8c5eaa445dd84f17"},
 			wantVmMounts: []mount.Mount{
-				{Type: "virtiofs", Source: "bind-8c5eaa445dd84f17", Target: "/mnt/bind-8c5eaa445dd84f17"},
+				{Type: "virtiofs", Source: "bind-8c5eaa445dd84f17", Target: "/run/mnt/bind-8c5eaa445dd84f17"},
 			},
 			wantFS: []sandbox.Filesystem{
 				{Tag: "bind-8c5eaa445dd84f17", MountPath: testdirData, Readonly: false},
@@ -229,13 +229,13 @@ func TestBindMountsProvider(t *testing.T) {
 				{
 					tag:      "bind-8c5eaa445dd84f17",
 					hostSrc:  testdirData,
-					vmTarget: "/mnt/bind-8c5eaa445dd84f17",
+					vmTarget: "/run/mnt/bind-8c5eaa445dd84f17",
 					readOnly: true,
 				},
 			},
-			wantSpecSources: []string{"/mnt/bind-8c5eaa445dd84f17"},
+			wantSpecSources: []string{"/run/mnt/bind-8c5eaa445dd84f17"},
 			wantVmMounts: []mount.Mount{
-				{Type: "virtiofs", Source: "bind-8c5eaa445dd84f17", Target: "/mnt/bind-8c5eaa445dd84f17"},
+				{Type: "virtiofs", Source: "bind-8c5eaa445dd84f17", Target: "/run/mnt/bind-8c5eaa445dd84f17"},
 			},
 			wantFS: []sandbox.Filesystem{
 				{Tag: "bind-8c5eaa445dd84f17", MountPath: testdirData, Readonly: true},
@@ -250,13 +250,13 @@ func TestBindMountsProvider(t *testing.T) {
 				{
 					tag:      "bind-6dace5108a719565",
 					hostSrc:  tmpDir,
-					vmTarget: "/mnt/bind-6dace5108a719565",
+					vmTarget: "/run/mnt/bind-6dace5108a719565",
 					readOnly: true,
 				},
 			},
-			wantSpecSources: []string{"/mnt/bind-6dace5108a719565/testfile.txt"},
+			wantSpecSources: []string{"/run/mnt/bind-6dace5108a719565/testfile.txt"},
 			wantVmMounts: []mount.Mount{
-				{Type: "virtiofs", Source: "bind-6dace5108a719565", Target: "/mnt/bind-6dace5108a719565"},
+				{Type: "virtiofs", Source: "bind-6dace5108a719565", Target: "/run/mnt/bind-6dace5108a719565"},
 			},
 			wantFS: []sandbox.Filesystem{
 				{Tag: "bind-6dace5108a719565", MountPath: tmpDir, Readonly: true},
@@ -272,22 +272,22 @@ func TestBindMountsProvider(t *testing.T) {
 				{
 					tag:      "bind-8c5eaa445dd84f17",
 					hostSrc:  testdirData,
-					vmTarget: "/mnt/bind-8c5eaa445dd84f17",
+					vmTarget: "/run/mnt/bind-8c5eaa445dd84f17",
 				},
 				{
 					tag:      "bind-529984c9ac58b7ec",
 					hostSrc:  testdirConfig,
-					vmTarget: "/mnt/bind-529984c9ac58b7ec",
+					vmTarget: "/run/mnt/bind-529984c9ac58b7ec",
 					readOnly: true,
 				},
 			},
 			wantSpecSources: []string{
-				"/mnt/bind-8c5eaa445dd84f17",
-				"/mnt/bind-529984c9ac58b7ec",
+				"/run/mnt/bind-8c5eaa445dd84f17",
+				"/run/mnt/bind-529984c9ac58b7ec",
 			},
 			wantVmMounts: []mount.Mount{
-				{Type: "virtiofs", Source: "bind-8c5eaa445dd84f17", Target: "/mnt/bind-8c5eaa445dd84f17"},
-				{Type: "virtiofs", Source: "bind-529984c9ac58b7ec", Target: "/mnt/bind-529984c9ac58b7ec"},
+				{Type: "virtiofs", Source: "bind-8c5eaa445dd84f17", Target: "/run/mnt/bind-8c5eaa445dd84f17"},
+				{Type: "virtiofs", Source: "bind-529984c9ac58b7ec", Target: "/run/mnt/bind-529984c9ac58b7ec"},
 			},
 			wantFS: []sandbox.Filesystem{
 				{Tag: "bind-8c5eaa445dd84f17", MountPath: testdirData, Readonly: false},
@@ -305,16 +305,16 @@ func TestBindMountsProvider(t *testing.T) {
 				{
 					tag:      "bind-8c5eaa445dd84f17",
 					hostSrc:  testdirData,
-					vmTarget: "/mnt/bind-8c5eaa445dd84f17",
+					vmTarget: "/run/mnt/bind-8c5eaa445dd84f17",
 				},
 			},
 			wantSpecSources: []string{
 				"tmpfs",
-				"/mnt/bind-8c5eaa445dd84f17",
+				"/run/mnt/bind-8c5eaa445dd84f17",
 				"proc",
 			},
 			wantVmMounts: []mount.Mount{
-				{Type: "virtiofs", Source: "bind-8c5eaa445dd84f17", Target: "/mnt/bind-8c5eaa445dd84f17"},
+				{Type: "virtiofs", Source: "bind-8c5eaa445dd84f17", Target: "/run/mnt/bind-8c5eaa445dd84f17"},
 			},
 			wantFS: []sandbox.Filesystem{
 				{Tag: "bind-8c5eaa445dd84f17", MountPath: testdirData, Readonly: false},
@@ -329,12 +329,12 @@ func TestBindMountsProvider(t *testing.T) {
 				{
 					tag:      "bind-6dace5108a719565",
 					hostSrc:  tmpDir,
-					vmTarget: "/mnt/bind-6dace5108a719565",
+					vmTarget: "/run/mnt/bind-6dace5108a719565",
 				},
 			},
-			wantSpecSources: []string{"/mnt/bind-6dace5108a719565/testfile.txt"},
+			wantSpecSources: []string{"/run/mnt/bind-6dace5108a719565/testfile.txt"},
 			wantVmMounts: []mount.Mount{
-				{Type: "virtiofs", Source: "bind-6dace5108a719565", Target: "/mnt/bind-6dace5108a719565"},
+				{Type: "virtiofs", Source: "bind-6dace5108a719565", Target: "/run/mnt/bind-6dace5108a719565"},
 			},
 			wantFS: []sandbox.Filesystem{
 				{Tag: "bind-6dace5108a719565", MountPath: tmpDir, Readonly: false},
@@ -351,12 +351,12 @@ func TestBindMountsProvider(t *testing.T) {
 				{
 					tag:      "bind-8c5eaa445dd84f17",
 					hostSrc:  testdirData,
-					vmTarget: "/mnt/bind-8c5eaa445dd84f17",
+					vmTarget: "/run/mnt/bind-8c5eaa445dd84f17",
 				},
 			},
-			wantSpecSources: []string{"/mnt/bind-8c5eaa445dd84f17"},
+			wantSpecSources: []string{"/run/mnt/bind-8c5eaa445dd84f17"},
 			wantVmMounts: []mount.Mount{
-				{Type: "virtiofs", Source: "bind-8c5eaa445dd84f17", Target: "/mnt/bind-8c5eaa445dd84f17"},
+				{Type: "virtiofs", Source: "bind-8c5eaa445dd84f17", Target: "/run/mnt/bind-8c5eaa445dd84f17"},
 			},
 			wantFS: []sandbox.Filesystem{
 				{Tag: "bind-8c5eaa445dd84f17", MountPath: testdirData, Readonly: false},
@@ -372,13 +372,13 @@ func TestBindMountsProvider(t *testing.T) {
 				{
 					tag:      "bind-8c5eaa445dd84f17",
 					hostSrc:  testdirData,
-					vmTarget: "/mnt/bind-8c5eaa445dd84f17",
+					vmTarget: "/run/mnt/bind-8c5eaa445dd84f17",
 					readOnly: true,
 				},
 			},
-			wantSpecSources: []string{"/mnt/bind-8c5eaa445dd84f17"},
+			wantSpecSources: []string{"/run/mnt/bind-8c5eaa445dd84f17"},
 			wantVmMounts: []mount.Mount{
-				{Type: "virtiofs", Source: "bind-8c5eaa445dd84f17", Target: "/mnt/bind-8c5eaa445dd84f17"},
+				{Type: "virtiofs", Source: "bind-8c5eaa445dd84f17", Target: "/run/mnt/bind-8c5eaa445dd84f17"},
 			},
 			wantFS: []sandbox.Filesystem{
 				{Tag: "bind-8c5eaa445dd84f17", MountPath: testdirData, Readonly: true},
@@ -452,7 +452,7 @@ func TestTransformMountsErofs(t *testing.T) {
 			Options: []string{"ro"},
 		}}
 
-		da := newDiskAllocator()
+		da := newDiskAllocator(0)
 		out, opts, err := transformMounts(context.Background(), id, ms, &da, bundleDir)
 		require.NoError(t, err)
 
@@ -493,7 +493,7 @@ func TestTransformMountsErofs(t *testing.T) {
 			Options: append([]string{"ro"}, deviceOpts...),
 		}}
 
-		da := newDiskAllocator()
+		da := newDiskAllocator(0)
 		out, opts, err := transformMounts(context.Background(), id, ms, &da, bundleDir)
 		require.NoError(t, err)
 
@@ -538,7 +538,7 @@ func TestTransformMountsErofs(t *testing.T) {
 			})
 		}
 
-		da := newDiskAllocator()
+		da := newDiskAllocator(0)
 		out, opts, err := transformMounts(context.Background(), id, ms, &da, bundleDir)
 		require.NoError(t, err)
 
@@ -577,7 +577,7 @@ func TestTransformMountsErofs(t *testing.T) {
 			})
 		}
 
-		da := newDiskAllocator()
+		da := newDiskAllocator(0)
 		out, opts, err := transformMounts(context.Background(), id, ms, &da, bundleDir)
 		require.NoError(t, err)
 
@@ -648,7 +648,7 @@ func TestTransformMountsErofs(t *testing.T) {
 		ms = append(ms, multiDevice)
 		ms = append(ms, plainMounts[2:]...)
 
-		da := newDiskAllocator()
+		da := newDiskAllocator(0)
 		out, opts, err := transformMounts(context.Background(), id, ms, &da, bundleDir)
 		require.NoError(t, err)
 
@@ -694,7 +694,7 @@ func TestTransformMountsErofs(t *testing.T) {
 			})
 		}
 
-		da := newDiskAllocator()
+		da := newDiskAllocator(0)
 		_, _, err := transformMounts(context.Background(), id, ms, &da, bundleDir)
 		require.NoError(t, err)
 
@@ -703,7 +703,7 @@ func TestTransformMountsErofs(t *testing.T) {
 		fi1, err := os.Stat(gptPath)
 		require.NoError(t, err)
 
-		da2 := newDiskAllocator()
+		da2 := newDiskAllocator(0)
 		_, _, err = transformMounts(context.Background(), id, ms, &da2, bundleDir)
 		require.NoError(t, err)
 

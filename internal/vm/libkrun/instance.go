@@ -56,6 +56,11 @@ func NewManager() vm.Manager {
 
 type vmManager struct{}
 
+// ReservedDisks returns 1 because the libkrun shim always attaches the
+// erofs rootfs image as the first virtio-blk device (/dev/vda) in
+// NewInstance, before any container-supplied disks are added.
+func (*vmManager) ReservedDisks() int { return 1 }
+
 func (*vmManager) NewInstance(ctx context.Context, state string) (vm.Instance, error) {
 	// On Linux, libkrun panics if KVM is not available, so check it here.
 	if err := kvm.CheckKVM(); err != nil {
@@ -67,7 +72,7 @@ func (*vmManager) NewInstance(ctx context.Context, state string) (vm.Instance, e
 		p2         = filepath.SplitList(os.Getenv("LIBKRUN_PATH"))
 		krunPath   string
 		kernelPath string
-		initrdPath string
+		rootfsPath string
 	)
 	if runtime.GOOS != "windows" && len(p2) == 0 {
 		p2 = []string{"/usr/local/lib", "/usr/local/lib64", "/usr/lib", "/lib"}
@@ -103,11 +108,11 @@ func (*vmManager) NewInstance(ctx context.Context, state string) (vm.Instance, e
 				kernelPath = path
 			}
 		}
-		if initrdPath == "" {
-			for _, name := range []string{fmt.Sprintf("nerdbox-initrd-%s", arch), "nerdbox-initrd"} {
+		if rootfsPath == "" {
+			for _, name := range []string{fmt.Sprintf("nerdbox-rootfs-%s.erofs", arch), "nerdbox-rootfs.erofs"} {
 				path = filepath.Join(dir, name)
 				if _, err := os.Stat(path); err == nil {
-					initrdPath = path
+					rootfsPath = path
 					break
 				}
 			}
@@ -119,8 +124,8 @@ func (*vmManager) NewInstance(ctx context.Context, state string) (vm.Instance, e
 	if kernelPath == "" {
 		return nil, fmt.Errorf("nerdbox-kernel not found in PATH or LIBKRUN_PATH")
 	}
-	if initrdPath == "" {
-		return nil, fmt.Errorf("nerdbox-initrd-%s or nerdbox-initrd not found in PATH or LIBKRUN_PATH", arch)
+	if rootfsPath == "" {
+		return nil, fmt.Errorf("nerdbox-rootfs-%s.erofs or nerdbox-rootfs.erofs not found in PATH or LIBKRUN_PATH", arch)
 	}
 
 	lib, handler, err := openLibkrun(krunPath)
@@ -141,11 +146,19 @@ func (*vmManager) NewInstance(ctx context.Context, state string) (vm.Instance, e
 		return nil, err
 	}
 
+	// Add the erofs rootfs as the first virtio-blk device so that it is
+	// always exposed as /dev/vda inside the guest.  Container image disks
+	// are added later via AddDisk, which appends to the device list, so
+	// they receive /dev/vdb, /dev/vdc, … in order of addition.
+	if err := vmc.AddDisk2("vmrootfs", rootfsPath, 0, true); err != nil {
+		return nil, fmt.Errorf("failed to add VM rootfs disk %q: %w", rootfsPath, err)
+	}
+
 	return &vmInstance{
 		vmc:        vmc,
 		state:      state,
 		kernelPath: kernelPath,
-		initrdPath: initrdPath,
+		rootfsPath: rootfsPath,
 		streamPath: filepath.Join(state, "streaming.sock"),
 		lib:        lib,
 		handler:    handler,
@@ -158,7 +171,7 @@ type vmInstance struct {
 	state string
 
 	kernelPath string
-	initrdPath string
+	rootfsPath string
 	streamPath string
 
 	lib     *libkrun
@@ -241,7 +254,11 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 		return errors.New("VM instance already started")
 	}
 
-	if err := v.vmc.SetKernel(v.kernelPath, v.initrdPath, "console=hvc0"); err != nil {
+	// Boot directly from the erofs rootfs block device (/dev/vda).
+	// No initrd is needed: the kernel mounts the erofs image as the
+	// root filesystem and launches vminitd directly as PID 1.
+	const kernelCmdline = "console=hvc0 root=/dev/vda rootfstype=erofs ro init=/sbin/vminitd"
+	if err := v.vmc.SetKernel(v.kernelPath, "", kernelCmdline); err != nil {
 		return fmt.Errorf("failed to set kernel: %w", err)
 	}
 

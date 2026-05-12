@@ -15,7 +15,7 @@
 # -----------------------------------------------------------------------------
 # syntax=docker/dockerfile:1
 
-# Build the Linux kernel, initrd ,and containerd shim for running nerbox
+# Build the Linux kernel, erofs rootfs, and containerd shim for running nerdbox
 
 ARG XX_VERSION=1.9.0
 ARG GO_VERSION=1.26.3
@@ -223,31 +223,36 @@ WORKDIR /usr/src/crun
 ARG TARGETARCH
 RUN mkdir /build && wget -O /build/crun https://github.com/containers/crun/releases/download/1.24/crun-1.24-linux-${TARGETARCH}-disable-systemd
 
-FROM base AS initrd-build
-WORKDIR /usr/src/init
+FROM base AS erofs-build
+WORKDIR /usr/src/rootfs
 ARG TARGETPLATFORM
-RUN --mount=type=cache,sharing=locked,id=initrd-aptlib,target=/var/lib/apt \
-    --mount=type=cache,sharing=locked,id=initrd-aptcache,target=/var/cache/apt \
-        apt-get update && apt-get install -y --no-install-recommends cpio
+RUN --mount=type=cache,sharing=locked,id=erofs-aptlib,target=/var/lib/apt \
+    --mount=type=cache,sharing=locked,id=erofs-aptcache,target=/var/cache/apt \
+        apt-get update && apt-get install -y --no-install-recommends erofs-utils
 
-RUN mkdir sbin proc sys tmp run
+# Create all mount-point directories required by vminitd's systemMounts.
+# /etc is included so that a tmpfs can be mounted over it at runtime,
+# making it writable even though the erofs image itself is read-only.
+# /var/run is a symlink to /run so that crun state writes land on the
+# writable /run tmpfs rather than failing against the read-only rootfs.
+RUN mkdir -p dev etc proc run sbin sys tmp var && ln -s /run var/run
 
-COPY --from=vminit-build /build/vminitd ./init
+COPY --from=vminit-build /build/vminitd ./sbin/vminitd
 COPY --from=crun-build /build/crun ./sbin/crun
 
 RUN <<EOT
     set -e
-    chmod +x sbin/crun
+    chmod +x sbin/vminitd sbin/crun
     mkdir /build
-    (find . -print0 | cpio --null -H newc -o ) | gzip -9 > /build/nerdbox-initrd
+    mkfs.erofs -zlz4 /build/nerdbox-rootfs.erofs .
 EOT
 
 FROM scratch AS kernel
 ARG KERNEL_ARCH="x86_64"
 COPY --from=kernel-build /build/kernel /nerdbox-kernel-${KERNEL_ARCH}
 
-FROM scratch AS initrd
-COPY --from=initrd-build /build/nerdbox-initrd /nerdbox-initrd
+FROM scratch AS erofs
+COPY --from=erofs-build /build/nerdbox-rootfs.erofs /nerdbox-rootfs.erofs
 
 FROM scratch AS shim
 COPY --from=shim-build /build/containerd-shim-nerdbox-v1 /containerd-shim-nerdbox-v1

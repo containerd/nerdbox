@@ -31,14 +31,14 @@ tasks:
         platforms: [darwin]
 
   build:guest:
-    desc: Build guest artifacts (kernel and initrd) via Docker Buildx Bake
+    desc: Build guest artifacts (kernel and rootfs) via Docker Buildx Bake
     cmds:
-      - KERNEL_ARCH={{.KERNEL_ARCH}} docker buildx bake kernel initrd
+      - KERNEL_ARCH={{.KERNEL_ARCH}} docker buildx bake kernel rootfs
 
-  build:initrd:
-    desc: Build the nerdbox initrd via Docker Buildx Bake
+  build:rootfs:
+    desc: Build the nerdbox erofs rootfs via Docker Buildx Bake
     cmds:
-      - KERNEL_ARCH={{.KERNEL_ARCH}} docker buildx bake initrd
+      - KERNEL_ARCH={{.KERNEL_ARCH}} docker buildx bake rootfs
 
   build:integration:
     desc: Build the integration test binary

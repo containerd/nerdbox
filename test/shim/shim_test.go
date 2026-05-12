@@ -54,7 +54,7 @@ func shimBinaryPath() string {
 
 // shimConfig returns the shimtest Config for nerdbox. The PATH passed to
 // the shim process is extended with candidate _output directories so that
-// co-located binaries (nerdbox-kernel-*, nerdbox-initrd, libkrun.so) are
+// co-located binaries (nerdbox-kernel-*, nerdbox-rootfs.erofs, libkrun.so) are
 // found without callers needing to configure anything.
 func shimConfig() shimtest.Config {
 	return shimtest.Config{

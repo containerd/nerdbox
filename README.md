@@ -36,7 +36,7 @@ The results will be in the `_output` directory.
 > On macOS, use these commands:
 > ```bash
 > make KERNEL_ARCH=arm64 KERNEL_NPROC=12
-> make _output/containerd-shim-nerdbox-v1 _output/nerdbox-initrd
+> make _output/containerd-shim-nerdbox-v1 _output/nerdbox-rootfs.erofs
 > ```
 
 ### Configuring containerd

@@ -21,11 +21,13 @@ package manager
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -33,6 +35,7 @@ import (
 	bootapi "github.com/containerd/containerd/api/runtime/bootstrap/v1"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/containerd/v2/pkg/shim"
+	"golang.org/x/sys/windows"
 )
 
 func newCommand(ctx context.Context, id, containerdAddress, containerdTTRPCAddress string, debug bool) (*exec.Cmd, error) {
@@ -159,13 +162,50 @@ func (manager) Stop(ctx context.Context, id string) (shim.StopStatus, error) {
 	if err != nil {
 		return shim.StopStatus{}, err
 	}
-	pid, err := strconv.Atoi(string(p))
+	pid, err := strconv.Atoi(strings.TrimSpace(string(p)))
 	if err != nil {
 		return shim.StopStatus{}, err
 	}
+
+	// Open the shim process with the rights needed to terminate it, wait for
+	// it to exit, and read its exit code. If OpenProcess fails with
+	// ERROR_INVALID_PARAMETER the PID is no longer in the process table —
+	// the shim has already exited.
+	h, err := windows.OpenProcess(
+		windows.PROCESS_TERMINATE|windows.SYNCHRONIZE,
+		false,
+		uint32(pid),
+	)
+	if err != nil {
+		if errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
+			// Process already gone.
+			return shim.StopStatus{
+				ExitedAt:   time.Now(),
+				ExitStatus: 128 + 9,
+				Pid:        pid,
+			}, nil
+		}
+		return shim.StopStatus{}, fmt.Errorf("open shim process: %w", err)
+	}
+	defer windows.CloseHandle(h)
+
+	// Terminate the shim. ERROR_ACCESS_DENIED is returned when the process
+	// has already exited but the handle is still open; WaitForSingleObject
+	// below will return immediately in that case.
+	if err := windows.TerminateProcess(h, uint32(128+9)); err != nil && !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		return shim.StopStatus{}, fmt.Errorf("terminate shim process: %w", err)
+	}
+
+	// Block until the process has fully exited. There is no timeout: the
+	// shim is the only target and TerminateProcess is unconditional, so
+	// WaitForSingleObject will always complete.
+	if _, err := windows.WaitForSingleObject(h, windows.INFINITE); err != nil {
+		return shim.StopStatus{}, fmt.Errorf("wait for shim process: %w", err)
+	}
+
 	return shim.StopStatus{
 		ExitedAt:   time.Now(),
-		ExitStatus: 128 + 9, // 128 + SIGKILL
+		ExitStatus: 128 + 9,
 		Pid:        pid,
 	}, nil
 }

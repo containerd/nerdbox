@@ -35,7 +35,7 @@ import (
 	"github.com/containerd/ttrpc"
 
 	"github.com/containerd/nerdbox/internal/kvm"
-	"github.com/containerd/nerdbox/internal/logging"
+	"github.com/containerd/nerdbox/pkg/logging"
 	"github.com/containerd/nerdbox/pkg/vm"
 )
 

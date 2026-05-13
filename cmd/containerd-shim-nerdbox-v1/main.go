@@ -21,7 +21,7 @@ import (
 
 	"github.com/containerd/containerd/v2/pkg/shim"
 
-	"github.com/containerd/nerdbox/internal/logging"
+	"github.com/containerd/nerdbox/pkg/logging"
 	"github.com/containerd/nerdbox/pkg/shim/manager"
 
 	_ "github.com/containerd/nerdbox/plugins/shim/sandbox"

@@ -53,6 +53,12 @@ import (
 // logLevel controls the slog handler level for vminitd.
 var logLevel = &slog.LevelVar{}
 
+// ExtraServerInterceptors are chained after the default otelttrpc interceptor
+// when the vminitd ttrpc server starts. Callers may append to this slice from
+// a package init() function before initd.Run is called to inject additional
+// server-side interceptors (e.g. for distributed tracing).
+var ExtraServerInterceptors []ttrpc.UnaryServerInterceptor
+
 func init() {
 	log.UseSlog()
 	// Write structured logs to /dev/console rather than stderr so that
@@ -294,7 +300,9 @@ func newService(ctx context.Context, config Config, shutdownSvc shutdown.Service
 	})
 
 	ts, err := ttrpc.NewServer(
-		ttrpc.WithUnaryServerInterceptor(otelttrpc.UnaryServerInterceptor()),
+		ttrpc.WithChainUnaryServerInterceptor(
+			append([]ttrpc.UnaryServerInterceptor{otelttrpc.UnaryServerInterceptor()},
+				ExtraServerInterceptors...)...),
 	)
 	if err != nil {
 		return nil, err

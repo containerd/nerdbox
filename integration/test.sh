@@ -28,13 +28,10 @@ if [[ ! -f ../_output/integration.test ]]; then
     fi
 fi
 
-# Run each test individually
-tests=(
-    "TestSystemInfo"
-    "TestStreamInitialization"
-    "TestTransferEcho"
-)
+# Discover tests from the binary (respects build tags).
+readarray -t tests < <(../_output/integration.test -test.list '.*' 2>/dev/null | grep '^Test')
 
+# Run each test individually
 for test in "${tests[@]}"; do
     go tool test2json -t -p "github.com/containerd/nerdbox/integration" ../_output/integration.test -test.parallel 1 -test.v -test.run "$test"
 done

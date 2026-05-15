@@ -124,7 +124,7 @@ func (manager) Start(ctx context.Context, bparams *bootapi.BootstrapParams) (_ *
 	// make sure to wait after start
 	go cmd.Wait()
 
-	if err = shim.WritePidFile("shim.pid", cmd.Process.Pid); err != nil {
+	if err = shim.WritePidFile(filepath.Join(bundlePath(ctx), "shim.pid"), cmd.Process.Pid); err != nil {
 		return nil, err
 	}
 

@@ -167,14 +167,9 @@ func (s *service) shutdown(ctx context.Context) error {
 		}
 	}
 
-	// Remove the rootfs directory so containerd's bundle cleanup doesn't
-	// attempt a bind filter unmount. On Windows, Unmount calls
-	// bindfilter.RemoveFileBinding which fails with ERROR_ACCESS_DENIED
-	// on directories that were never bind filter mounts (like our VM-based
-	// rootfs). Removing the directory makes UnmountAll a no-op.
-	if err := os.RemoveAll("rootfs"); err != nil {
-		log.G(ctx).WithError(err).Warn("failed to remove rootfs directory during shutdown")
-	}
+	// Remove the rootfs directory on Windows so containerd's bundle cleanup
+	// doesn't attempt a bind filter unmount (no-op on other platforms).
+	removeRootfsDir(ctx)
 
 	// Signal last event and stop forwarding
 	s.events <- nil

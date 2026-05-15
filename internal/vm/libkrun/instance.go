@@ -104,9 +104,12 @@ func (*vmManager) NewInstance(ctx context.Context, state string) (vm.Instance, e
 			}
 		}
 		if initrdPath == "" {
-			path = filepath.Join(dir, fmt.Sprintf("nerdbox-initrd-%s", arch))
-			if _, err := os.Stat(path); err == nil {
-				initrdPath = path
+			for _, name := range []string{fmt.Sprintf("nerdbox-initrd-%s", arch), "nerdbox-initrd"} {
+				path = filepath.Join(dir, name)
+				if _, err := os.Stat(path); err == nil {
+					initrdPath = path
+					break
+				}
 			}
 		}
 	}
@@ -117,7 +120,7 @@ func (*vmManager) NewInstance(ctx context.Context, state string) (vm.Instance, e
 		return nil, fmt.Errorf("nerdbox-kernel not found in PATH or LIBKRUN_PATH")
 	}
 	if initrdPath == "" {
-		return nil, fmt.Errorf("nerdbox-initrd-%s not found in PATH or LIBKRUN_PATH", arch)
+		return nil, fmt.Errorf("nerdbox-initrd-%s or nerdbox-initrd not found in PATH or LIBKRUN_PATH", arch)
 	}
 
 	lib, handler, err := openLibkrun(krunPath)

@@ -124,7 +124,7 @@ func (manager) Start(ctx context.Context, bparams *bootapi.BootstrapParams) (_ *
 	// make sure to wait after start
 	go cmd.Wait()
 
-	if err = shim.WritePidFile("shim.pid", cmd.Process.Pid); err != nil {
+	if err = shim.WritePidFile(filepath.Join(bundlePath(ctx), "shim.pid"), cmd.Process.Pid); err != nil {
 		return nil, err
 	}
 
@@ -157,9 +157,38 @@ func (manager) Start(ctx context.Context, bparams *bootapi.BootstrapParams) (_ *
 	}, nil
 }
 
+// bundlePath extracts the bundle path from the context. The shim framework
+// stores it as shim.Opts{BundlePath: ...} via the -bundle flag.
+func bundlePath(ctx context.Context) string {
+	if o, ok := ctx.Value(shim.OptsKey{}).(shim.Opts); ok {
+		return o.BundlePath
+	}
+	return ""
+}
+
+// removeRootfs removes the rootfs directory from the bundle so that
+// containerd's bundle cleanup doesn't attempt a bind filter unmount.
+// On Windows, Unmount calls bindfilter.RemoveFileBinding which fails with
+// ERROR_ACCESS_DENIED on directories that were never bind filter mounts
+// (nerdbox uses VM-based virtio block devices instead). Removing the
+// directory makes UnmountAll a no-op.
+func removeRootfs(ctx context.Context) {
+	if bp := bundlePath(ctx); bp != "" {
+		os.RemoveAll(filepath.Join(bp, "rootfs"))
+	}
+}
+
 func (manager) Stop(ctx context.Context, id string) (shim.StopStatus, error) {
-	p, err := os.ReadFile("shim.pid")
+	p, err := os.ReadFile(filepath.Join(bundlePath(ctx), "shim.pid"))
 	if err != nil {
+		if os.IsNotExist(err) {
+			// The shim already exited and cleaned up its pid file.
+			removeRootfs(ctx)
+			return shim.StopStatus{
+				ExitedAt:   time.Now(),
+				ExitStatus: 128 + 9,
+			}, nil
+		}
 		return shim.StopStatus{}, err
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(p)))
@@ -202,6 +231,8 @@ func (manager) Stop(ctx context.Context, id string) (shim.StopStatus, error) {
 	if _, err := windows.WaitForSingleObject(h, windows.INFINITE); err != nil {
 		return shim.StopStatus{}, fmt.Errorf("wait for shim process: %w", err)
 	}
+
+	removeRootfs(ctx)
 
 	return shim.StopStatus{
 		ExitedAt:   time.Now(),

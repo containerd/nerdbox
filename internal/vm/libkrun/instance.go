@@ -72,10 +72,11 @@ func (*vmManager) NewInstance(ctx context.Context, state string) (vm.Instance, e
 	if runtime.GOOS != "windows" && len(p2) == 0 {
 		p2 = []string{"/usr/local/lib", "/usr/local/lib64", "/usr/lib", "/lib"}
 	}
-	sharedNames := []string{"libkrun.so"}
+	arch := kernelArch()
+	sharedNames := []string{fmt.Sprintf("libkrun-%s.so", arch), "libkrun.so"}
 	switch runtime.GOOS {
 	case "darwin":
-		sharedNames = []string{"libkrun.dylib", "libkrun-efi.dylib"}
+		sharedNames = []string{fmt.Sprintf("libkrun-%s.dylib", arch), "libkrun.dylib", fmt.Sprintf("libkrun-efi-%s.dylib", arch), "libkrun-efi.dylib"}
 		p2 = append(p2, "/opt/homebrew/lib")
 	case "windows":
 		sharedNames = []string{"krun.dll"}
@@ -103,9 +104,12 @@ func (*vmManager) NewInstance(ctx context.Context, state string) (vm.Instance, e
 			}
 		}
 		if initrdPath == "" {
-			path = filepath.Join(dir, "nerdbox-initrd")
-			if _, err := os.Stat(path); err == nil {
-				initrdPath = path
+			for _, name := range []string{fmt.Sprintf("nerdbox-initrd-%s", arch), "nerdbox-initrd"} {
+				path = filepath.Join(dir, name)
+				if _, err := os.Stat(path); err == nil {
+					initrdPath = path
+					break
+				}
 			}
 		}
 	}
@@ -116,7 +120,7 @@ func (*vmManager) NewInstance(ctx context.Context, state string) (vm.Instance, e
 		return nil, fmt.Errorf("nerdbox-kernel not found in PATH or LIBKRUN_PATH")
 	}
 	if initrdPath == "" {
-		return nil, fmt.Errorf("nerdbox-initrd not found in PATH or LIBKRUN_PATH")
+		return nil, fmt.Errorf("nerdbox-initrd-%s or nerdbox-initrd not found in PATH or LIBKRUN_PATH", arch)
 	}
 
 	lib, handler, err := openLibkrun(krunPath)
@@ -432,6 +436,16 @@ func (v *vmInstance) Shutdown(ctx context.Context) error {
 	defer v.mu.Unlock()
 	if v.handler == 0 {
 		return fmt.Errorf("libkrun already closed")
+	}
+	// Stop the VM and wait for all threads (vCPU, virtio workers) to exit
+	// before unloading the library. krun_free_ctx is synchronous: it joins
+	// all threads and closes all file handles. Without this, dlClose rips
+	// the code out from under running threads and leaves file handles open,
+	// preventing containerd from cleaning up the bundle directory.
+	if v.vmc != nil {
+		if err := v.vmc.Shutdown(); err != nil {
+			log.G(ctx).WithError(err).Warn("krun_free_ctx failed during shutdown")
+		}
 	}
 	err := dlClose(v.handler)
 	if err != nil {

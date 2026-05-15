@@ -167,6 +167,10 @@ func (s *service) shutdown(ctx context.Context) error {
 		}
 	}
 
+	// Remove the rootfs directory on Windows so containerd's bundle cleanup
+	// doesn't attempt a bind filter unmount (no-op on other platforms).
+	removeRootfsDir(ctx)
+
 	// Signal last event and stop forwarding
 	s.events <- nil
 

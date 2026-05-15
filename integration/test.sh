@@ -31,7 +31,41 @@ fi
 # Discover tests from the binary (respects build tags).
 readarray -t tests < <(../_output/integration.test -test.list '.*' 2>/dev/null | grep '^Test')
 
-# Run each test individually
+# Parse TESTFLAGS forwarded from the task invocation.
+#   -run <pattern>  filters which discovered tests to run (not passed to binary)
+#   -v              changes gotestsum output format (handled in Taskfile; skip here)
+#   anything else   is normalised to -test.<flag> and forwarded to the binary
+run_pattern=""
+binary_flags=()
+if [ -n "${TESTFLAGS:-}" ]; then
+    read -ra tokens <<< "$TESTFLAGS"
+    i=0
+    while [ $i -lt ${#tokens[@]} ]; do
+        tok="${tokens[$i]}"
+        case "$tok" in
+            -run)      i=$((i+1)); run_pattern="${tokens[$i]}" ;;
+            -run=*)    run_pattern="${tok#-run=}" ;;
+            -v)        ;; # handled by gotestsum format in Taskfile
+            -test.*)   binary_flags+=("$tok") ;;
+            -*)        binary_flags+=("-test.${tok#-}") ;;
+        esac
+        i=$((i+1))
+    done
+fi
+if [ -n "$run_pattern" ]; then
+    filtered=()
+    for test in "${tests[@]}"; do
+        [[ "$test" =~ $run_pattern ]] && filtered+=("$test")
+    done
+    tests=("${filtered[@]}")
+fi
+
+# Run each test individually. Exit code accumulates failures so all tests
+# run even when one fails; the final exit code signals gotestsum.
+failed=0
 for test in "${tests[@]}"; do
-    go tool test2json -t -p "github.com/containerd/nerdbox/integration" ../_output/integration.test -test.parallel 1 -test.v -test.run "$test"
+    go tool test2json -t -p "github.com/containerd/nerdbox/integration" \
+        ../_output/integration.test -test.parallel 1 -test.v -test.run "$test" \
+        "${binary_flags[@]}" || failed=1
 done
+exit $failed

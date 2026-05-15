@@ -56,12 +56,20 @@ tasks:
       - go test -count=1 ./api/... ./cmd/... ./internal/... ./pkg/... ./plugins/...
 
   test:integration:
-    desc: Run integration tests (each test in its own process)
+    desc: "Run integration tests (each test in its own process). Extra flags are forwarded to the test binary: task test:integration -- -run TestSystemInfo -v"
     deps: [build:integration]
+    vars:
+      # When -v is in the extra flags, switch gotestsum to standard-verbose so
+      # t.Log() output is shown; otherwise testname format suppresses it.
+      GOTESTSUM_FORMAT:
+        sh: |
+          case " {{.CLI_ARGS}} " in *" -v "*|*" -v") echo standard-verbose ;; *) echo testname ;; esac
+    env:
+      TESTFLAGS: '{{.CLI_ARGS}}'
     cmds:
-      - cmd: bash integration/test.sh
+      - cmd: gotestsum -f {{.GOTESTSUM_FORMAT}} --raw-command bash integration/test.sh
         platforms: [darwin, linux]
-      - cmd: powershell -ExecutionPolicy Bypass -File integration/test.ps1
+      - cmd: gotestsum -f {{.GOTESTSUM_FORMAT}} --raw-command powershell -ExecutionPolicy Bypass -File integration/test.ps1
         platforms: [windows]
 
   #

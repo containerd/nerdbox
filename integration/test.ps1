@@ -30,9 +30,32 @@ $tests = & $testBin @('-test.list', '.*') 2>$null | Where-Object { $_ -match '^T
 # Run each test individually. Each test gets its own process so that the WHP
 # hypervisor partition is fully released between tests (Windows allows only one
 # VM partition per process with the current libkrun build).
+# Parse TESTFLAGS forwarded from the task invocation.
+#   -run <pattern>  filters which discovered tests to run (not passed to binary)
+#   -v              changes gotestsum output format (handled in Taskfile; skip here)
+#   anything else   is normalised to -test.<flag> and forwarded to the binary
+$runPattern = $null
+$binaryFlags = @()
+if ($env:TESTFLAGS) {
+    $tokens = ($env:TESTFLAGS -split '\s+') | Where-Object { $_ }
+    for ($i = 0; $i -lt $tokens.Count; $i++) {
+        switch -Regex ($tokens[$i]) {
+            '^-run$'     { $runPattern = $tokens[++$i]; break }
+            '^-run=(.+)' { $runPattern = $Matches[1];  break }
+            '^-v$'       { break } # handled by gotestsum format in Taskfile
+            '^-test\.'   { $binaryFlags += $tokens[$i]; break }
+            '^-(.+)'     { $binaryFlags += "-test.$($Matches[1])"; break }
+        }
+    }
+}
+if ($runPattern) { $tests = $tests | Where-Object { $_ -match $runPattern } }
+
+# Run each test individually. Each test gets its own process so that the WHP
+# hypervisor partition is fully released between tests (Windows allows only one
+# VM partition per process with the current libkrun build).
 $failed = $false
 foreach ($test in $tests) {
-    $testFlags = @("-test.parallel", "1", "-test.v", "-test.run", $test)
+    $testFlags = @("-test.parallel", "1", "-test.v", "-test.run", $test) + $binaryFlags
     & go tool test2json -t -p "github.com/containerd/nerdbox/integration" $testBin @testFlags
     if ($LASTEXITCODE -ne 0) { $failed = $true }
 }

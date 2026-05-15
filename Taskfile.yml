@@ -1,0 +1,128 @@
+version: '3'
+
+vars:
+  OUTPUT_DIR: '_output'
+  GO_BUILDTAGS: 'no_grpc'
+  GO_TAGS: '-tags "no_grpc"'
+  LDFLAGS: '-s -w'
+  GO_LDFLAGS: "-ldflags '{{.LDFLAGS}}'"
+  # Map Go's GOARCH to the kernel arch naming convention (amd64 → x86_64).
+  KERNEL_ARCH:
+    sh: 'a=$(go env GOARCH); case "$a" in amd64) echo x86_64;; *) echo "$a";; esac'
+
+tasks:
+  default:
+    desc: Build all outputs via Docker Buildx Bake
+    deps: [build]
+
+  #
+  # Build tasks
+  #
+  build:
+    desc: Build all outputs via Docker Buildx Bake
+    cmds:
+      - HOST_OS={{OS}} KERNEL_ARCH={{.KERNEL_ARCH}} docker buildx bake
+
+  build:shim:
+    desc: Build containerd-shim-nerdbox-v1 for the current platform
+    cmds:
+      - go build {{.GO_TAGS}} {{.GO_LDFLAGS}} -o {{.OUTPUT_DIR}}/containerd-shim-nerdbox-v1{{if eq OS "windows"}}.exe{{end}} ./cmd/containerd-shim-nerdbox-v1
+      - cmd: codesign --entitlements cmd/containerd-shim-nerdbox-v1/containerd-shim-nerdbox-v1.entitlements --force -s - {{.OUTPUT_DIR}}/containerd-shim-nerdbox-v1
+        platforms: [darwin]
+
+  build:guest:
+    desc: Build guest artifacts (kernel and initrd) via Docker Buildx Bake
+    cmds:
+      - docker buildx bake kernel initrd
+
+  build:initrd:
+    desc: Build the nerdbox initrd via Docker Buildx Bake
+    cmds:
+      - docker buildx bake initrd
+
+  build:integration:
+    desc: Build the integration test binary
+    cmds:
+      - go test -c -o {{.OUTPUT_DIR}}/integration.test{{if eq OS "windows"}}.exe{{end}} {{.GO_LDFLAGS}} {{.GO_TAGS}} ./integration
+      - cmd: codesign --entitlements cmd/containerd-shim-nerdbox-v1/containerd-shim-nerdbox-v1.entitlements --force -s - {{.OUTPUT_DIR}}/integration.test
+        platforms: [darwin]
+
+  #
+  # Test tasks
+  #
+  test:unit:
+    desc: Run unit tests (excludes integration package)
+    cmds:
+      - go test -count=1 ./api/... ./cmd/... ./internal/... ./pkg/... ./plugins/...
+
+  test:integration:
+    desc: Run integration tests (each test in its own process)
+    deps: [build:integration]
+    cmds:
+      - cmd: bash integration/test.sh
+        platforms: [darwin, linux]
+      - cmd: powershell -ExecutionPolicy Bypass -File integration/test.ps1
+        platforms: [windows]
+
+  #
+  # Code quality tasks
+  #
+  validate:
+    desc: Validate via Docker Buildx Bake
+    cmds:
+      - docker buildx bake validate
+
+  lint:
+    desc: Run linters via Docker Buildx Bake
+    cmds:
+      - docker buildx bake lint
+
+  protos:
+    desc: Regenerate protobuf bindings
+    dir: api
+    cmds:
+      - buf generate
+      - buf build --exclude-imports -o next.txtpb
+
+  generate:
+    desc: Regenerate all derived artifacts (protobuf)
+    deps: [protos]
+
+  check-protos:
+    desc: Verify protobuf bindings are up to date
+    deps: [protos]
+    cmds:
+      - cmd: |
+          if [ -n "$(git status --short | grep ".pb.go")" ]; then
+            git diff | cat
+            echo "please run 'task protos' when making changes to proto files"
+            exit 1
+          fi
+
+  check-api-descriptors:
+    desc: Verify protobuf descriptor files are up to date
+    deps: [protos]
+    cmds:
+      - cmd: |
+          if [ -n "$(git status --short | grep ".txtpb")" ]; then
+            git diff $(find . -name '*.txtpb') | cat
+            echo "please run 'task protos' when making changes to proto files and check-in the generated descriptor file changes"
+            exit 1
+          fi
+
+  proto-fmt:
+    desc: Check proto files use tabs (not spaces) for indentation
+    cmds:
+      - cmd: |
+          if [ -n "$(find . -name '*.proto' -type f -exec grep -Hn -e "^ " {} \;)" ]; then
+            echo "please indent proto files with tabs only"
+            exit 1
+          fi
+
+  #
+  # Clean
+  #
+  clean:
+    desc: Remove all build outputs
+    cmds:
+      - rm -rf {{.OUTPUT_DIR}}

@@ -164,8 +164,8 @@ type vmInstance struct {
 	lib     *libkrun
 	handler uintptr
 
-	client            *ttrpc.Client
-	shutdownCallbacks []func(context.Context) error
+	client *ttrpc.Client
+	conn   net.Conn // underlying TTRPC connection; closed in Shutdown
 }
 
 func (v *vmInstance) AddFS(ctx context.Context, tag, mountPath string, opts ...vm.MountOpt) error {
@@ -312,27 +312,13 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 	preVMStart := time.Now()
 
 	// Start it
-	errC := make(chan error)
+	errC := make(chan error, 1)
 	go func() {
 		defer close(errC)
 		if err := v.vmc.Start(); err != nil {
 			errC <- err
 		}
 	}()
-
-	v.shutdownCallbacks = []func(context.Context) error{
-		func(context.Context) error {
-			cerr := v.vmc.Shutdown()
-			select {
-			case err := <-errC:
-				if err != nil {
-					return fmt.Errorf("failure running vm: %w", err)
-				}
-			default:
-			}
-			return cerr
-		},
-	}
 
 	// Accept a single connection from vminitd connecting back via vsock.
 	type acceptResult struct {
@@ -370,10 +356,7 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 		"t_total":  time.Since(startedAt),
 	}).Info("VM connection established")
 
-	v.shutdownCallbacks = append(v.shutdownCallbacks, func(context.Context) error {
-		return conn.Close()
-	})
-
+	v.conn = conn
 	v.client = ttrpc.NewClient(conn)
 
 	return nil
@@ -437,21 +420,39 @@ func (v *vmInstance) Shutdown(ctx context.Context) error {
 	if v.handler == 0 {
 		return fmt.Errorf("libkrun already closed")
 	}
-	// Stop the VM and wait for all threads (vCPU, virtio workers) to exit
-	// before unloading the library. krun_free_ctx is synchronous: it joins
-	// all threads and closes all file handles. Without this, dlClose rips
-	// the code out from under running threads and leaves file handles open,
-	// preventing containerd from cleaning up the bundle directory.
+
+	// Close the TTRPC client so in-flight RPCs fail fast and its background
+	// goroutines are stopped before we tear down the connection underneath.
+	if v.client != nil {
+		v.client.Close()
+		v.client = nil
+	}
+
+	// Close the underlying TTRPC net.Conn to vminitd. This must happen
+	// before krun_free_ctx to avoid leaving file handles open, which would
+	// prevent containerd from cleaning up the bundle directory.
+	if v.conn != nil {
+		if err := v.conn.Close(); err != nil {
+			log.G(ctx).WithError(err).Warn("failed to close TTRPC connection")
+		}
+		v.conn = nil
+	}
+
+	// Stop the VM. krun_free_ctx joins all VM threads (vCPU, virtio workers)
+	// on most platforms. On Windows WHP it initiates the stop but may return
+	// before krun_start_enter unblocks; the goroutine is cleaned up on exit.
 	if v.vmc != nil {
 		if err := v.vmc.Shutdown(); err != nil {
 			log.G(ctx).WithError(err).Warn("krun_free_ctx failed during shutdown")
 		}
 	}
-	err := dlClose(v.handler)
-	if err != nil {
+
+	// On Unix, dlClose unloads the library after krun_free_ctx has joined all
+	// VM threads. On Windows it is a no-op (see dlfcn_windows.go).
+	if err := dlClose(v.handler); err != nil {
 		return err
 	}
-	v.handler = 0 // Mark as closed
+	v.handler = 0
 	return nil
 }
 

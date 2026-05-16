@@ -127,6 +127,16 @@ tasks:
             exit 1
           fi
 
+  verify-vendor:
+    desc: Verify go.mod/go.sum and vendor directory are up to date
+    cmds:
+      - cmd: |
+          tmpdir=$(mktemp -d)
+          cp -R . "$tmpdir/nerdbox"
+          (cd "$tmpdir/nerdbox" && go mod tidy && go mod verify)
+          diff -r -u . "$tmpdir/nerdbox" || (rm -rf "$tmpdir" && exit 1)
+          rm -rf "$tmpdir"
+
   #
   # Clean
   #

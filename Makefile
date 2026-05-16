@@ -16,6 +16,10 @@ GO ?= go
 DOCKER ?= docker
 BUILDX ?= $(DOCKER) buildx
 
+ifeq (,$(shell command -v task 2>/dev/null))
+$(error 'task' is required to build nerdbox. Install from https://taskfile.dev)
+endif
+
 ROOTDIR=$(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 
 WHALE = "🇩"
@@ -58,15 +62,10 @@ API_PACKAGES=$(shell ($(GO) list ${GO_TAGS} ./... | grep /api/ ))
 all: build
 
 build:
-	@echo "$(WHALE) $@"
-	HOST_OS=$(shell uname -s | tr '[:upper:]' '[:lower:]') KERNEL_ARCH=$(ARCH) $(BUILDX) bake
+	@task build
 
 _output/containerd-shim-nerdbox-v1: cmd/containerd-shim-nerdbox-v1 FORCE
-	@echo "$(WHALE) $@"
-	$(GO) build ${DEBUG_GO_GCFLAGS} ${GO_GCFLAGS} ${GO_BUILD_FLAGS} -o $@ ${GO_LDFLAGS} ${GO_TAGS} ./$<
-ifeq ($(OS),Darwin)
-	codesign --entitlements cmd/containerd-shim-nerdbox-v1/containerd-shim-nerdbox-v1.entitlements --force -s - $@
-endif
+	@task build:shim
 
 _output/containerd-shim-nerdbox-v1.exe: cmd/containerd-shim-nerdbox-v1 FORCE
 	@echo "$(WHALE) $@"
@@ -77,15 +76,10 @@ _output/vminitd: cmd/vminitd FORCE
 	$(GO) build ${DEBUG_GO_GCFLAGS} ${GO_GCFLAGS} ${GO_BUILD_FLAGS} -o $@ ${GO_STATIC_LDFLAGS} ${GO_STATIC_TAGS}  ./$<
 
 _output/nerdbox-initrd: cmd/vminitd FORCE
-	@echo "$(WHALE) $@"
-	$(BUILDX) bake initrd
+	@task build:initrd
 
 _output/integration.test: integration FORCE
-	@echo "$(WHALE) $@"
-	$(GO) test -c -o $@ ${GO_LDFLAGS} ${GO_TAGS} ./integration
-ifeq ($(OS),Darwin)
-	codesign --entitlements cmd/containerd-shim-nerdbox-v1/containerd-shim-nerdbox-v1.entitlements --force -s - $@
-endif
+	@task build:integration
 
 _output/test_vminitd: cmd/test_vminitd FORCE
 	@echo "$(WHALE) $@"
@@ -106,32 +100,19 @@ _output/libkrun.so: FORCE
 
 
 generate: protos
-	@echo "$(WHALE) $@"
-	@PATH="${ROOTDIR}/bin:${PATH}" $(GO) generate -x ${PACKAGES}
+	@task generate
 
 protos:
-	@echo "$(WHALE) $@"
-	@(cd ${ROOTDIR}/api && PATH="${ROOTDIR}/bin:${PATH}" buf generate)
-	@(cd ${ROOTDIR}/api && buf build --exclude-imports -o next.txtpb)
-	go-fix-acronym -w -a '^Os' $(shell find api/ -name '*.pb.go')
-	go-fix-acronym -w -a '(Id|Io|Uuid|Os)$$' $(shell find api/ -name '*.pb.go')
+	@task protos
 
 check-protos: protos ## check if protobufs needs to be generated again
-	@echo "$(WHALE) $@"
-	@test -z "$$(git status --short | grep ".pb.go" | tee /dev/stderr)" || \
-		((git diff | cat) && \
-		(echo "$(ONI) please run 'make protos' when making changes to proto files" && false))
+	@task check-protos
 
 check-api-descriptors: protos ## check that protobuf changes aren't present.
-	@echo "$(WHALE) $@"
-	@test -z "$$(git status --short | grep ".txtpb" | tee /dev/stderr)" || \
-		((git diff $$(find . -name '*.txtpb') | cat) && \
-		(echo "$(ONI) please run 'make protos' when making changes to proto files and check-in the generated descriptor file changes" && false))
+	@task check-api-descriptors
 
 proto-fmt: ## check format of proto files
-	@echo "$(WHALE) $@"
-	@test -z "$$(find . -name '*.proto' -type f -exec grep -Hn -e "^ " {} \; | tee /dev/stderr)" || \
-		(echo "$(ONI) please indent proto files with tabs only" && false)
+	@task proto-fmt
 
 menuconfig:
 ifeq ($(KERNEL_VERSION),)
@@ -152,13 +133,13 @@ endif
 FORCE:
 
 validate:
-	@$(BUILDX) bake validate
+	@task validate
 
 lint:
-	@$(BUILDX) bake lint
+	@task lint
 
 clean:
-	rm -rf _output
+	@task clean
 
 shell:
 	@echo "$(WHALE) $@"
@@ -174,17 +155,10 @@ shell:
 		nerdbox-dev
 
 verify-vendor: ## verify if all the go.mod/go.sum files are up-to-date
-	@echo "$(WHALE) $@"
-	$(eval TMPDIR := $(shell mktemp -d))
-	@cp -R ${ROOTDIR} ${TMPDIR}
-	@(cd ${TMPDIR}/nerdbox && ${GO} mod tidy)
-	@(cd ${TMPDIR}/nerdbox && ${GO} mod verify)
-	diff -r -u ${ROOTDIR} ${TMPDIR}/nerdbox
-	@rm -rf ${TMPDIR}
+	@task verify-vendor
 
 test-unit:
-	go test -count=1 $(shell go list ./... | grep -v /integration)
+	@task test:unit
 
 test-integration: _output/integration.test
-	@echo "$(WHALE) $@"
-	gotestsum -f testname --raw-command ./integration/test.sh
+	@task test:integration

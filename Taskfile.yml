@@ -2,10 +2,9 @@ version: '3'
 
 vars:
   OUTPUT_DIR: '_output'
-  GO_BUILDTAGS: 'no_grpc'
   GO_TAGS: '-tags "no_grpc"'
   LDFLAGS: '-s -w'
-  GO_LDFLAGS: "-ldflags '{{.LDFLAGS}}'"
+  GO_LDFLAGS: '-ldflags "{{.LDFLAGS}}"'
   # Map Go's GOARCH to the kernel arch naming convention (amd64 → x86_64).
   KERNEL_ARCH:
     sh: 'a=$(go env GOARCH); case "$a" in amd64) echo x86_64;; *) echo "$a";; esac'
@@ -26,6 +25,7 @@ tasks:
   build:shim:
     desc: Build containerd-shim-nerdbox-v1 for the current platform
     cmds:
+      - mkdir -p {{.OUTPUT_DIR}}
       - go build {{.GO_TAGS}} {{.GO_LDFLAGS}} -o {{.OUTPUT_DIR}}/containerd-shim-nerdbox-v1{{if eq OS "windows"}}.exe{{end}} ./cmd/containerd-shim-nerdbox-v1
       - cmd: codesign --entitlements cmd/containerd-shim-nerdbox-v1/containerd-shim-nerdbox-v1.entitlements --force -s - {{.OUTPUT_DIR}}/containerd-shim-nerdbox-v1
         platforms: [darwin]
@@ -33,16 +33,17 @@ tasks:
   build:guest:
     desc: Build guest artifacts (kernel and initrd) via Docker Buildx Bake
     cmds:
-      - docker buildx bake kernel initrd
+      - KERNEL_ARCH={{.KERNEL_ARCH}} docker buildx bake kernel initrd
 
   build:initrd:
     desc: Build the nerdbox initrd via Docker Buildx Bake
     cmds:
-      - docker buildx bake initrd
+      - KERNEL_ARCH={{.KERNEL_ARCH}} docker buildx bake initrd
 
   build:integration:
     desc: Build the integration test binary
     cmds:
+      - mkdir -p {{.OUTPUT_DIR}}
       - go test -c -o {{.OUTPUT_DIR}}/integration.test{{if eq OS "windows"}}.exe{{end}} {{.GO_LDFLAGS}} {{.GO_TAGS}} ./integration
       - cmd: codesign --entitlements cmd/containerd-shim-nerdbox-v1/containerd-shim-nerdbox-v1.entitlements --force -s - {{.OUTPUT_DIR}}/integration.test
         platforms: [darwin]
@@ -91,6 +92,8 @@ tasks:
     cmds:
       - buf generate
       - buf build --exclude-imports -o next.txtpb
+      - go-fix-acronym -w -a '^Os' $(find . -name '*.pb.go')
+      - go-fix-acronym -w -a '(Id|Io|Uuid|Os)$' $(find . -name '*.pb.go')
 
   generate:
     desc: Regenerate all derived artifacts (protobuf)

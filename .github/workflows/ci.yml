@@ -4,7 +4,7 @@ on:
   # See https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue#triggering-merge-group-checks-with-github-actions
   merge_group:
   pull_request:
-    branches: ['main', 'release/**']
+    branches: ["main", "release/**"]
 
 permissions:  # added using https://github.com/step-security/secure-workflows
   contents: read
@@ -56,7 +56,7 @@ jobs:
 
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
         with:
-          go-version-file: 'src/github.com/containerd/nerdbox/.github/.tool-versions'
+          go-version-file: "src/github.com/containerd/nerdbox/.github/.tool-versions"
 
       - uses: containerd/project-checks@d7751f3c375b8fe4a84c02a068184ee4c1f59bc4  # v1.2.2
         if: github.repository == 'containerd/nerdbox'
@@ -118,7 +118,7 @@ jobs:
 
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
         with:
-          go-version-file: 'src/github.com/containerd/nerdbox/.github/.tool-versions'
+          go-version-file: "src/github.com/containerd/nerdbox/.github/.tool-versions"
 
       - name: Set env
         shell: bash
@@ -131,37 +131,92 @@ jobs:
       - run: make check-protos check-api-descriptors
 
   #
-  # Build kernels on cache miss
+  # Build kernels on cache miss. One job per arch so cache keys can be
+  # forwarded to integration tests without recalculating on every platform.
   #
-  build-kernels:
-    name: Build Kernels (if needed)
-    runs-on: ${{ matrix.os }}
+  build-kernel-x86_64:
+    name: Build Kernel (x86_64)
+    runs-on: ubuntu-latest
     needs: setup
+    outputs:
+      cache-key: ${{ steps.build.outputs.cache-key }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: ./.github/actions/build-kernel
+        id: build
+        with:
+          kernel_version: ${{ needs.setup.outputs.kernel-version }}
+          kernel_arch: x86_64
+
+  build-kernel-arm64:
+    name: Build Kernel (arm64)
+    runs-on: ubuntu-latest
+    needs: setup
+    outputs:
+      cache-key: ${{ steps.build.outputs.cache-key }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: ./.github/actions/build-kernel
+        id: build
+        with:
+          kernel_version: ${{ needs.setup.outputs.kernel-version }}
+          kernel_arch: arm64
+
+  #
+  # Build initrd on Linux and upload for cross-platform integration tests.
+  # Runs in parallel with build-kernels (no dependency between them).
+  #
+  build-initrd:
+    name: Build Initrd (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
 
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            arch: x86_64
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - uses: ./.github/actions/build-kernel
+
+      - name: Check initrd cache
+        id: cache-initrd
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
         with:
-          kernel_version: ${{ needs.setup.outputs.kernel-version }}
-          kernel_arch: ${{ matrix.arch }}
+          path: _output/nerdbox-initrd
+          key: initrd-${{ matrix.arch }}-${{ hashFiles('go.sum', 'Dockerfile', 'cmd/vminitd/**', 'internal/**') }}
+
+      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4.0.0
+        if: steps.cache-initrd.outputs.cache-hit != 'true'
+
+      - name: Build initrd
+        if: steps.cache-initrd.outputs.cache-hit != 'true'
+        run: KERNEL_ARCH=${{ matrix.arch }} docker buildx bake guest-binaries
+
+      - name: Upload initrd
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: initrd-${{ matrix.arch }}
+          path: _output/nerdbox-initrd
+          retention-days: 1
+          if-no-files-found: error
 
   #
   # Integration tests
   #
   integration:
     name: Integration Tests
-    needs: [setup, build-kernels]
+    needs: [build-kernel-x86_64, build-kernel-arm64, build-initrd]
     # Always run after kernel builds complete (whether they were cached or not)
     if: |
       always() &&
-      (needs.build-kernels.result == 'success' || needs.build-kernels.result == 'skipped')
+      (needs.build-kernel-x86_64.result == 'success' || needs.build-kernel-x86_64.result == 'skipped') &&
+      (needs.build-kernel-arm64.result == 'success' || needs.build-kernel-arm64.result == 'skipped') &&
+      (needs.build-initrd.result == 'success')
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
 
@@ -171,6 +226,7 @@ jobs:
         include:
           - os: ubuntu-latest
             arch: x86_64
+            kernel-cache-key: ${{ needs.build-kernel-x86_64.outputs.cache-key }}
 
     steps:
       - name: Enable KVM group perms
@@ -192,72 +248,34 @@ jobs:
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
-      - name: Calculate kernel cache key
-        id: cache-key
-        run: |
-          # Hash the kernel config and patches to create a unique cache key
-          CONFIG_FILE="kernel/config-${{ needs.setup.outputs.kernel-version }}-${{ matrix.arch }}"
-
-          if [ ! -f "$CONFIG_FILE" ]; then
-            echo "Error: Kernel config file $CONFIG_FILE not found"
-            exit 1
-          fi
-
-          # Calculate hash of config file and all patches
-          CONFIG_HASH=$(sha256sum "$CONFIG_FILE" | cut -d' ' -f1)
-          PATCHES_HASH=$(find kernel/patches -type f -name "*.patch" -exec sha256sum {} \; | sort | sha256sum | cut -d' ' -f1)
-
-          # Combine version, arch, config hash, and patches hash
-          CACHE_KEY="kernel-${{ needs.setup.outputs.kernel-version }}-${{ matrix.arch }}-${CONFIG_HASH:0:8}-${PATCHES_HASH:0:8}"
-
-          echo "cache-key=${CACHE_KEY}" >> $GITHUB_OUTPUT
-          echo "Kernel cache key: ${CACHE_KEY}"
-
       - name: Restore cached kernel
         id: cache-kernel
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: _output/nerdbox-kernel-${{ matrix.arch }}
-          key: ${{ steps.cache-key.outputs.cache-key }}
+          key: ${{ matrix.kernel-cache-key }}
 
-      - name: Verify kernel from cache
+      - name: Download initrd
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: initrd-${{ matrix.arch }}
+          path: _output
+
+      - name: Verify guest artifacts
         run: |
-          if [ "${{ steps.cache-kernel.outputs.cache-hit }}" = "true" ]; then
-            echo "✅ Kernel restored from cache"
-          else
-            echo "❌ Kernel not in cache - this should not happen after build-kernels-on-demand"
-            exit 1
-          fi
-          ls -lh _output/nerdbox-kernel-${{ matrix.arch }}
-          file _output/nerdbox-kernel-${{ matrix.arch }}
-
-      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4.0.0
-
-      - name: Build remaining artifacts (initrd and shim)
-        run: |
-          echo "Building host and guest binaries:"
-          docker buildx bake host-binaries guest-binaries
-
-      - name: Verify all artifacts
-        run: |
-          echo "Verifying build artifacts:"
           ls -lh _output/
-          echo ""
-          echo "Kernel:"
-          file _output/nerdbox-kernel-${{ matrix.arch }}
-          echo ""
-          echo "Initrd:"
-          file _output/nerdbox-initrd
-          echo ""
-          echo "Shim:"
-          file _output/containerd-shim-nerdbox-v1
-
-      - name: Add _output to PATH
-        run: echo "$(pwd)/_output" >> $GITHUB_PATH
+          test -f _output/nerdbox-kernel-${{ matrix.arch }}
+          test -f _output/nerdbox-initrd
 
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
         with:
-          go-version-file: '.github/.tool-versions'
+          go-version-file: ".github/.tool-versions"
+
+      - name: Build shim
+        run: make _output/containerd-shim-nerdbox-v1
+
+      - name: Add _output to PATH
+        run: echo "$(pwd)/_output" >> $GITHUB_PATH
 
       - name: Verify user namespaces not restricted
         run: |
@@ -265,4 +283,5 @@ jobs:
           _output/userns-check
 
       - name: Run integration tests
-        run: go test -v ./integration/...
+        shell: bash
+        run: ./integration/test.sh

@@ -18,14 +18,48 @@ package integration
 
 import (
 	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
-	"github.com/containerd/nerdbox/pkg/vm"
+	"github.com/containerd/log/logtest"
+
 	"github.com/containerd/nerdbox/internal/vm/libkrun"
+	"github.com/containerd/nerdbox/pkg/logging"
+	"github.com/containerd/nerdbox/pkg/vm"
 )
+
+// tLogWriter routes slog records to t.Log() so they are suppressed by the
+// test framework unless the test fails or -v is used.
+type tLogWriter struct {
+	mu sync.Mutex
+	t  testing.TB
+}
+
+func (w *tLogWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.t == nil {
+		// Test has completed; silently discard to avoid "Log after test
+		// finished" panics from any background goroutine still draining
+		// the console FIFO.
+		return len(p), nil
+	}
+	w.t.Log(strings.TrimRight(string(p), "\n"))
+	return len(p), nil
+}
+
+// disable clears the reference to t so that subsequent Write calls are
+// discarded. Call this after vm.Shutdown() in t.Cleanup to ensure no
+// background log goroutine can call t.Log() on a completed test.
+func (w *tLogWriter) disable() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.t = nil
+}
 
 func TestMain(m *testing.M) {
 	e, err := os.Executable()
@@ -67,6 +101,19 @@ func runWithVM(t *testing.T, runTest func(*testing.T, vm.Instance)) {
 func runWithVMOpts(t *testing.T, startOpts []vm.StartOpt, runTest func(*testing.T, vm.Instance)) {
 	for _, tc := range vmBackends {
 		t.Run(tc.name, func(t *testing.T) {
+			// Route all log output through t.Log() so it is suppressed
+			// unless the test fails or -v is used.
+			//
+			// logtest.WithT redirects logrus (log.G(ctx)) to t.Log().
+			ctx := logtest.WithT(t.Context(), t)
+			// SetBaseHandler redirects slog (ForwardConsoleLogs: kernel
+			// kmsg + vminitd JSON) to t.Log() via a TextHandler.
+			lw := &tLogWriter{t: t}
+			logging.SetBaseHandler(slog.NewTextHandler(
+				lw,
+				&slog.HandlerOptions{Level: slog.LevelDebug},
+			))
+
 			td := t.TempDir()
 			t.Chdir(td)
 			// Use Getwd to resolve symlinks (e.g., /var -> /private/var on macOS)
@@ -74,17 +121,21 @@ func runWithVMOpts(t *testing.T, startOpts []vm.StartOpt, runTest func(*testing.
 			if err != nil {
 				t.Fatal("Failed to get current working directory:", err)
 			}
-			vm, err := tc.vmm.NewInstance(t.Context(), resolvedTd)
+			vm, err := tc.vmm.NewInstance(ctx, resolvedTd)
 			if err != nil {
 				t.Fatal("Failed to create VM instance:", err)
 			}
 
-			if err := vm.Start(t.Context(), startOpts...); err != nil {
+			if err := vm.Start(ctx, startOpts...); err != nil {
 				t.Fatal("Failed to start VM instance:", err)
 			}
 
 			t.Cleanup(func() {
-				vm.Shutdown(t.Context())
+				vm.Shutdown(ctx)
+				// Disable the log writer after shutdown so any background
+				// goroutine still draining the console FIFO cannot call
+				// t.Log() on a completed test.
+				lw.disable()
 			})
 
 			runTest(t, vm)

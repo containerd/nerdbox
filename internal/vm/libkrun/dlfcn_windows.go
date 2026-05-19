@@ -33,8 +33,16 @@ func dlOpen(path string) (uintptr, error) {
 	return uintptr(h), nil
 }
 
-func dlClose(handle uintptr) error {
-	return syscall.FreeLibrary(syscall.Handle(handle))
+func dlClose(_ uintptr) error {
+	// On Windows, krun_start_enter may still be executing inside the library
+	// when Shutdown is called — krun_free_ctx initiates the VM stop but does
+	// not synchronously join the calling goroutine. Calling FreeLibrary while
+	// a goroutine is still inside the DLL causes an access violation.
+	//
+	// Since nerdbox runs exactly one VM per process (the shim model), the
+	// library handle is released naturally when the process exits. There is
+	// no need to call FreeLibrary explicitly.
+	return nil
 }
 
 func registerLibFunc(fn interface{}, handle uintptr, name string) {

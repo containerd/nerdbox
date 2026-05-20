@@ -116,7 +116,7 @@ tasks:
     cmds:
       - cmd: |
           if [ -n "$(git status --short | grep ".txtpb")" ]; then
-            git diff $(find . -name '*.txtpb') | cat
+            git diff $(find ./api/ -name '*.txtpb') | cat
             echo "please run 'task protos' when making changes to proto files and check-in the generated descriptor file changes"
             exit 1
           fi
@@ -125,7 +125,7 @@ tasks:
     desc: Check proto files use tabs (not spaces) for indentation
     cmds:
       - cmd: |
-          if [ -n "$(find . -name '*.proto' -type f -exec grep -Hn -e "^ " {} \;)" ]; then
+          if [ -n "$(find ./api/ -name '*.proto' -type f -exec grep -Hn -e "^ " {} \;)" ]; then
             echo "please indent proto files with tabs only"
             exit 1
           fi

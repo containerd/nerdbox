@@ -152,13 +152,20 @@ func (s *service) shutdown(ctx context.Context) error {
 		// to flush ext4 journals and dirty pages to the virtio-blk devices.
 		// Best-effort with a short retry for transient EBUSY.
 		if vmc, err := s.sb.Client(); err != nil {
-			log.G(ctx).WithError(err).Warn("failed to get VM client; skipping unmount of block volumes before VM shutdown")
+			log.G(ctx).WithError(err).Warn("failed to get VM client; skipping unmount and guest shutdown before VM stop")
 		} else {
 			unmountCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			err := unmountAllWithRetry(unmountCtx, mountAPI.NewTTRPCMountClient(vmc))
 			cancel()
 			if err != nil {
 				log.G(ctx).WithError(err).Warn("failed to unmount all block volumes before VM shutdown")
+			}
+
+			shutdownCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			_, err = taskAPI.NewTTRPCTaskClient(vmc).Shutdown(shutdownCtx, &taskAPI.ShutdownRequest{})
+			cancel()
+			if err != nil {
+				log.G(ctx).WithError(err).Warn("failed to wait for guest shutdown before VM stop")
 			}
 		}
 
@@ -708,10 +715,6 @@ func (s *service) Connect(ctx context.Context, r *taskAPI.ConnectRequest) (*task
 
 func (s *service) Shutdown(ctx context.Context, r *taskAPI.ShutdownRequest) (*ptypes.Empty, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID}).Info("shutdown")
-
-	// TODO: Should we forward this to VM?
-	// tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
-	// return tc.Shutdown(ctx, r)
 
 	s.initiateShutdownOnce.Do(s.initiateShutdown)
 

@@ -154,10 +154,7 @@ func (s *service) shutdown(ctx context.Context) error {
 		if vmc, err := s.sb.Client(); err != nil {
 			log.G(ctx).WithError(err).Warn("failed to get VM client; skipping unmount of block volumes before VM shutdown")
 		} else {
-			unmountCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			err := unmountAllWithRetry(unmountCtx, mountAPI.NewTTRPCMountClient(vmc))
-			cancel()
-			if err != nil {
+			if err := unmountAllWithRetry(ctx, mountAPI.NewTTRPCMountClient(vmc)); err != nil {
 				log.G(ctx).WithError(err).Warn("failed to unmount all block volumes before VM shutdown")
 			}
 		}

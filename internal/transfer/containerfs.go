@@ -23,6 +23,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -69,29 +70,64 @@ func (t *containerFSTransferrer) Transfer(ctx context.Context, src, dst any, opt
 	return errdefs.ErrNotImplemented
 }
 
+// rootRel converts a path expressed in the container's view (which
+// may be absolute or contain parent-directory components) into a path
+// usable with *os.Root operations. Leading "/" is stripped after
+// cleaning, and any leading "../" sequences are collapsed by Clean,
+// guaranteeing the result resolves within the root. An empty result
+// is mapped to ".", which os.Root treats as the root itself.
+func rootRel(p string) string {
+	p = strings.TrimPrefix(path.Clean("/"+p), "/")
+	if p == "" {
+		return "."
+	}
+	return p
+}
+
 // writePath creates a tar archive from the given path within rootfs
 // and writes it to w. When noWalk is true and path is a directory,
-// only the directory entry itself is included without walking into it.
-func writePath(rootfs, path string, w io.Writer, mediaType string, noWalk bool) error {
+// only the directory entry itself is included without walking into
+// it.
+//
+// All filesystem accesses are anchored to rootfs through *os.Root,
+// so symlink resolution cannot escape the rootfs even if the
+// container concurrently mutates its own filesystem.
+func writePath(rootfs, src string, w io.Writer, mediaType string, noWalk bool) error {
 	if mediaType != mediaTypeTar {
 		return fmt.Errorf("unsupported media type %q: %w", mediaType, errdefs.ErrNotImplemented)
 	}
 
-	srcPath := filepath.Join(rootfs, filepath.Clean("/"+path))
-
-	fi, err := os.Lstat(srcPath)
+	root, err := os.OpenRoot(rootfs)
 	if err != nil {
-		return fmt.Errorf("failed to stat %s: %w", path, err)
+		return fmt.Errorf("failed to open rootfs: %w", err)
 	}
+	defer root.Close()
+
+	relPath := rootRel(src)
+
+	fi, err := root.Lstat(relPath)
+	if err != nil {
+		return fmt.Errorf("failed to stat %s: %w", src, err)
+	}
+
+	// The top-level entry name is the basename of the requested
+	// path. When the caller asks for the whole filesystem (path "/"),
+	// relPath is "." and baseName is "."; child entries then drop
+	// the leading "./" via path.Join, so the tar contains
+	// "bin/sh" rather than leaking the host bundle's directory name.
+	baseName := path.Base(relPath)
 
 	tw := tar.NewWriter(w)
-	defer tw.Close()
 
 	if !fi.IsDir() || noWalk {
-		return writeTarEntry(tw, srcPath, fi, filepath.Base(srcPath))
+		if err := writeTarEntry(root, tw, relPath, fi, baseName); err != nil {
+			tw.Close()
+			return err
+		}
+		return tw.Close()
 	}
 
-	return filepath.WalkDir(srcPath, func(filePath string, d fs.DirEntry, err error) error {
+	if err := fs.WalkDir(root.FS(), relPath, func(walkPath string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -100,31 +136,50 @@ func writePath(rootfs, path string, w io.Writer, mediaType string, noWalk bool) 
 			return err
 		}
 
-		// Compute relative path for the tar header
-		rel, err := filepath.Rel(srcPath, filePath)
-		if err != nil {
-			return err
+		// walkPath is always slash-separated (fs.FS contract) and
+		// rooted at relPath. Derive the entry's path within the walk
+		// without using strings.TrimPrefix: when relPath is "." a
+		// naive TrimPrefix would strip the leading "." from dotfiles
+		// like ".bashrc" (since "." is a string prefix of ".bashrc").
+		var rel string
+		switch {
+		case walkPath == relPath:
+			// The root entry itself.
+			rel = ""
+		case relPath == ".":
+			// Walking from the rootfs root: walkPath is already the
+			// entry name relative to the root.
+			rel = walkPath
+		default:
+			// Walking a subdirectory: strip "relPath/" prefix.
+			rel = strings.TrimPrefix(walkPath, relPath+"/")
 		}
-		if rel == "." {
-			rel = filepath.Base(srcPath)
+		var name string
+		if rel == "" {
+			name = baseName
 		} else {
-			rel = filepath.Join(filepath.Base(srcPath), rel)
+			name = path.Join(baseName, rel)
 		}
 
-		return writeTarEntry(tw, filePath, info, rel)
-	})
+		return writeTarEntry(root, tw, walkPath, info, name)
+	}); err != nil {
+		tw.Close()
+		return err
+	}
+	return tw.Close()
 }
 
-func writeTarEntry(tw *tar.Writer, filePath string, fi os.FileInfo, name string) error {
+// writeTarEntry writes a single tar entry. srcPath is interpreted
+// relative to root, so symlink resolution cannot escape the rootfs.
+func writeTarEntry(root *os.Root, tw *tar.Writer, srcPath string, fi os.FileInfo, name string) error {
 	header, err := tar.FileInfoHeader(fi, "")
 	if err != nil {
 		return err
 	}
 	header.Name = name
 
-	// Resolve symlink target
 	if fi.Mode()&os.ModeSymlink != 0 {
-		link, err := os.Readlink(filePath)
+		link, err := root.Readlink(srcPath)
 		if err != nil {
 			return err
 		}
@@ -136,7 +191,7 @@ func writeTarEntry(tw *tar.Writer, filePath string, fi os.FileInfo, name string)
 	}
 
 	if fi.Mode().IsRegular() {
-		f, err := os.Open(filePath)
+		f, err := root.Open(srcPath)
 		if err != nil {
 			return err
 		}
@@ -149,15 +204,40 @@ func writeTarEntry(tw *tar.Writer, filePath string, fi os.FileInfo, name string)
 	return nil
 }
 
-// readPath reads a tar archive from r and extracts it to the given path
+// readPath reads a tar archive from r and extracts it under path
 // within rootfs. When preserveOwnership is true, extracted files have
 // their UID/GID set from the tar headers.
-func readPath(r io.Reader, rootfs, path, mediaType string, preserveOwnership bool) error {
+//
+// The destination directory is opened as a sub-*os.Root so the
+// destination boundary is enforced by os.Root rather than by lexical
+// path checks. Pre-existing symlinks within the rootfs, symlinks
+// created by earlier entries in the same archive, absolute symlink
+// targets, and tar entry names containing "../" all resolve within
+// the destination's sub-root and cannot redirect writes outside it.
+func readPath(r io.Reader, rootfs, dstPath, mediaType string, preserveOwnership bool) error {
 	if mediaType != mediaTypeTar {
 		return fmt.Errorf("unsupported media type %q: %w", mediaType, errdefs.ErrNotImplemented)
 	}
 
-	dstPath := filepath.Join(rootfs, filepath.Clean("/"+path))
+	root, err := os.OpenRoot(rootfs)
+	if err != nil {
+		return fmt.Errorf("failed to open rootfs: %w", err)
+	}
+	defer root.Close()
+
+	relDst := rootRel(dstPath)
+
+	dst := root
+	if relDst != "." {
+		if err := root.MkdirAll(relDst, 0755); err != nil {
+			return fmt.Errorf("failed to create destination: %w", err)
+		}
+		dst, err = root.OpenRoot(relDst)
+		if err != nil {
+			return fmt.Errorf("failed to open destination: %w", err)
+		}
+		defer dst.Close()
+	}
 
 	tr := tar.NewReader(r)
 	for {
@@ -169,30 +249,33 @@ func readPath(r io.Reader, rootfs, path, mediaType string, preserveOwnership boo
 			return fmt.Errorf("failed to read tar header: %w", err)
 		}
 
-		target := filepath.Join(dstPath, filepath.Clean("/"+header.Name))
-
-		// Ensure the target is within the destination directory
-		if !strings.HasPrefix(target, filepath.Clean(dstPath)+string(os.PathSeparator)) && target != filepath.Clean(dstPath) {
-			return fmt.Errorf("tar entry %q would escape destination", header.Name)
+		// Clean the entry name relative to "/" so any "../" sequences
+		// collapse before we hand the path to dst. dst itself enforces
+		// the destination boundary.
+		entryName := strings.TrimPrefix(path.Clean("/"+header.Name), "/")
+		if entryName == "" {
+			// Names that resolve to the destination itself (e.g. "."
+			// or "/") have nothing to extract.
+			continue
 		}
 
-		if err := extractTarEntry(target, header, tr, preserveOwnership); err != nil {
+		if err := extractTarEntry(dst, entryName, header, tr, preserveOwnership); err != nil {
 			return err
 		}
 	}
 }
 
-func extractTarEntry(target string, header *tar.Header, r io.Reader, preserveOwnership bool) error {
+func extractTarEntry(dst *os.Root, target string, header *tar.Header, r io.Reader, preserveOwnership bool) error {
 	switch header.Typeflag {
 	case tar.TypeDir:
-		if err := os.MkdirAll(target, os.FileMode(header.Mode)); err != nil {
+		if err := dst.MkdirAll(target, os.FileMode(header.Mode)); err != nil {
 			return err
 		}
 	case tar.TypeReg:
-		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+		if err := dst.MkdirAll(path.Dir(target), 0755); err != nil {
 			return err
 		}
-		f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
+		f, err := dst.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
 		if err != nil {
 			return err
 		}
@@ -204,23 +287,31 @@ func extractTarEntry(target string, header *tar.Header, r io.Reader, preserveOwn
 			return err
 		}
 	case tar.TypeSymlink:
-		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+		if err := dst.MkdirAll(path.Dir(target), 0755); err != nil {
 			return err
 		}
-		if err := os.Symlink(header.Linkname, target); err != nil {
+		// The symlink target string is stored verbatim. When later
+		// traversed through dst it will be resolved within the
+		// destination sub-root, so an absolute or "../"-laden target
+		// cannot redirect reads or writes outside it.
+		if err := dst.Symlink(header.Linkname, target); err != nil {
 			return err
 		}
 	case tar.TypeLink:
-		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+		if err := dst.MkdirAll(path.Dir(target), 0755); err != nil {
 			return err
 		}
-		if err := os.Link(header.Linkname, target); err != nil {
+		// Hardlink source names another entry in the same archive.
+		// Clean it the same way as the entry name; dst.Link enforces
+		// that both ends remain inside the destination sub-root.
+		linkSrc := strings.TrimPrefix(path.Clean("/"+header.Linkname), "/")
+		if err := dst.Link(linkSrc, target); err != nil {
 			return err
 		}
 	}
 
 	if preserveOwnership {
-		if err := os.Lchown(target, header.Uid, header.Gid); err != nil {
+		if err := dst.Lchown(target, header.Uid, header.Gid); err != nil {
 			return fmt.Errorf("failed to chown %s: %w", target, err)
 		}
 	}

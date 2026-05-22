@@ -175,13 +175,22 @@ func (s *service) shutdown(ctx context.Context) error {
 }
 
 // unmountAllWithRetry asks the guest to unmount all tracked mounts, retrying
-// briefly on transient failures. Returns the last UnmountAll error if ctx is
-// cancelled before a successful call.
+// briefly on transient failures (e.g. EBUSY). Permanent errors — including
+// Unimplemented, connection errors, and context cancellation — stop the
+// retry immediately.
 func unmountAllWithRetry(ctx context.Context, mc mountAPI.TTRPCMountService) error {
 	for {
 		_, err := mc.UnmountAll(ctx, &mountAPI.UnmountAllRequest{})
 		if err == nil {
 			return nil
+		}
+		// Convert gRPC/TTRPC status errors to errdefs so IsNotImplemented works.
+		native := errgrpc.ToNative(err)
+		// Stop immediately on permanent errors: connection gone or method not
+		// implemented. Only retry transient errors (e.g. EBUSY from the guest).
+		if errors.Is(err, ttrpc.ErrClosed) || errors.Is(err, io.EOF) ||
+			errdefs.IsNotImplemented(native) {
+			return err
 		}
 		select {
 		case <-ctx.Done():

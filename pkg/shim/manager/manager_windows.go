@@ -121,8 +121,13 @@ func (manager) Start(ctx context.Context, bparams *bootapi.BootstrapParams) (_ *
 			cmd.Process.Kill()
 		}
 	}()
-	// make sure to wait after start
-	go cmd.Wait()
+	// Capture the shim exit error so we can detect an early crash while
+	// waiting for the pipe. The channel is buffered so the goroutine never
+	// blocks even if we return before reading from it.
+	shimExit := make(chan error, 1)
+	go func() {
+		shimExit <- cmd.Wait()
+	}()
 
 	if err = shim.WritePidFile(filepath.Join(bundlePath(ctx), "shim.pid"), cmd.Process.Pid); err != nil {
 		return nil, err
@@ -144,7 +149,16 @@ func (manager) Start(ctx context.Context, bparams *bootapi.BootstrapParams) (_ *
 		if !os.IsNotExist(err) {
 			return nil, fmt.Errorf("waiting for shim pipe %s: %w", address, err)
 		}
-		time.Sleep(10 * time.Millisecond)
+		// If the shim exited before creating the pipe, report its exit
+		// error immediately rather than continuing to poll until timeout.
+		select {
+		case exitErr := <-shimExit:
+			if exitErr == nil {
+				exitErr = errors.New("exit code 0")
+			}
+			return nil, fmt.Errorf("shim exited before creating pipe: %w", exitErr)
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 	if !ready {
 		return nil, fmt.Errorf("timed out waiting for shim pipe %s", address)

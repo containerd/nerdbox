@@ -174,7 +174,12 @@ func (v *vmInstance) AddFS(ctx context.Context, tag, mountPath string, opts ...v
 
 	// TODO: Cannot be started?
 
-	if err := v.vmc.AddVirtiofs(tag, mountPath); err != nil {
+	var mc vm.MountConfig
+	for _, o := range opts {
+		o(&mc)
+	}
+
+	if err := v.vmc.AddVirtiofs(tag, mountPath, mc.Readonly); err != nil {
 		return fmt.Errorf("failed to add virtiofs tag:%s mount:%s: %w", tag, mountPath, err)
 	}
 

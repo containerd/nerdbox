@@ -290,3 +290,6 @@ jobs:
 
       - name: Run shim conformance tests
         run: task test:shim
+
+      - name: Run shim stress tests
+        run: task test:stress -- -timeout 120s

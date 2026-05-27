@@ -53,6 +53,7 @@ tasks:
     cmds:
       - mkdir -p test/shim/testdata test/stress/testdata
       - CGO_ENABLED=0 GOOS=linux GOARCH={{.GOARCH}} go build -ldflags='-s -w' -o test/shim/testdata/testbin ./test/testbin/
+      - cp test/shim/testdata/testbin test/stress/testdata/testbin
     vars:
       GOARCH:
         sh: go env GOARCH
@@ -61,6 +62,7 @@ tasks:
       - vendor/github.com/dmcgowan/shimtest/testbin/testbin.go
     generates:
       - test/shim/testdata/testbin
+      - test/stress/testdata/testbin
 
   #
   # Test tasks
@@ -95,19 +97,19 @@ tasks:
 
   test:stress:lifecycle:
     desc: "Stress-test container lifecycle (create/start/run/kill/delete) for one timeout period (default 10m). Extra flags: task test:stress:lifecycle -- -timeout 20m -v"
-    deps: [build:shim]
+    deps: [build:shim, build:testbin]
     cmds:
       - go test {{.GO_TAGS}} -count=1 -run TestShimStress/Lifecycle {{.CLI_ARGS}} ./test/stress/...
 
   test:stress:exec:
     desc: "Stress-test exec inside a running container for one timeout period (default 10m), monitoring for leaks. Extra flags: task test:stress:exec -- -timeout 20m -v"
-    deps: [build:shim]
+    deps: [build:shim, build:testbin]
     cmds:
       - go test {{.GO_TAGS}} -count=1 -run TestShimStress/Exec {{.CLI_ARGS}} ./test/stress/...
 
   test:stress:transfer:
     desc: "Stress-test the transfer service (concurrent stat/write/read) for one timeout period (default 10m). Extra flags: task test:stress:transfer -- -timeout 20m -v"
-    deps: [build:shim]
+    deps: [build:shim, build:testbin]
     cmds:
       - go test {{.GO_TAGS}} -count=1 -run TestShimStress/Transfer {{.CLI_ARGS}} ./test/stress/...
 

@@ -17,12 +17,15 @@
 package libkrun
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"reflect"
 	"runtime"
 	"strings"
 	"unsafe"
+
+	"github.com/containerd/log"
 
 	"github.com/containerd/nerdbox/pkg/vm"
 )
@@ -146,13 +149,32 @@ func (vmc *vmcontext) AddVSockPortConnect(port uint32, path string) error {
 	return nil
 }
 
-func (vmc *vmcontext) AddVirtiofs(tag, path string) error {
+// AddVirtiofs attaches a virtio-fs share to the VM. When readonly is true
+// it prefers krun_add_virtiofs3 (libkrun >= 1.18) which natively marks the
+// share read-only at the host edge. If that symbol is not exported by the
+// loaded libkrun, it falls back to krun_add_virtiofs and logs an info
+// message: in that case the read-only enforcement relies on the guest
+// applying the `ro` mount option, which the OCI spec already carries.
+func (vmc *vmcontext) AddVirtiofs(ctx context.Context, tag, path string, readonly bool) error {
+	if vmc.lib.AddVirtiofs3 != nil {
+		ret := vmc.lib.AddVirtiofs3(vmc.ctxID, tag, path, 0, readonly)
+		if ret != 0 {
+			return fmt.Errorf("krun_add_virtiofs3 failed: %d", ret)
+		}
+		return nil
+	}
 	if vmc.lib.AddVirtiofs == nil {
 		return fmt.Errorf("libkrun not loaded")
 	}
+	if readonly {
+		log.G(ctx).WithField("tag", tag).Info(
+			"libkrun does not export krun_add_virtiofs3; " +
+				"read-only virtiofs enforcement deferred to the guest mount options",
+		)
+	}
 	ret := vmc.lib.AddVirtiofs(vmc.ctxID, tag, path)
 	if ret != 0 {
-		return fmt.Errorf("krun_add_virtio_fs failed: %d", ret)
+		return fmt.Errorf("krun_add_virtiofs failed: %d", ret)
 	}
 	return nil
 }
@@ -261,6 +283,7 @@ type libkrun struct {
 	StartEnter         func(ctxID uint32) int32                                                               `C:"krun_start_enter"`
 	AddVsockPort       func(ctxID, port uint32, path string, listen bool) int32                               `C:"krun_add_vsock_port2"`
 	AddVirtiofs        func(ctxID uint32, tag, path string) int32                                             `C:"krun_add_virtiofs"`
+	AddVirtiofs3       func(ctxID uint32, tag, path string, shmSize uint64, readonly bool) int32              `C:"krun_add_virtiofs3,optional"`
 	GetShutdownEventfd func(ctxID uint32) int32                                                               `C:"krun_get_shutdown_eventfd"`
 	SetGpuOptions      func(ctxID, flag uint32) int32                                                         `C:"krun_set_gpu_options"`
 	SetGvproxyPath     func(ctxID uint32, path string) int32                                                  `C:"krun_set_gvproxy_path"`
@@ -284,6 +307,7 @@ type libkrun struct {
 		krun_add_vsock_port
 		krun_set_vm_config
 		krun_add_virtiofs2
+		krun_add_virtiofs3
 		krun_set_console_output
 		krun_set_env
 		krun_set_gvproxy_path
@@ -335,10 +359,32 @@ func openLibkrun(path string) (_ *libkrun, _ uintptr, retErr error) {
 	var k libkrun
 	ik := reflect.Indirect(reflect.ValueOf(&k))
 	for i := 0; i < ik.NumField(); i++ {
-		cName := ik.Type().Field(i).Tag.Get("C")
+		tag := ik.Type().Field(i).Tag.Get("C")
+		cName, optional := parseCTag(tag)
 		fn := ik.Field(i).Addr().Interface()
+		if optional {
+			// registerOptionalLibFunc reports whether the symbol was
+			// resolved; if not, the field is left nil and call sites
+			// must guard against it.
+			registerOptionalLibFunc(fn, f, cName)
+			continue
+		}
 		registerLibFunc(fn, f, cName)
 	}
 
 	return &k, f, nil
+}
+
+// parseCTag splits a struct tag like `krun_foo` or `krun_foo,optional` into
+// the bare symbol name and an optional flag. Unknown trailing tokens are
+// ignored.
+func parseCTag(tag string) (name string, optional bool) {
+	parts := strings.Split(tag, ",")
+	name = parts[0]
+	for _, p := range parts[1:] {
+		if p == "optional" {
+			optional = true
+		}
+	}
+	return name, optional
 }

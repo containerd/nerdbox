@@ -178,6 +178,7 @@ func TestBindMountsProvider(t *testing.T) {
 		wantMounts      []bindMount
 		wantSpecSources []string // expected sources in the OCI spec after transformation
 		wantVmMounts    []mount.Mount
+		wantFS          []sandbox.Filesystem
 	}{
 		{
 			name:            "no mounts",
@@ -212,12 +213,57 @@ func TestBindMountsProvider(t *testing.T) {
 			wantVmMounts: []mount.Mount{
 				{Type: "virtiofs", Source: "bind-8c5eaa445dd84f17", Target: "/mnt/bind-8c5eaa445dd84f17"},
 			},
+			wantFS: []sandbox.Filesystem{
+				{Tag: "bind-8c5eaa445dd84f17", MountPath: testdirData, Readonly: false},
+			},
+		},
+		{
+			name: "single bind mount read-only",
+			mounts: []specs.Mount{
+				{Type: "bind", Source: testdirData, Destination: "/container/data", Options: []string{"rbind", "ro"}},
+			},
+			wantMounts: []bindMount{
+				{
+					tag:      "bind-8c5eaa445dd84f17",
+					hostSrc:  testdirData,
+					vmTarget: "/mnt/bind-8c5eaa445dd84f17",
+					readOnly: true,
+				},
+			},
+			wantSpecSources: []string{"/mnt/bind-8c5eaa445dd84f17"},
+			wantVmMounts: []mount.Mount{
+				{Type: "virtiofs", Source: "bind-8c5eaa445dd84f17", Target: "/mnt/bind-8c5eaa445dd84f17"},
+			},
+			wantFS: []sandbox.Filesystem{
+				{Tag: "bind-8c5eaa445dd84f17", MountPath: testdirData, Readonly: true},
+			},
+		},
+		{
+			name: "single file bind mount read-only",
+			mounts: []specs.Mount{
+				{Type: "bind", Source: testfile, Destination: "/container/testfile", Options: []string{"bind", "ro"}},
+			},
+			wantMounts: []bindMount{
+				{
+					tag:      "bind-6dace5108a719565",
+					hostSrc:  tmpDir,
+					vmTarget: "/mnt/bind-6dace5108a719565",
+					readOnly: true,
+				},
+			},
+			wantSpecSources: []string{"/mnt/bind-6dace5108a719565/testfile.txt"},
+			wantVmMounts: []mount.Mount{
+				{Type: "virtiofs", Source: "bind-6dace5108a719565", Target: "/mnt/bind-6dace5108a719565"},
+			},
+			wantFS: []sandbox.Filesystem{
+				{Tag: "bind-6dace5108a719565", MountPath: tmpDir, Readonly: true},
+			},
 		},
 		{
 			name: "multiple bind mounts",
 			mounts: []specs.Mount{
 				{Type: "bind", Source: testdirData, Destination: "/container/data"},
-				{Type: "bind", Source: testdirConfig, Destination: "/container/config"},
+				{Type: "bind", Source: testdirConfig, Destination: "/container/config", Options: []string{"rbind", "ro"}},
 			},
 			wantMounts: []bindMount{
 				{
@@ -229,6 +275,7 @@ func TestBindMountsProvider(t *testing.T) {
 					tag:      "bind-529984c9ac58b7ec",
 					hostSrc:  testdirConfig,
 					vmTarget: "/mnt/bind-529984c9ac58b7ec",
+					readOnly: true,
 				},
 			},
 			wantSpecSources: []string{
@@ -238,6 +285,10 @@ func TestBindMountsProvider(t *testing.T) {
 			wantVmMounts: []mount.Mount{
 				{Type: "virtiofs", Source: "bind-8c5eaa445dd84f17", Target: "/mnt/bind-8c5eaa445dd84f17"},
 				{Type: "virtiofs", Source: "bind-529984c9ac58b7ec", Target: "/mnt/bind-529984c9ac58b7ec"},
+			},
+			wantFS: []sandbox.Filesystem{
+				{Tag: "bind-8c5eaa445dd84f17", MountPath: testdirData, Readonly: false},
+				{Tag: "bind-529984c9ac58b7ec", MountPath: testdirConfig, Readonly: true},
 			},
 		},
 		{
@@ -262,6 +313,9 @@ func TestBindMountsProvider(t *testing.T) {
 			wantVmMounts: []mount.Mount{
 				{Type: "virtiofs", Source: "bind-8c5eaa445dd84f17", Target: "/mnt/bind-8c5eaa445dd84f17"},
 			},
+			wantFS: []sandbox.Filesystem{
+				{Tag: "bind-8c5eaa445dd84f17", MountPath: testdirData, Readonly: false},
+			},
 		},
 		{
 			name: "single file bind mount",
@@ -278,6 +332,9 @@ func TestBindMountsProvider(t *testing.T) {
 			wantSpecSources: []string{"/mnt/bind-6dace5108a719565/testfile.txt"},
 			wantVmMounts: []mount.Mount{
 				{Type: "virtiofs", Source: "bind-6dace5108a719565", Target: "/mnt/bind-6dace5108a719565"},
+			},
+			wantFS: []sandbox.Filesystem{
+				{Tag: "bind-6dace5108a719565", MountPath: tmpDir, Readonly: false},
 			},
 		},
 	}
@@ -302,6 +359,10 @@ func TestBindMountsProvider(t *testing.T) {
 
 			// Verify the VM mounts passed via MountAll RPC
 			assert.Equal(t, tc.wantVmMounts, bm.VmMounts())
+
+			// Verify the sandbox.Filesystem entries (and their
+			// Readonly flag) flow correctly through SandboxOpts.
+			assert.Equal(t, tc.wantFS, applyOpts(bm.SandboxOpts()).Filesystems)
 		})
 	}
 }

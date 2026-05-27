@@ -52,3 +52,16 @@ func registerLibFunc(fn interface{}, handle uintptr, name string) {
 	}
 	purego.RegisterFunc(fn, addr)
 }
+
+// registerOptionalLibFunc resolves name in the library handle and binds fn
+// to it when present. It returns false (without panicking) when the symbol
+// is not exported, so callers can leave the function pointer nil and probe
+// for it at call time.
+func registerOptionalLibFunc(fn interface{}, handle uintptr, name string) bool {
+	addr, err := syscall.GetProcAddress(syscall.Handle(handle), name)
+	if err != nil || addr == 0 {
+		return false
+	}
+	purego.RegisterFunc(fn, uintptr(addr))
+	return true
+}

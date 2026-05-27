@@ -211,6 +211,7 @@ type bindMount struct {
 	tag      string
 	hostSrc  string
 	vmTarget string
+	readOnly bool
 }
 
 func (bm *bindMounter) FromBundle(ctx context.Context, b *bundle.Bundle) error {
@@ -242,10 +243,24 @@ func (bm *bindMounter) FromBundle(ctx context.Context, b *bundle.Bundle) error {
 			specSrc = path.Join(vmTarget, filepath.Base(m.Source))
 		}
 
+		// Honor a read-only request from the OCI spec by marking the
+		// virtiofs share read-only at the host edge. The guest still
+		// applies the `ro` mount option to enforce read-only inside the
+		// container; this flag is defense in depth and ensures the host
+		// also rejects writes when the underlying libkrun supports it.
+		readOnly := false
+		for _, opt := range m.Options {
+			if opt == "ro" {
+				readOnly = true
+				break
+			}
+		}
+
 		transformed := bindMount{
 			tag:      tag,
 			hostSrc:  hostSrc,
 			vmTarget: vmTarget,
+			readOnly: readOnly,
 		}
 
 		bm.mounts = append(bm.mounts, transformed)
@@ -258,7 +273,7 @@ func (bm *bindMounter) FromBundle(ctx context.Context, b *bundle.Bundle) error {
 func (bm *bindMounter) SandboxOpts() []sandbox.Opt {
 	var opts []sandbox.Opt
 	for _, m := range bm.mounts {
-		opts = append(opts, sandbox.WithFS(m.tag, m.hostSrc, false))
+		opts = append(opts, sandbox.WithFS(m.tag, m.hostSrc, m.readOnly))
 	}
 	return opts
 }

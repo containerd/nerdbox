@@ -1,3 +1,4 @@
 _output
 kernel/*.old
+test/shim/testdata/testbin
 .task

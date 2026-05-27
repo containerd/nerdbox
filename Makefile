@@ -162,3 +162,6 @@ test-unit:
 
 test-integration: _output/integration.test
 	@task test:integration
+
+test-shim: _output/containerd-shim-nerdbox-v1
+	@task test:shim

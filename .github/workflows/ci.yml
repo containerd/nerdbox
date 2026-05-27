@@ -177,7 +177,7 @@ jobs:
       always() &&
       (needs.build-kernels.result == 'success' || needs.build-kernels.result == 'skipped')
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     strategy:
       fail-fast: false
@@ -287,3 +287,6 @@ jobs:
 
       - name: Run integration tests
         run: task test:integration
+
+      - name: Run shim conformance tests
+        run: task test:shim

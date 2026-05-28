@@ -24,9 +24,29 @@ option go_package = "github.com/containerd/nerdbox/api/services/system/v1;system
 
 service System {
 	rpc Info(google.protobuf.Empty) returns (InfoResponse);
+	rpc SetLogLevel(SetLogLevelRequest) returns (google.protobuf.Empty);
+}
+
+// LogLevel enumerates the log verbosity levels supported by vminitd.
+// buf:lint:ignore ENUM_ZERO_VALUE_SUFFIX
+enum LogLevel {
+	// LOG_LEVEL_UNSPECIFIED is the zero value and is not a valid level for
+	// SetLogLevel — callers must supply an explicit level.
+	LOG_LEVEL_UNSPECIFIED = 0;
+	LOG_LEVEL_TRACE       = 1;
+	LOG_LEVEL_DEBUG       = 2;
+	LOG_LEVEL_INFO        = 3;
+	LOG_LEVEL_WARN        = 4;
+	LOG_LEVEL_ERROR       = 5;
 }
 
 message InfoResponse {
 	string version = 1;
 	string kernel_version = 2;
+}
+
+message SetLogLevelRequest {
+	// level is the desired log level. LOG_LEVEL_UNSPECIFIED is rejected with
+	// INVALID_ARGUMENT.
+	LogLevel level = 1;
 }

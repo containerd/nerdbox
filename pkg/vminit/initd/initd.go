@@ -50,8 +50,10 @@ import (
 	"github.com/containerd/nerdbox/plugins"
 )
 
-// logLevel controls the slog handler level for vminitd.
-var logLevel = &slog.LevelVar{}
+// LogLevel controls the slog handler level for vminitd.
+// It is exported so that the system service can adjust it at runtime
+// via the SetLogLevel RPC.
+var LogLevel = &slog.LevelVar{}
 
 // ExtraServerInterceptors are chained after the default otelttrpc interceptor
 // when the vminitd ttrpc server starts. Callers may append to this slice from
@@ -67,7 +69,7 @@ func init() {
 	if err != nil {
 		console = os.Stderr
 	}
-	handler := slog.NewJSONHandler(console, &slog.HandlerOptions{Level: logLevel})
+	handler := slog.NewJSONHandler(console, &slog.HandlerOptions{Level: LogLevel})
 	slog.SetDefault(slog.New(handler).With("component", "vminitd"))
 }
 
@@ -111,7 +113,7 @@ func Run(ctx context.Context) error {
 	config := ParseFlags(os.Args[1:])
 
 	if config.Dev || config.Debug {
-		logLevel.Set(slog.LevelDebug)
+		LogLevel.Set(slog.LevelDebug)
 		log.SetLevel("debug")
 	}
 
@@ -333,6 +335,9 @@ func newService(ctx context.Context, config Config, shutdownSvc shutdown.Service
 				if reg.Type == plugins.StreamingPlugin {
 					vc.SetVsock(uint32(config.VSockContextID), uint32(config.StreamPort))
 				}
+			}
+			if lc, ok := reg.Config.(interface{ SetLogLevelVar(*slog.LevelVar) }); ok {
+				lc.SetLogLevelVar(LogLevel)
 			}
 
 			ic.Config = reg.Config

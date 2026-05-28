@@ -1556,12 +1556,55 @@ file: {
       json_name: "kernelVersion"
     }
   }
+  message_type: {
+    name: "SetLogLevelRequest"
+    field: {
+      name: "level"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_ENUM
+      type_name: ".containerd.vminitd.services.system.v1.LogLevel"
+      json_name: "level"
+    }
+  }
+  enum_type: {
+    name: "LogLevel"
+    value: {
+      name: "LOG_LEVEL_UNSPECIFIED"
+      number: 0
+    }
+    value: {
+      name: "LOG_LEVEL_TRACE"
+      number: 1
+    }
+    value: {
+      name: "LOG_LEVEL_DEBUG"
+      number: 2
+    }
+    value: {
+      name: "LOG_LEVEL_INFO"
+      number: 3
+    }
+    value: {
+      name: "LOG_LEVEL_WARN"
+      number: 4
+    }
+    value: {
+      name: "LOG_LEVEL_ERROR"
+      number: 5
+    }
+  }
   service: {
     name: "System"
     method: {
       name: "Info"
       input_type: ".google.protobuf.Empty"
       output_type: ".containerd.vminitd.services.system.v1.InfoResponse"
+    }
+    method: {
+      name: "SetLogLevel"
+      input_type: ".containerd.vminitd.services.system.v1.SetLogLevelRequest"
+      output_type: ".google.protobuf.Empty"
     }
   }
   options: {
@@ -1571,7 +1614,7 @@ file: {
     location: {
       span: 16
       span: 0
-      span: 31
+      span: 51
       span: 1
     }
     location: {
@@ -1612,7 +1655,7 @@ file: {
       path: 0
       span: 24
       span: 0
-      span: 26
+      span: 27
       span: 1
     }
     location: {
@@ -1663,18 +1706,249 @@ file: {
       span: 57
     }
     location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 1
+      span: 26
+      span: 4
+      span: 72
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 1
+      path: 1
+      span: 26
+      span: 8
+      span: 19
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 1
+      path: 2
+      span: 26
+      span: 20
+      span: 38
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 1
+      path: 3
+      span: 26
+      span: 49
+      span: 70
+    }
+    location: {
+      path: 5
+      path: 0
+      span: 31
+      span: 0
+      span: 40
+      span: 1
+      leading_comments: " LogLevel enumerates the log verbosity levels supported by vminitd.\n buf:lint:ignore ENUM_ZERO_VALUE_SUFFIX\n"
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 1
+      span: 31
+      span: 5
+      span: 13
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 0
+      path: 1
+      span: 34
+      span: 4
+      span: 25
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 0
+      span: 34
+      span: 4
+      span: 30
+      leading_comments: " LOG_LEVEL_UNSPECIFIED is the zero value and is not a valid level for\n SetLogLevel — callers must supply an explicit level.\n"
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 0
+      path: 2
+      span: 34
+      span: 28
+      span: 29
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 1
+      path: 1
+      span: 35
+      span: 4
+      span: 19
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 1
+      span: 35
+      span: 4
+      span: 30
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 1
+      path: 2
+      span: 35
+      span: 28
+      span: 29
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 2
+      path: 1
+      span: 36
+      span: 4
+      span: 19
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 2
+      span: 36
+      span: 4
+      span: 30
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 2
+      path: 2
+      span: 36
+      span: 28
+      span: 29
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 3
+      path: 1
+      span: 37
+      span: 4
+      span: 18
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 3
+      span: 37
+      span: 4
+      span: 30
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 3
+      path: 2
+      span: 37
+      span: 28
+      span: 29
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 4
+      path: 1
+      span: 38
+      span: 4
+      span: 18
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 4
+      span: 38
+      span: 4
+      span: 30
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 4
+      path: 2
+      span: 38
+      span: 28
+      span: 29
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 5
+      path: 1
+      span: 39
+      span: 4
+      span: 19
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 5
+      span: 39
+      span: 4
+      span: 30
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 5
+      path: 2
+      span: 39
+      span: 28
+      span: 29
+    }
+    location: {
       path: 4
       path: 0
-      span: 28
+      span: 42
       span: 0
-      span: 31
+      span: 45
       span: 1
     }
     location: {
       path: 4
       path: 0
       path: 1
-      span: 28
+      span: 42
       span: 8
       span: 20
     }
@@ -1684,7 +1958,7 @@ file: {
       path: 2
       path: 0
       path: 5
-      span: 29
+      span: 43
       span: 4
       span: 10
     }
@@ -1693,7 +1967,7 @@ file: {
       path: 0
       path: 2
       path: 0
-      span: 29
+      span: 43
       span: 4
       span: 23
     }
@@ -1703,7 +1977,7 @@ file: {
       path: 2
       path: 0
       path: 1
-      span: 29
+      span: 43
       span: 11
       span: 18
     }
@@ -1713,7 +1987,7 @@ file: {
       path: 2
       path: 0
       path: 3
-      span: 29
+      span: 43
       span: 21
       span: 22
     }
@@ -1723,7 +1997,7 @@ file: {
       path: 2
       path: 1
       path: 5
-      span: 30
+      span: 44
       span: 4
       span: 10
     }
@@ -1732,7 +2006,7 @@ file: {
       path: 0
       path: 2
       path: 1
-      span: 30
+      span: 44
       span: 4
       span: 30
     }
@@ -1742,7 +2016,7 @@ file: {
       path: 2
       path: 1
       path: 1
-      span: 30
+      span: 44
       span: 11
       span: 25
     }
@@ -1752,9 +2026,65 @@ file: {
       path: 2
       path: 1
       path: 3
-      span: 30
+      span: 44
       span: 28
       span: 29
+    }
+    location: {
+      path: 4
+      path: 1
+      span: 47
+      span: 0
+      span: 51
+      span: 1
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 1
+      span: 47
+      span: 8
+      span: 26
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      path: 6
+      span: 50
+      span: 4
+      span: 12
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      span: 50
+      span: 4
+      span: 23
+      leading_comments: " level is the desired log level. LOG_LEVEL_UNSPECIFIED is rejected with\n INVALID_ARGUMENT.\n"
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      path: 1
+      span: 50
+      span: 13
+      span: 18
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      path: 3
+      span: 50
+      span: 21
+      span: 22
     }
   }
   syntax: "proto3"

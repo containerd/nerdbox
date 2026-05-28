@@ -23,6 +23,8 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+
+	"github.com/containerd/log"
 )
 
 // discardHandler is a handler that discards all output but still processes records.
@@ -246,5 +248,85 @@ func TestForwardJSONLog_NoMsg(t *testing.T) {
 	SetBaseHandler(discardHandler{})
 	if forwardJSONLog(`{"level":"INFO","time":"2024-01-01T00:00:00Z"}`) {
 		t.Error("expected false for JSON without msg field")
+	}
+}
+
+// --- ShimLogLevel tests ---
+
+// TestSetGetShimLogLevel_RoundTrip verifies that SetShimLogLevel followed by
+// GetShimLogLevel returns the value that was set, and that the containerd/log
+// (logrus) level is updated in lockstep.
+func TestSetGetShimLogLevel_RoundTrip(t *testing.T) {
+	// Restore the original levels after the test so we don't pollute other tests.
+	orig := shimLogLevel.Level()
+	origLogrus := log.GetLevel().String()
+	t.Cleanup(func() {
+		shimLogLevel.Set(orig)
+		_ = log.SetLevel(origLogrus)
+	})
+
+	cases := []struct {
+		slogLevel    slog.Level
+		logrusLevel  string
+	}{
+		{slog.LevelDebug, "debug"},
+		{slog.LevelInfo, "info"},
+		{slog.LevelWarn, "warning"},
+		{slog.LevelError, "error"},
+	}
+	for _, tc := range cases {
+		SetShimLogLevel(tc.slogLevel)
+		if got := GetShimLogLevel(); got != tc.slogLevel {
+			t.Errorf("SetShimLogLevel(%v): GetShimLogLevel() = %v, want %v", tc.slogLevel, got, tc.slogLevel)
+		}
+		if got := log.GetLevel().String(); got != tc.logrusLevel {
+			t.Errorf("SetShimLogLevel(%v): log.GetLevel() = %q, want %q", tc.slogLevel, got, tc.logrusLevel)
+		}
+	}
+}
+
+// TestShimLogLevel_HandlerRespectsPostSetupChange verifies that a handler
+// wired to the package-level shimLogLevel (as SetupShimLog does) immediately
+// reflects level changes made after setup via SetShimLogLevel.
+func TestShimLogLevel_HandlerRespectsPostSetupChange(t *testing.T) {
+	// Restore global state after the test — shimLogLevel and the logrus level
+	// (SetShimLogLevel updates both).
+	orig := shimLogLevel.Level()
+	origLogrus := log.GetLevel()
+	t.Cleanup(func() {
+		shimLogLevel.Set(orig)
+		_ = log.SetLevel(origLogrus.String())
+	})
+
+	// Start at INFO (the zero value / default).
+	shimLogLevel.Set(slog.LevelInfo)
+
+	// Build the handler exactly as SetupShimLog does: pass &shimLogLevel as the
+	// HandlerOptions.Level. slog.TextHandler.Enabled reads the LevelVar on every
+	// call, so changes via SetShimLogLevel take effect immediately.
+	h := slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: &shimLogLevel})
+
+	if h.Enabled(context.Background(), slog.LevelDebug) {
+		t.Fatal("handler should NOT be enabled for DEBUG at initial INFO level")
+	}
+	if !h.Enabled(context.Background(), slog.LevelInfo) {
+		t.Fatal("handler should be enabled for INFO at initial INFO level")
+	}
+
+	// Lower the level to DEBUG via SetShimLogLevel — no handler rebuild needed.
+	SetShimLogLevel(slog.LevelDebug)
+
+	if !h.Enabled(context.Background(), slog.LevelDebug) {
+		t.Fatal("handler should be enabled for DEBUG after SetShimLogLevel(Debug)")
+	}
+
+	// Raise the level to WARN.
+	SetShimLogLevel(slog.LevelWarn)
+
+	if h.Enabled(context.Background(), slog.LevelInfo) {
+		t.Fatal("handler should NOT be enabled for INFO after SetShimLogLevel(Warn)")
+	}
+	if !h.Enabled(context.Background(), slog.LevelWarn) {
+		t.Fatal("handler should be enabled for WARN after SetShimLogLevel(Warn)")
 	}
 }

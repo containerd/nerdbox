@@ -31,6 +31,46 @@ import (
 	"github.com/containerd/log"
 )
 
+// shimLogLevel is the slog LevelVar wired into the handler created by
+// SetupShimLog. It defaults to INFO and can be updated at runtime via
+// SetShimLogLevel.
+var shimLogLevel slog.LevelVar
+
+// SetShimLogLevel updates both the slog handler level and the underlying
+// containerd/log (logrus) level so that records routed through either reach
+// the shim's output. Logrus filters before the slog hook fires, so updating
+// only the LevelVar has no effect on log.G(ctx).Debug/... call sites.
+// It is safe to call concurrently and takes effect immediately.
+func SetShimLogLevel(level slog.Level) {
+	shimLogLevel.Set(level)
+	// Also update the containerd/log (logrus) level so that log.G(ctx).Debug/...
+	// calls reach the slog hook. Logrus filters before the hook fires, so the
+	// LevelVar change alone has no effect on logrus-routed call sites.
+	log.SetLevel(slogToLogrusLevelString(level)) //nolint:errcheck
+}
+
+// slogToLogrusLevelString maps a slog.Level to the logrus level string
+// accepted by log.SetLevel.
+func slogToLogrusLevelString(l slog.Level) string {
+	switch {
+	case l < slog.LevelDebug: // trace: containerd/log maps LevelDebug-4 → TraceLevel
+		return "trace"
+	case l < slog.LevelInfo:
+		return "debug"
+	case l < slog.LevelWarn:
+		return "info"
+	case l < slog.LevelError:
+		return "warn"
+	default:
+		return "error"
+	}
+}
+
+// GetShimLogLevel returns the current log level for the shim handler.
+func GetShimLogLevel() slog.Level {
+	return shimLogLevel.Level()
+}
+
 // SetupShimLog configures slog-based logging for the shim process.
 // It opens the platform-specific log output (FIFO on Unix, named pipe
 // on Windows), then creates a slog TextHandler and sets it as the
@@ -42,6 +82,9 @@ import (
 //
 // For the short-lived start and delete actions, only [log.UseSlog] is
 // called to route logrus through slog; the log output is not opened.
+//
+// The package-level [shimLogLevel] variable is used for the handler level
+// so that callers may adjust the level at runtime via [SetShimLogLevel].
 func SetupShimLog() {
 	log.UseSlog()
 
@@ -75,13 +118,12 @@ func SetupShimLog() {
 
 	w := openShimLog(ns, id)
 
-	var level slog.LevelVar
 	if debug {
-		level.Set(slog.LevelDebug)
+		shimLogLevel.Set(slog.LevelDebug)
 		log.SetLevel("debug") //nolint:errcheck
 	}
 
-	handler := slog.NewTextHandler(w, &slog.HandlerOptions{Level: &level}).WithAttrs(attrs)
+	handler := slog.NewTextHandler(w, &slog.HandlerOptions{Level: &shimLogLevel}).WithAttrs(attrs)
 	SetBaseHandler(handler)
 	slog.SetDefault(slog.New(handler).With("component", "shim"))
 }

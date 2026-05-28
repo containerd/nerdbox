@@ -1614,7 +1614,7 @@ file: {
     location: {
       span: 16
       span: 0
-      span: 51
+      span: 50
       span: 1
     }
     location: {
@@ -1747,17 +1747,17 @@ file: {
     location: {
       path: 5
       path: 0
-      span: 31
+      span: 30
       span: 0
-      span: 40
+      span: 39
       span: 1
-      leading_comments: " LogLevel enumerates the log verbosity levels supported by vminitd.\n buf:lint:ignore ENUM_ZERO_VALUE_SUFFIX\n"
+      leading_comments: " LogLevel enumerates the log verbosity levels supported by vminitd.\n"
     }
     location: {
       path: 5
       path: 0
       path: 1
-      span: 31
+      span: 30
       span: 5
       span: 13
     }
@@ -1767,7 +1767,7 @@ file: {
       path: 2
       path: 0
       path: 1
-      span: 34
+      span: 33
       span: 4
       span: 25
     }
@@ -1776,7 +1776,7 @@ file: {
       path: 0
       path: 2
       path: 0
-      span: 34
+      span: 33
       span: 4
       span: 30
       leading_comments: " LOG_LEVEL_UNSPECIFIED is the zero value and is not a valid level for\n SetLogLevel — callers must supply an explicit level.\n"
@@ -1787,6 +1787,35 @@ file: {
       path: 2
       path: 0
       path: 2
+      span: 33
+      span: 28
+      span: 29
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 1
+      path: 1
+      span: 34
+      span: 4
+      span: 19
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 1
+      span: 34
+      span: 4
+      span: 30
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 1
+      path: 2
       span: 34
       span: 28
       span: 29
@@ -1795,7 +1824,7 @@ file: {
       path: 5
       path: 0
       path: 2
-      path: 1
+      path: 2
       path: 1
       span: 35
       span: 4
@@ -1805,37 +1834,8 @@ file: {
       path: 5
       path: 0
       path: 2
-      path: 1
-      span: 35
-      span: 4
-      span: 30
-    }
-    location: {
-      path: 5
-      path: 0
-      path: 2
-      path: 1
       path: 2
       span: 35
-      span: 28
-      span: 29
-    }
-    location: {
-      path: 5
-      path: 0
-      path: 2
-      path: 2
-      path: 1
-      span: 36
-      span: 4
-      span: 19
-    }
-    location: {
-      path: 5
-      path: 0
-      path: 2
-      path: 2
-      span: 36
       span: 4
       span: 30
     }
@@ -1845,7 +1845,7 @@ file: {
       path: 2
       path: 2
       path: 2
-      span: 36
+      span: 35
       span: 28
       span: 29
     }
@@ -1854,6 +1854,35 @@ file: {
       path: 0
       path: 2
       path: 3
+      path: 1
+      span: 36
+      span: 4
+      span: 18
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 3
+      span: 36
+      span: 4
+      span: 30
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 3
+      path: 2
+      span: 36
+      span: 28
+      span: 29
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 4
       path: 1
       span: 37
       span: 4
@@ -1863,7 +1892,7 @@ file: {
       path: 5
       path: 0
       path: 2
-      path: 3
+      path: 4
       span: 37
       span: 4
       span: 30
@@ -1872,7 +1901,7 @@ file: {
       path: 5
       path: 0
       path: 2
-      path: 3
+      path: 4
       path: 2
       span: 37
       span: 28
@@ -1882,38 +1911,9 @@ file: {
       path: 5
       path: 0
       path: 2
-      path: 4
-      path: 1
-      span: 38
-      span: 4
-      span: 18
-    }
-    location: {
-      path: 5
-      path: 0
-      path: 2
-      path: 4
-      span: 38
-      span: 4
-      span: 30
-    }
-    location: {
-      path: 5
-      path: 0
-      path: 2
-      path: 4
-      path: 2
-      span: 38
-      span: 28
-      span: 29
-    }
-    location: {
-      path: 5
-      path: 0
-      path: 2
       path: 5
       path: 1
-      span: 39
+      span: 38
       span: 4
       span: 19
     }
@@ -1922,7 +1922,7 @@ file: {
       path: 0
       path: 2
       path: 5
-      span: 39
+      span: 38
       span: 4
       span: 30
     }
@@ -1932,23 +1932,23 @@ file: {
       path: 2
       path: 5
       path: 2
-      span: 39
+      span: 38
       span: 28
       span: 29
     }
     location: {
       path: 4
       path: 0
-      span: 42
+      span: 41
       span: 0
-      span: 45
+      span: 44
       span: 1
     }
     location: {
       path: 4
       path: 0
       path: 1
-      span: 42
+      span: 41
       span: 8
       span: 20
     }
@@ -1958,7 +1958,7 @@ file: {
       path: 2
       path: 0
       path: 5
-      span: 43
+      span: 42
       span: 4
       span: 10
     }
@@ -1967,7 +1967,7 @@ file: {
       path: 0
       path: 2
       path: 0
-      span: 43
+      span: 42
       span: 4
       span: 23
     }
@@ -1977,7 +1977,7 @@ file: {
       path: 2
       path: 0
       path: 1
-      span: 43
+      span: 42
       span: 11
       span: 18
     }
@@ -1987,7 +1987,7 @@ file: {
       path: 2
       path: 0
       path: 3
-      span: 43
+      span: 42
       span: 21
       span: 22
     }
@@ -1997,7 +1997,7 @@ file: {
       path: 2
       path: 1
       path: 5
-      span: 44
+      span: 43
       span: 4
       span: 10
     }
@@ -2006,7 +2006,7 @@ file: {
       path: 0
       path: 2
       path: 1
-      span: 44
+      span: 43
       span: 4
       span: 30
     }
@@ -2016,7 +2016,7 @@ file: {
       path: 2
       path: 1
       path: 1
-      span: 44
+      span: 43
       span: 11
       span: 25
     }
@@ -2026,23 +2026,23 @@ file: {
       path: 2
       path: 1
       path: 3
-      span: 44
+      span: 43
       span: 28
       span: 29
     }
     location: {
       path: 4
       path: 1
-      span: 47
+      span: 46
       span: 0
-      span: 51
+      span: 50
       span: 1
     }
     location: {
       path: 4
       path: 1
       path: 1
-      span: 47
+      span: 46
       span: 8
       span: 26
     }
@@ -2052,7 +2052,7 @@ file: {
       path: 2
       path: 0
       path: 6
-      span: 50
+      span: 49
       span: 4
       span: 12
     }
@@ -2061,7 +2061,7 @@ file: {
       path: 1
       path: 2
       path: 0
-      span: 50
+      span: 49
       span: 4
       span: 23
       leading_comments: " level is the desired log level. LOG_LEVEL_UNSPECIFIED is rejected with\n INVALID_ARGUMENT.\n"
@@ -2072,7 +2072,7 @@ file: {
       path: 2
       path: 0
       path: 1
-      span: 50
+      span: 49
       span: 13
       span: 18
     }
@@ -2082,7 +2082,7 @@ file: {
       path: 2
       path: 0
       path: 3
-      span: 50
+      span: 49
       span: 21
       span: 22
     }

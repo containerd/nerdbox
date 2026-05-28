@@ -100,11 +100,7 @@ func (s *service) SetLogLevel(_ context.Context, req *api.SetLogLevelRequest) (*
 	}
 	// Also update containerd/log (logrus) so that log.G(ctx).Debug/... calls
 	// reach the slog hook — logrus gates before the hook fires.
-	if err := log.SetLevel(levelStr); err != nil {
-		// best-effort; the level string was derived from the validated enum so
-		// this should not fail in practice.
-		_ = err
-	}
+	log.SetLevel(levelStr) //nolint:errcheck
 	return &emptypb.Empty{}, nil
 }
 

@@ -37,7 +37,6 @@ const (
 )
 
 // LogLevel enumerates the log verbosity levels supported by vminitd.
-// buf:lint:ignore ENUM_ZERO_VALUE_SUFFIX
 type LogLevel int32
 
 const (

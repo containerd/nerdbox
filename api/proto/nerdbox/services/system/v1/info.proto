@@ -28,7 +28,6 @@ service System {
 }
 
 // LogLevel enumerates the log verbosity levels supported by vminitd.
-// buf:lint:ignore ENUM_ZERO_VALUE_SUFFIX
 enum LogLevel {
 	// LOG_LEVEL_UNSPECIFIED is the zero value and is not a valid level for
 	// SetLogLevel — callers must supply an explicit level.

@@ -36,39 +36,19 @@ import (
 
 var _ api.TTRPCSystemService = &service{}
 
-// Config holds the system service configuration injected at plugin init time.
-// The LogLevel field is set by vminitd's init code so that the SetLogLevel RPC
-// can adjust the vminitd log level at runtime without importing the
-// Linux-only initd package.
-type Config struct {
-	// LogLevel is the package-level slog LevelVar used by the vminitd JSON
-	// handler. If nil, SetLogLevel only updates the containerd/log level.
-	LogLevel *slog.LevelVar
-}
-
-// SetLogLevelVar implements the interface recognised by initd's plugin loader
-// so that the package-level LogLevel is injected without a direct import.
-func (c *Config) SetLogLevelVar(lv *slog.LevelVar) {
-	c.LogLevel = lv
-}
-
 func init() {
 	registry.Register(&plugin.Registration{
 		Type:   plugins.TTRPCPlugin,
 		ID:     "system",
-		Config: &Config{},
 		InitFn: initFunc,
 	})
 }
 
 func initFunc(ic *plugin.InitContext) (interface{}, error) {
-	cfg, _ := ic.Config.(*Config)
-	return &service{cfg: cfg}, nil
+	return &service{}, nil
 }
 
-type service struct {
-	cfg *Config
-}
+type service struct{}
 
 func (s *service) RegisterTTRPC(server *ttrpc.Server) error {
 	api.RegisterTTRPCSystemService(server, s)
@@ -88,16 +68,15 @@ func (s *service) Info(ctx context.Context, _ *emptypb.Empty) (*api.InfoResponse
 
 // SetLogLevel adjusts the vminitd log level at runtime using the LogLevel enum.
 // LOG_LEVEL_UNSPECIFIED (0) and any unknown value are rejected with
-// codes.InvalidArgument. Both the slog LevelVar and containerd/log (logrus)
-// are updated so that records routed through either path reach the output.
+// codes.InvalidArgument. Both the slog LevelVar (on Linux) and
+// containerd/log (logrus) are updated so that records routed through either
+// path reach the output.
 func (s *service) SetLogLevel(_ context.Context, req *api.SetLogLevelRequest) (*emptypb.Empty, error) {
 	levelStr, slogLevel, err := logLevelToStrings(req.GetLevel())
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
-	if s.cfg != nil && s.cfg.LogLevel != nil {
-		s.cfg.LogLevel.Set(slogLevel)
-	}
+	setSlogLevel(slogLevel)
 	// Also update containerd/log (logrus) so that log.G(ctx).Debug/... calls
 	// reach the slog hook — logrus gates before the hook fires.
 	log.SetLevel(levelStr) //nolint:errcheck

@@ -336,9 +336,6 @@ func newService(ctx context.Context, config Config, shutdownSvc shutdown.Service
 					vc.SetVsock(uint32(config.VSockContextID), uint32(config.StreamPort))
 				}
 			}
-			if lc, ok := reg.Config.(interface{ SetLogLevelVar(*slog.LevelVar) }); ok {
-				lc.SetLogLevelVar(LogLevel)
-			}
 
 			ic.Config = reg.Config
 		}

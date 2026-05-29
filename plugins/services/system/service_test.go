@@ -27,17 +27,12 @@ import (
 	api "github.com/containerd/nerdbox/api/services/system/v1"
 )
 
-func newTestService(lv *slog.LevelVar) *service {
-	return &service{cfg: &Config{LogLevel: lv}}
-}
-
-// TestSetLogLevel_ValidLevel verifies that valid LogLevel enum values succeed,
-// update the injected *slog.LevelVar to the correct slog.Level, and map to the
-// expected logrus level string via logLevelToStrings.
+// TestSetLogLevel_ValidLevel verifies that valid LogLevel enum values succeed
+// and map to the expected logrus level string and slog.Level.
 func TestSetLogLevel_ValidLevel(t *testing.T) {
 	cases := []struct {
-		enum      api.LogLevel
-		wantSlog  slog.Level
+		enum       api.LogLevel
+		wantSlog   slog.Level
 		wantLogrus string
 	}{
 		{api.LogLevel_LOG_LEVEL_TRACE, slog.LevelDebug - 4, "trace"},
@@ -49,16 +44,12 @@ func TestSetLogLevel_ValidLevel(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.enum.String(), func(t *testing.T) {
-			var lv slog.LevelVar
-			svc := newTestService(&lv)
+			svc := &service{}
 			_, err := svc.SetLogLevel(context.Background(), &api.SetLogLevelRequest{Level: tc.enum})
 			if err != nil {
 				t.Fatalf("SetLogLevel(%v) unexpected error: %v", tc.enum, err)
 			}
-			if got := lv.Level(); got != tc.wantSlog {
-				t.Errorf("LevelVar = %v, want %v", got, tc.wantSlog)
-			}
-			// Also exercise the helper directly.
+			// Exercise the helper directly to verify the mapping.
 			gotStr, gotSlog, err := logLevelToStrings(tc.enum)
 			if err != nil {
 				t.Fatalf("logLevelToStrings(%v) unexpected error: %v", tc.enum, err)
@@ -86,8 +77,7 @@ func TestSetLogLevel_InvalidLevel(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			var lv slog.LevelVar
-			svc := newTestService(&lv)
+			svc := &service{}
 			_, err := svc.SetLogLevel(context.Background(), &api.SetLogLevelRequest{Level: tc.level})
 			if err == nil {
 				t.Fatalf("SetLogLevel(%v) expected error, got nil", tc.level)

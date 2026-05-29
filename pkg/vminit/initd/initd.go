@@ -32,6 +32,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"syscall"
 	"time"
 
 	"github.com/containerd/containerd/v2/core/mount"
@@ -225,7 +226,7 @@ func systemInit(ctx context.Context, config Config, shutdownSvc shutdown.Service
 }
 
 func systemMounts() error {
-	return mount.All([]mount.Mount{
+	if err := mount.All([]mount.Mount{
 		{
 			Type:    "proc",
 			Source:  "proc",
@@ -256,12 +257,32 @@ func systemMounts() error {
 			Options: []string{"nosuid", "noexec", "nodev"},
 		},
 		{
-			Type:    "devtmpfs",
-			Source:  "devtmpsfs",
-			Target:  "/dev",
-			Options: []string{"nosuid", "noexec"},
+			Type:    "tmpfs",
+			Source:  "tmpfs",
+			Target:  "/etc",
+			Options: []string{"nosuid", "noexec", "nodev"},
 		},
-	}, "/")
+		{
+			Type:    "tmpfs",
+			Source:  "tmpfs",
+			Target:  "/mnt",
+			Options: []string{"nosuid", "nodev"},
+		},
+	}, "/"); err != nil {
+		return err
+	}
+	devMount := mount.Mount{
+		Type:    "devtmpfs",
+		Source:  "devtmpsfs",
+		Target:  "/dev",
+		Options: []string{"nosuid", "noexec"},
+	}
+	if err := devMount.Mount("/"); err != nil && !errors.Is(err, syscall.EBUSY) {
+		// can happen if the kernel auto-mounts devtmpfs before running init
+		return fmt.Errorf("mount source: %q, target: %q, fstype: devtmpfs, flags: 10, data: %q, err: %w",
+			devMount.Source, devMount.Target, "", err)
+	}
+	return nil
 }
 
 func setupCgroupControl() error {

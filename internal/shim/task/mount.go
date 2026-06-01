@@ -56,7 +56,7 @@ type diskOptions struct {
 
 // transformMounts does not perform any local mounts but transforms
 // the mounts to be used inside the VM via virtio
-func transformMounts(ctx context.Context, id string, ms []*types.Mount, da *diskAllocator) ([]*types.Mount, []sandbox.Opt, error) {
+func transformMounts(ctx context.Context, id string, ms []*types.Mount, da *diskAllocator, bundleDir string) ([]*types.Mount, []sandbox.Opt, error) {
 	var (
 		addDisks []diskOptions
 		am       []*types.Mount
@@ -87,18 +87,14 @@ func transformMounts(ctx context.Context, id string, ms []*types.Mount, da *disk
 			}
 
 			if len(devices) > 1 {
-				// generate VMDK desc for the EROFS flattened fs if it does not exist
-				mergedfsPath := filepath.Dir(m.Source) + "/merged_fs.vmdk"
-				if _, err := os.Stat(mergedfsPath); err != nil {
-					if !os.IsNotExist(err) {
-						log.G(ctx).Warnf("failed to stat %v: %v", mergedfsPath, err)
-						return nil, nil, errdefs.ErrNotImplemented
-					}
-					err = erofs.DumpVMDKDescriptorToFile(mergedfsPath, 0xfffffffe, devices)
-					if err != nil {
-						log.G(ctx).Warnf("failed to generate %v: %v", mergedfsPath, err)
-						return nil, nil, errdefs.ErrNotImplemented
-					}
+				// Write the VMDK descriptor into the per-instance bundle directory
+				// so it is torn down with the bundle and never shared across
+				// container instances. Regenerate unconditionally on every mount
+				// so the descriptor always reflects the current device list.
+				mergedfsPath := filepath.Join(bundleDir, "merged_fs.vmdk")
+				if err := erofs.DumpVMDKDescriptorToFile(mergedfsPath, 0xfffffffe, devices); err != nil {
+					log.G(ctx).Warnf("failed to generate %v: %v", mergedfsPath, err)
+					return nil, nil, errdefs.ErrNotImplemented
 				}
 				addDisks = append(addDisks, diskOptions{
 					name:     disk,

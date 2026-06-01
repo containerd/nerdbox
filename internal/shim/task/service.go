@@ -261,7 +261,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	// da is shared across rootfs and volume disk allocation so that all
 	// virtio-block devices within a container get unique, sequential letters.
 	da := newDiskAllocator()
-	m, mountOpts, err := setupMounts(ctx, r.ID, r.Rootfs, b.Rootfs, filepath.Join(r.Bundle, "mounts"), &da)
+	m, mountOpts, err := setupMounts(ctx, r.ID, r.Rootfs, b.Rootfs, filepath.Join(r.Bundle, "mounts"), &da, r.Bundle)
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}

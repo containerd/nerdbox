@@ -109,17 +109,38 @@ func (s *service) forwardIO(ctx context.Context, ss streamCreator, idPrefix stri
 		return stdio.Stdio{}, nil, err
 	}
 	return pio, func(ctx context.Context) error {
+		// Wait for the copy goroutines to finish draining before closing
+		// the stream connections. Closing first causes goroutines that are
+		// mid-Read to see "use of closed network connection" and return
+		// early, dropping bytes still buffered in the kernel socket receive
+		// queue (the close-before-drain race).
+		//
+		// In normal operation ioDone always fires on its own: the container
+		// process exiting closes the runc pipe, vminitd's copy goroutine
+		// sees EOF and closes its vsock conn, which propagates EOF to the
+		// host copy goroutines here. ctx.Done() is only reached in
+		// exceptional cases (VM crash, vminitd hang, kernel wedge).
+		//
+		// Ensure the wait is always bounded: if the caller did not provide
+		// a deadline, apply a default so a wedged guest cannot pin cleanup
+		// indefinitely.
+		if _, ok := ctx.Deadline(); !ok {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+		}
+		var err error
+		select {
+		case <-ioDone:
+		case <-ctx.Done():
+			err = ctx.Err()
+		}
 		for i, c := range streams {
 			if c != nil && (i != 2 || c != streams[1]) {
 				c.Close()
 			}
 		}
-		select {
-		case <-ioDone:
-			return nil
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+		return err
 	}, nil
 }
 

@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 )
 
 const (
@@ -95,34 +94,16 @@ ddb.adapterType = "%s"
 	return err
 }
 
-// DumpVMDKDescriptorToFile writes a VMDK descriptor to path atomically.
-// It creates a uniquely-named temporary file in the same directory as path,
-// syncs it to disk, and renames it into place. This ensures that a concurrent
-// reader never observes a partially-written descriptor and that two concurrent
-// writers do not clobber each other's temporary file.
-func DumpVMDKDescriptorToFile(path string, cid uint32, devices []string) error {
-	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, "merged_fs.vmdk.*.tmp")
+func DumpVMDKDescriptorToFile(vmdkdesc string, cid uint32, devices []string) error {
+	f, err := os.Create(vmdkdesc)
 	if err != nil {
 		return err
 	}
-	tmpName := f.Name()
-
-	werr := DumpVMDKDescriptor(f, cid, devices)
-	serr := f.Sync()
-	cerr := f.Close()
-
-	if werr != nil {
-		os.Remove(tmpName)
-		return werr
+	err = DumpVMDKDescriptor(f, cid, devices)
+	f.Close()
+	if err != nil {
+		defer os.Remove(vmdkdesc)
+		return err
 	}
-	if serr != nil {
-		os.Remove(tmpName)
-		return serr
-	}
-	if cerr != nil {
-		os.Remove(tmpName)
-		return cerr
-	}
-	return os.Rename(tmpName, path)
+	return nil
 }

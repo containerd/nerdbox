@@ -23,6 +23,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -207,8 +208,8 @@ func waitForShimPipe(ctx context.Context, address string, shimExit <-chan error,
 
 			log.G(ctx).WithError(err).Debug("shim pipe not ready; retry with backoff")
 
-			// Retry with backoff to avoid busy looping when the pipe is not ready.
-			backoff = retryDelay
+			// Retry with backoff + jitter (up to 100%) to avoid busy looping when the pipe is not ready.
+			backoff = retryDelay + time.Duration(rand.Int64N(int64(retryDelay)))
 		}
 	}
 }

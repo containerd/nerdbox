@@ -35,6 +35,7 @@ import (
 	bootapi "github.com/containerd/containerd/api/runtime/bootstrap/v1"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/containerd/v2/pkg/shim"
+	"github.com/containerd/log"
 	"golang.org/x/sys/windows"
 )
 
@@ -137,38 +138,79 @@ func (manager) Start(ctx context.Context, bparams *bootapi.BootstrapParams) (_ *
 	// On Unix, the socket is pre-created via fd passing and exists before
 	// the child starts. On Windows, the child creates the pipe after startup,
 	// so we must wait for it before returning the address to containerd.
-	deadline := time.Now().Add(10 * time.Second)
-	var ready bool
-	for time.Now().Before(deadline) {
-		conn, err := winio.DialPipe(address, nil)
-		if err == nil {
-			conn.Close()
-			ready = true
-			break
-		}
-		if !os.IsNotExist(err) {
-			return nil, fmt.Errorf("waiting for shim pipe %s: %w", address, err)
-		}
-		// If the shim exited before creating the pipe, report its exit
-		// error immediately rather than continuing to poll until timeout.
-		select {
-		case exitErr := <-shimExit:
-			if exitErr == nil {
-				exitErr = errors.New("exit code 0")
-			}
-			return nil, fmt.Errorf("shim exited before creating pipe: %w", exitErr)
-		case <-time.After(10 * time.Millisecond):
-		}
+	if err := waitForShimPipe(ctx, address, shimExit,
+		shimPipeReadyTimeout,
+		shimPipeDialPerAttempt,
+		shimPipeRetryDelay,
+	); err != nil {
+		return nil, err
 	}
-	if !ready {
-		return nil, fmt.Errorf("timed out waiting for shim pipe %s", address)
-	}
-
 	return &bootapi.BootstrapResult{
 		Version:  3,
 		Address:  address,
 		Protocol: "ttrpc",
 	}, nil
+}
+
+const (
+	shimPipeReadyTimeout   = 10 * time.Second
+	shimPipeDialPerAttempt = 1 * time.Second
+	shimPipeRetryDelay     = 10 * time.Millisecond
+)
+
+// waitForShimPipe polls a named pipe address with a short per-attempt DialPipe timeout
+// until the pipe is reachable, the caller's context is done, the shim signals it has stopped,
+// or readyTimeout elapses — whichever comes first.
+//
+// A short per-attempt timeout prevents a single DialPipe from consuming the
+// whole budget when the pipe exists but the shim goroutine has not yet called
+// Accept(). Errors that indicate the pipe is not yet ready (not-exist, per-attempt timeout, busy)
+// are retried; any other error is fatal.
+func waitForShimPipe(ctx context.Context, address string, shimExit <-chan error, readyTimeout, perAttempt, retryDelay time.Duration) error {
+	timer := time.NewTimer(readyTimeout)
+	defer timer.Stop()
+
+	var (
+		dialTimeout time.Duration = perAttempt
+		backoff     time.Duration = 0
+	)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case exitErr := <-shimExit:
+			// If the shim exited before creating the pipe, report its exit
+			// error immediately rather than continuing to poll until timeout.
+			if exitErr == nil {
+				exitErr = errors.New("exit code 0")
+			}
+			return fmt.Errorf("shim exited before creating pipe: %w", exitErr)
+		case <-timer.C:
+			return fmt.Errorf("timed out waiting for shim pipe %s", address)
+		case <-time.After(backoff):
+			conn, err := winio.DialPipe(address, &dialTimeout)
+			if err == nil {
+				conn.Close()
+				return nil
+			}
+
+			// ERROR_PIPE_BUSY is handled internally by go-winio's tryDialPipe
+			// loop and surfaces as winio.ErrTimeout once the per-attempt timeout
+			// deadline fires; the explicit ERROR_PIPE_BUSY branch is a guard.
+			retryable := os.IsNotExist(err) ||
+				errors.Is(err, winio.ErrTimeout) ||
+				errors.Is(err, windows.ERROR_PIPE_BUSY)
+			if !retryable {
+				return fmt.Errorf("waiting for shim pipe %s: %w", address, err)
+			}
+
+			log.G(ctx).WithError(err).Debug("shim pipe not ready; retry with backoff")
+
+			// Retry with backoff to avoid busy looping when the pipe is not ready.
+			backoff = retryDelay
+		}
+	}
 }
 
 // bundlePath extracts the bundle path from the context. The shim framework

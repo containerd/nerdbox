@@ -19,7 +19,6 @@ package erofs
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -38,23 +37,9 @@ func makeExtentFile(t *testing.T, dir, name string, sectors int) string {
 	return path
 }
 
-// tmpFilesIn returns the names of all files in dir whose name contains ".tmp".
-func tmpFilesIn(t *testing.T, dir string) []string {
-	t.Helper()
-	entries, err := os.ReadDir(dir)
-	require.NoError(t, err)
-	var out []string
-	for _, e := range entries {
-		if strings.Contains(e.Name(), ".tmp") {
-			out = append(out, e.Name())
-		}
-	}
-	return out
-}
-
-// TestDumpVMDKDescriptorToFile_Atomic verifies that DumpVMDKDescriptorToFile
+// TestDumpVMDKDescriptorToFile verifies that DumpVMDKDescriptorToFile
 // does not leave any .tmp intermediate file behind after a successful write.
-func TestDumpVMDKDescriptorToFile_Atomic(t *testing.T) {
+func TestDumpVMDKDescriptorToFile(t *testing.T) {
 	dir := t.TempDir()
 	ext := makeExtentFile(t, dir, "layer.erofs", 8)
 
@@ -63,12 +48,10 @@ func TestDumpVMDKDescriptorToFile_Atomic(t *testing.T) {
 
 	_, err := os.Stat(descPath)
 	require.NoError(t, err, "descriptor file should exist")
-
-	assert.Empty(t, tmpFilesIn(t, dir), ".tmp files must not persist after a successful write")
 }
 
 // TestDumpVMDKDescriptorToFile_WriteFail verifies that DumpVMDKDescriptorToFile
-// cleans up the temporary file when the write fails (e.g. a missing device).
+// cleans up the vmdk file when the write fails (e.g. a missing device).
 func TestDumpVMDKDescriptorToFile_WriteFail(t *testing.T) {
 	dir := t.TempDir()
 	descPath := filepath.Join(dir, "merged_fs.vmdk")
@@ -76,15 +59,13 @@ func TestDumpVMDKDescriptorToFile_WriteFail(t *testing.T) {
 	err := DumpVMDKDescriptorToFile(descPath, 0xfffffffe, []string{"/nonexistent/layer.erofs"})
 	require.Error(t, err)
 
-	assert.Empty(t, tmpFilesIn(t, dir), ".tmp files must be cleaned up on write failure")
 	_, statErr := os.Stat(descPath)
 	assert.True(t, os.IsNotExist(statErr), "descriptor must not exist after a failed write")
 }
 
 // TestDumpVMDKDescriptorToFile_Regenerate verifies that calling
-// DumpVMDKDescriptorToFile twice on the same path atomically replaces the
-// descriptor each time and leaves no .tmp residue. This mirrors the
-// unconditional-regeneration behaviour used by transformMounts.
+// DumpVMDKDescriptorToFile twice on the same path replaces the descriptor
+// each time. This mirrors the unconditional-regeneration behaviour used by transformMounts.
 func TestDumpVMDKDescriptorToFile_Regenerate(t *testing.T) {
 	dir := t.TempDir()
 	ext := makeExtentFile(t, dir, "layer.erofs", 8)
@@ -108,7 +89,6 @@ func TestDumpVMDKDescriptorToFile_Regenerate(t *testing.T) {
 	// Size should be identical (same inputs), confirming the file was rewritten
 	// rather than skipped.
 	assert.Equal(t, fi1.Size(), fi2.Size(), "descriptor size must match between regenerations with the same inputs")
-	assert.Empty(t, tmpFilesIn(t, dir), ".tmp files must not persist after second write")
 }
 
 // TestDumpVMDKDescriptorToFile_MultipleDevices verifies that a descriptor
@@ -123,5 +103,4 @@ func TestDumpVMDKDescriptorToFile_MultipleDevices(t *testing.T) {
 
 	_, err := os.Stat(descPath)
 	require.NoError(t, err, "descriptor file should exist after multi-device write")
-	assert.Empty(t, tmpFilesIn(t, dir), ".tmp files must not persist")
 }

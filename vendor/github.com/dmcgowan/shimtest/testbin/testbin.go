@@ -1,0 +1,460 @@
+// Package testbin implements the multicall container binary used by shimtest
+// suites. It is intentionally stdlib-only so that it can be compiled as a
+// fully static linux binary with CGO_ENABLED=0 and no external dependencies.
+//
+// Callers that want to embed the binary need only call Main:
+//
+//	package main
+//
+//	import "github.com/dmcgowan/shimtest/internal/testbin"
+//
+//	func main() { testbin.Main() }
+package testbin
+
+import (
+	"fmt"
+	"hash/crc32"
+	"io"
+	"net"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+// Main is the entry point for the testbin multicall binary.  It dispatches
+// to the appropriate subcommand based on argv[0] (symlink mode) or argv[1]
+// (direct invocation as "testbin <cmd>").
+func Main() {
+	name := filepath.Base(os.Args[0])
+
+	var cmd string
+	var args []string
+	if name == "testbin" || name == "" {
+		if len(os.Args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: testbin <command> [args...]")
+			os.Exit(1)
+		}
+		cmd = os.Args[1]
+		args = os.Args[1:]
+	} else {
+		cmd = name
+		args = os.Args
+	}
+
+	switch cmd {
+	case "forever":
+		cmdForever(args)
+	case "burstexit":
+		cmdBurstexit(args)
+	case "cat":
+		cmdCat(args)
+	case "date":
+		cmdDate(args)
+	case "echo":
+		cmdEcho(args)
+	case "exit":
+		cmdExit(args)
+	case "hashverify":
+		cmdHashverify(args)
+	case "layercheck":
+		cmdLayercheck(args)
+	case "ls":
+		cmdLs(args)
+	case "memhog":
+		cmdMemhog(args)
+	case "nc":
+		cmdNC(args)
+	case "tickexit":
+		cmdTickexit(args)
+	default:
+		fmt.Fprintf(os.Stderr, "testbin: unknown command: %s\n", cmd)
+		os.Exit(127)
+	}
+}
+
+// cmdForever prints its arguments to stdout then blocks forever.
+func cmdForever(args []string) {
+	if len(args) > 1 {
+		fmt.Println(strings.Join(args[1:], " "))
+	}
+	// Wait for a signal that will never arrive voluntarily.
+	// The process will be killed by the test harness.
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig)
+	<-sig
+}
+
+// cmdEcho prints its arguments to stdout and exits.
+func cmdEcho(args []string) {
+	fmt.Println(strings.Join(args[1:], " "))
+}
+
+// cmdCat copies files (or stdin) to stdout.
+func cmdCat(args []string) {
+	files := args[1:]
+	if len(files) == 0 {
+		files = []string{"-"}
+	}
+	for _, name := range files {
+		var r io.Reader
+		if name == "-" {
+			r = os.Stdin
+		} else {
+			f, err := os.Open(name)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "cat: %s: %v\n", name, err)
+				os.Exit(1)
+			}
+			defer f.Close()
+			r = f
+		}
+		if _, err := io.Copy(os.Stdout, r); err != nil {
+			os.Exit(1)
+		}
+	}
+}
+
+// cmdDate prints the current time. Supports +%s and +%s%N.
+func cmdDate(args []string) {
+	format := "+%s"
+	if len(args) > 1 {
+		format = args[1]
+	}
+	now := time.Now()
+	switch format {
+	case "+%s":
+		fmt.Println(now.Unix())
+	case "+%s%N":
+		fmt.Printf("%d%09d\n", now.Unix(), now.Nanosecond())
+	default:
+		fmt.Fprintf(os.Stderr, "date: unsupported format: %s\n", format)
+		os.Exit(1)
+	}
+}
+
+// cmdHashverify reads a file in 1 MiB chunks and verifies the data
+// against an expected crc32-Castagnoli (hex). Reads happen on the main
+// goroutine using a sync.Pool of buffers; chunks are handed to a
+// hashing consumer via a small buffered channel. A non-blocking send
+// is tried first and the count of blocking falls is reported, so the
+// caller can see when the hash consumer (rather than IO) is the
+// bottleneck. On success it prints
+//
+//	ok bytes=N ns=M cpu_bound=K
+//
+// to stdout. Hash mismatch or read errors exit non-zero.
+//
+// Usage: hashverify <file> <expected-hex>
+func cmdHashverify(args []string) {
+	if len(args) < 3 {
+		fmt.Fprintln(os.Stderr, "usage: hashverify <file> <expected-hex>")
+		os.Exit(1)
+	}
+	path := args[1]
+	wantHex := args[2]
+
+	f, err := os.Open(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hashverify: open %s: %v\n", path, err)
+		os.Exit(1)
+	}
+	defer f.Close()
+
+	const bufSize = 1 << 20 // 1 MiB
+	pool := &sync.Pool{New: func() any {
+		b := make([]byte, bufSize)
+		return &b
+	}}
+	ch := make(chan *[]byte, 8)
+
+	h := crc32.New(crc32.MakeTable(crc32.Castagnoli))
+	var consumerWG sync.WaitGroup
+	consumerWG.Add(1)
+	go func() {
+		defer consumerWG.Done()
+		for buf := range ch {
+			h.Write(*buf)
+			full := (*buf)[:cap(*buf)]
+			pool.Put(&full)
+		}
+	}()
+
+	var (
+		total    int64
+		cpuBound int
+	)
+	start := time.Now()
+	for {
+		bp := pool.Get().(*[]byte)
+		full := (*bp)[:cap(*bp)]
+		n, rerr := f.Read(full)
+		if n > 0 {
+			chunk := full[:n]
+			cp := &chunk
+			select {
+			case ch <- cp:
+			default:
+				cpuBound++
+				ch <- cp
+			}
+			total += int64(n)
+		} else {
+			pool.Put(bp)
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			close(ch)
+			fmt.Fprintf(os.Stderr, "hashverify: read %s: %v\n", path, rerr)
+			os.Exit(1)
+		}
+	}
+	elapsed := time.Since(start)
+	close(ch)
+	consumerWG.Wait()
+
+	gotHex := fmt.Sprintf("%08x", h.Sum32())
+	if gotHex != wantHex {
+		fmt.Fprintf(os.Stderr, "hashverify: hash mismatch for %s: got %s, want %s\n", path, gotHex, wantHex)
+		os.Exit(1)
+	}
+
+	fmt.Printf("ok bytes=%d ns=%d cpu_bound=%d\n", total, elapsed.Nanoseconds(), cpuBound)
+}
+
+// cmdLayercheck verifies the contents of a layered overlay rootfs
+// produced by the shimtest LayersSuite test fixtures.
+//
+// Usage: layercheck <addedDir> <addedCount> <baseDir> <baseCount>
+//
+// Verifies that:
+//   - <addedDir>/file_K exists and contains "layer K\n" for K in 1..addedCount
+//   - <baseDir>/base_J does not exist for J in 0..baseCount-1
+//   - <baseDir> exists and is empty (no leftover entries)
+//
+// On success prints "ok added=<n> base_missing=<m>" to stdout. On
+// any mismatch it prints diagnostic lines to stderr and exits 1.
+// Argument parse errors exit 2.
+func cmdLayercheck(args []string) {
+	if len(args) < 5 {
+		fmt.Fprintln(os.Stderr, "usage: layercheck <addedDir> <addedCount> <baseDir> <baseCount>")
+		os.Exit(2)
+	}
+	addedDir := args[1]
+	addedCount, err := strconv.Atoi(args[2])
+	if err != nil || addedCount < 0 {
+		fmt.Fprintf(os.Stderr, "layercheck: invalid addedCount %q\n", args[2])
+		os.Exit(2)
+	}
+	baseDir := args[3]
+	baseCount, err := strconv.Atoi(args[4])
+	if err != nil || baseCount < 0 {
+		fmt.Fprintf(os.Stderr, "layercheck: invalid baseCount %q\n", args[4])
+		os.Exit(2)
+	}
+
+	failures := 0
+
+	// Verify each added file is present with the expected content.
+	for i := 1; i <= addedCount; i++ {
+		path := filepath.Join(addedDir, fmt.Sprintf("file_%d", i))
+		data, err := os.ReadFile(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "missing added: %s: %v\n", path, err)
+			failures++
+			continue
+		}
+		want := fmt.Sprintf("layer %d\n", i)
+		if string(data) != want {
+			fmt.Fprintf(os.Stderr, "content mismatch %s: got %q, want %q\n", path, string(data), want)
+			failures++
+		}
+	}
+
+	// Verify each base file is absent.
+	for j := 0; j < baseCount; j++ {
+		path := filepath.Join(baseDir, fmt.Sprintf("base_%d", j))
+		_, err := os.Lstat(path)
+		if err == nil {
+			fmt.Fprintf(os.Stderr, "base file still present: %s\n", path)
+			failures++
+			continue
+		}
+		if !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "stat %s: %v\n", path, err)
+			failures++
+		}
+	}
+
+	// Verify base dir exists and contains no leftover entries.
+	if entries, err := os.ReadDir(baseDir); err != nil {
+		fmt.Fprintf(os.Stderr, "readdir %s: %v\n", baseDir, err)
+		failures++
+	} else if len(entries) != 0 {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		fmt.Fprintf(os.Stderr, "base dir %s not empty: %v\n", baseDir, names)
+		failures++
+	}
+
+	if failures > 0 {
+		fmt.Fprintf(os.Stderr, "layercheck: %d failure(s)\n", failures)
+		os.Exit(1)
+	}
+
+	fmt.Printf("ok added=%d base_missing=%d\n", addedCount, baseCount)
+}
+
+// cmdLs lists directory contents, printing one entry name per line.
+// Usage: ls [<dir>...]
+// Exits 1 if any directory cannot be read.
+func cmdLs(args []string) {
+	dirs := args[1:]
+	if len(dirs) == 0 {
+		dirs = []string{"."}
+	}
+	exitCode := 0
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ls: %s: %v\n", dir, err)
+			exitCode = 1
+			continue
+		}
+		for _, e := range entries {
+			fmt.Println(e.Name())
+		}
+	}
+	if exitCode != 0 {
+		os.Exit(exitCode)
+	}
+}
+
+// cmdExit parses its first argument as an integer status and exits
+// with it. Exits 0 if no argument is supplied.
+func cmdExit(args []string) {
+	if len(args) < 2 {
+		os.Exit(0)
+	}
+	code, err := strconv.Atoi(args[1])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "exit: invalid status %q: %v\n", args[1], err)
+		os.Exit(2)
+	}
+	os.Exit(code)
+}
+
+// cmdMemhog allocates memory 1MiB at a time, touching every page to
+// force commit, until the kernel OOM-kills the process. Used to drive
+// a memory-limited container to its limit.
+func cmdMemhog(_ []string) {
+	pageSize := os.Getpagesize()
+	const chunkSize = 1 << 20 // 1 MiB
+	var keep [][]byte
+	for {
+		b := make([]byte, chunkSize)
+		for i := 0; i < chunkSize; i += pageSize {
+			b[i] = 0xff
+		}
+		keep = append(keep, b)
+	}
+}
+
+// cmdTickexit writes "tick N\n" for N=1..50 with a 1ms delay between
+// writes, then exits with status 7. Used to verify that output
+// produced up to the moment of exit is captured by the shim.
+func cmdTickexit(_ []string) {
+	for i := 1; i <= 50; i++ {
+		fmt.Printf("tick %d\n", i)
+		time.Sleep(1 * time.Millisecond)
+	}
+	os.Exit(7)
+}
+
+// cmdBurstexit writes a deterministic byte stream of the requested
+// size to stdout as fast as possible, then exits immediately. The
+// stream is a repeating sequence of bytes 0x00..0xff so that any
+// truncation or corruption is detectable by length or content checks.
+//
+// Usage: burstexit <size_bytes> [exit_code]
+//
+// This is used by the FastExitOutput and FastExitInit tests to expose
+// the close-before-drain race in the shim's IO cleanup path: the
+// process exits while bytes are still in-flight through the vsock copy
+// goroutines, and a shim that closes the stream connections before
+// waiting for the goroutines to drain will truncate the output.
+func cmdBurstexit(args []string) {
+	if len(args) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: burstexit <size_bytes> [exit_code]")
+		os.Exit(1)
+	}
+	size, err := strconv.Atoi(args[1])
+	if err != nil || size < 0 {
+		fmt.Fprintf(os.Stderr, "burstexit: invalid size %q\n", args[1])
+		os.Exit(1)
+	}
+	exitCode := 0
+	if len(args) >= 3 {
+		exitCode, err = strconv.Atoi(args[2])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "burstexit: invalid exit code %q\n", args[2])
+			os.Exit(1)
+		}
+	}
+
+	// Write in 32 KiB chunks to avoid a single enormous syscall while
+	// still producing output much faster than the vsock copy goroutine
+	// can drain it.
+	const chunkSize = 32 * 1024
+	chunk := make([]byte, chunkSize)
+	for i := 0; i < chunkSize; i++ {
+		chunk[i] = byte(i % 256)
+	}
+
+	remaining := size
+	for remaining > 0 {
+		n := remaining
+		if n > chunkSize {
+			n = chunkSize
+		}
+		if _, err := os.Stdout.Write(chunk[:n]); err != nil {
+			os.Exit(1)
+		}
+		remaining -= n
+	}
+	os.Exit(exitCode)
+}
+
+// cmdNC connects to a unix domain socket and copies bidirectionally
+// between the socket and stdio. Usage: nc -U <path>
+func cmdNC(args []string) {
+	if len(args) < 3 || args[1] != "-U" {
+		fmt.Fprintln(os.Stderr, "usage: nc -U <socket-path>")
+		os.Exit(1)
+	}
+	conn, err := net.Dial("unix", args[2])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nc: %s: %v\n", args[2], err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		io.Copy(os.Stdout, conn)
+	}()
+	go func() {
+		defer wg.Done()
+		io.Copy(conn, os.Stdin)
+	}()
+	wg.Wait()
+}

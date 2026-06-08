@@ -63,7 +63,7 @@ github.com/containerd/cgroups/v3/cgroup2/stats
 # github.com/containerd/console v1.0.5
 ## explicit; go 1.13
 github.com/containerd/console
-# github.com/containerd/containerd/api v1.11.0
+# github.com/containerd/containerd/api v1.11.1
 ## explicit; go 1.24.0
 github.com/containerd/containerd/api/events
 github.com/containerd/containerd/api/runtime/bootstrap/v1
@@ -75,8 +75,8 @@ github.com/containerd/containerd/api/types
 github.com/containerd/containerd/api/types/runc/options
 github.com/containerd/containerd/api/types/task
 github.com/containerd/containerd/api/types/transfer
-# github.com/containerd/containerd/v2 v2.3.0
-## explicit; go 1.26.2
+# github.com/containerd/containerd/v2 v2.3.1
+## explicit; go 1.26.3
 github.com/containerd/containerd/v2/core/content
 github.com/containerd/containerd/v2/core/events
 github.com/containerd/containerd/v2/core/images
@@ -114,6 +114,7 @@ github.com/containerd/containerd/v2/version
 ## explicit; go 1.21
 github.com/containerd/continuity/devices
 github.com/containerd/continuity/fs
+github.com/containerd/continuity/pkg/ext4
 github.com/containerd/continuity/sysx
 # github.com/containerd/errdefs v1.0.0
 ## explicit; go 1.20
@@ -156,6 +157,11 @@ github.com/coreos/go-systemd/v22/dbus
 # github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc
 ## explicit
 github.com/davecgh/go-spew/spew
+# github.com/dmcgowan/shimtest v0.1.7
+## explicit; go 1.26.3
+github.com/dmcgowan/shimtest
+github.com/dmcgowan/shimtest/internal/transfer
+github.com/dmcgowan/shimtest/testbin
 # github.com/docker/go-events v0.0.0-20190806004212-e31b211e4f1c
 ## explicit
 github.com/docker/go-events
@@ -169,6 +175,11 @@ github.com/ebitengine/purego/internal/cgo
 github.com/ebitengine/purego/internal/fakecgo
 github.com/ebitengine/purego/internal/strings
 github.com/ebitengine/purego/internal/xreflect
+# github.com/erofs/go-erofs v0.3.0
+## explicit; go 1.23
+github.com/erofs/go-erofs
+github.com/erofs/go-erofs/internal/builder
+github.com/erofs/go-erofs/internal/disk
 # github.com/go-logr/logr v1.4.3
 ## explicit; go 1.18
 github.com/go-logr/logr

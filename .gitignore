@@ -1,3 +1,5 @@
 _output
 kernel/*.old
+test/shim/testdata/testbin
+test/stress/testdata/testbin
 .task

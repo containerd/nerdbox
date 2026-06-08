@@ -1,13 +1,13 @@
 module github.com/containerd/nerdbox
 
-go 1.26.2
+go 1.26.3
 
 require (
 	github.com/Microsoft/go-winio v0.6.3-0.20251027160822-ad3df93bed29
 	github.com/containerd/cgroups/v3 v3.1.3
 	github.com/containerd/console v1.0.5
-	github.com/containerd/containerd/api v1.11.0
-	github.com/containerd/containerd/v2 v2.3.0
+	github.com/containerd/containerd/api v1.11.1
+	github.com/containerd/containerd/v2 v2.3.1
 	github.com/containerd/errdefs v1.0.0
 	github.com/containerd/errdefs/pkg v0.3.0
 	github.com/containerd/fifo v1.1.0
@@ -16,7 +16,7 @@ require (
 	github.com/containerd/otelttrpc v0.1.0
 	github.com/containerd/plugin v1.1.0
 	github.com/containerd/ttrpc v1.2.9-0.20260501231634-6c2eed2b612e
-	github.com/containerd/typeurl/v2 v2.2.3
+	github.com/containerd/typeurl/v2 v2.3.0
 	github.com/docker/go-events v0.0.0-20190806004212-e31b211e4f1c
 	github.com/ebitengine/purego v0.10.1
 	github.com/insomniacslk/dhcp v0.0.0-20250919081422-f80a1952f48e
@@ -44,7 +44,6 @@ require (
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
-	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/josharian/native v1.1.0 // indirect
 	github.com/klauspost/compress v1.18.5 // indirect

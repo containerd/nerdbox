@@ -107,41 +107,54 @@ func shimPath() string {
 	root := moduleRoot()
 	current := os.Getenv("PATH")
 
-	var candidates []string
-	candidates = append(candidates, filepath.Join(root, "_output"))
+	// Build the final PATH as an ordered, deduplicated list:
+	//   1. local _output (always first, re-anchored even if already present)
+	//   2. sibling worktree _output dirs (fallback for kernel/initrd/libkrun)
+	//   3. everything already in PATH, minus any entries already added above
+	//
+	// The local _output must be unconditionally first: shimtest helpers call
+	// os.Setenv to inject it into the test-process PATH between tests, so by
+	// the time shimPath is called again it may already be present — but
+	// sibling dirs may also have been added and could sort ahead of it.
+	localOutput := filepath.Join(root, "_output")
 
-	// Walk sibling worktrees: the parent of root is the common worktree parent.
 	parent := filepath.Dir(root)
+	var siblingOutputs []string
 	if entries, err := os.ReadDir(parent); err == nil {
 		for _, e := range entries {
 			if !e.IsDir() || e.Name() == filepath.Base(root) {
 				continue
 			}
-			candidates = append(candidates, filepath.Join(parent, e.Name(), "_output"))
+			siblingOutputs = append(siblingOutputs, filepath.Join(parent, e.Name(), "_output"))
 		}
 	}
 
-	// Build a set of existing PATH elements for exact membership tests.
-	existing := make(map[string]bool)
-	for _, e := range filepath.SplitList(current) {
-		existing[e] = true
+	seen := make(map[string]bool)
+	var result []string
+
+	add := func(dir string) {
+		if !seen[dir] {
+			seen[dir] = true
+			result = append(result, dir)
+		}
 	}
 
-	var prepend []string
-	for _, dir := range candidates {
-		if _, err := os.Stat(dir); err != nil {
-			continue
-		}
-		if existing[dir] {
-			continue
-		}
-		prepend = append(prepend, dir)
+	// 1. Local _output first (exists check; silently skip if missing).
+	if _, err := os.Stat(localOutput); err == nil {
+		add(localOutput)
 	}
-	if len(prepend) == 0 {
-		return current
+	// 2. Sibling _output dirs that exist and haven't been added yet.
+	for _, dir := range siblingOutputs {
+		if _, err := os.Stat(dir); err == nil {
+			add(dir)
+		}
 	}
-	return strings.Join(prepend, string(os.PathListSeparator)) +
-		string(os.PathListSeparator) + current
+	// 3. Retain existing PATH entries not already included above.
+	for _, dir := range filepath.SplitList(current) {
+		add(dir)
+	}
+
+	return strings.Join(result, string(os.PathListSeparator))
 }
 
 // moduleRoot returns the absolute path to the module root directory.

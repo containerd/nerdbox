@@ -16,7 +16,7 @@ require (
 	github.com/containerd/otelttrpc v0.1.0
 	github.com/containerd/plugin v1.1.0
 	github.com/containerd/ttrpc v1.2.9-0.20260501231634-6c2eed2b612e
-	github.com/containerd/typeurl/v2 v2.2.3
+	github.com/containerd/typeurl/v2 v2.3.0
 	github.com/dmcgowan/shimtest v0.1.7
 	github.com/docker/go-events v0.0.0-20190806004212-e31b211e4f1c
 	github.com/ebitengine/purego v0.10.1
@@ -46,7 +46,6 @@ require (
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
-	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/josharian/native v1.1.0 // indirect
 	github.com/klauspost/compress v1.18.5 // indirect

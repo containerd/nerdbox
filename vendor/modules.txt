@@ -148,7 +148,7 @@ github.com/containerd/plugin/registry
 # github.com/containerd/ttrpc v1.2.9-0.20260501231634-6c2eed2b612e
 ## explicit; go 1.23
 github.com/containerd/ttrpc
-# github.com/containerd/typeurl/v2 v2.2.3
+# github.com/containerd/typeurl/v2 v2.3.0
 ## explicit; go 1.21
 github.com/containerd/typeurl/v2
 # github.com/coreos/go-systemd/v22 v22.7.0
@@ -190,9 +190,6 @@ github.com/go-logr/stdr
 # github.com/godbus/dbus/v5 v5.1.0
 ## explicit; go 1.12
 github.com/godbus/dbus/v5
-# github.com/gogo/protobuf v1.3.2
-## explicit; go 1.15
-github.com/gogo/protobuf/proto
 # github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8
 ## explicit; go 1.20
 github.com/golang/groupcache/lru

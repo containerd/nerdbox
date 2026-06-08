@@ -146,13 +146,13 @@ func (vmc *vmcontext) AddVSockPortConnect(port uint32, path string) error {
 	return nil
 }
 
-func (vmc *vmcontext) AddVirtiofs(tag, path string) error {
-	if vmc.lib.AddVirtiofs == nil {
+func (vmc *vmcontext) AddVirtiofs(tag, path string, readonly bool) error {
+	if vmc.lib.AddVirtiofs3 == nil {
 		return fmt.Errorf("libkrun not loaded")
 	}
-	ret := vmc.lib.AddVirtiofs(vmc.ctxID, tag, path)
+	ret := vmc.lib.AddVirtiofs3(vmc.ctxID, tag, path, 0, readonly)
 	if ret != 0 {
-		return fmt.Errorf("krun_add_virtio_fs failed: %d", ret)
+		return fmt.Errorf("krun_add_virtiofs3 failed: %d", ret)
 	}
 	return nil
 }
@@ -250,25 +250,29 @@ func (vmc *vmcontext) cStringArray(a []string) unsafe.Pointer {
 }
 
 type libkrun struct {
-	SetLogLevel        func(level uint32) int32                                                               `C:"krun_set_log_level"`
-	InitLog            func(fd uintptr, level uint32, style uint32, options uint32) int32                     `C:"krun_init_log"`
-	CreateCtx          func() int32                                                                           `C:"krun_create_ctx"`
-	FreeCtx            func(ctxID uint32) int32                                                               `C:"krun_free_ctx"`
-	SetVMConfig        func(ctxID uint32, cpu uint8, ram uint32) int32                                        `C:"krun_set_vm_config"`
-	SetKernel          func(ctxID uint32, path string, format uint32, initramfs string, cmdline string) int32 `C:"krun_set_kernel"`
-	SetExec            func(ctxID uint32, path string, args unsafe.Pointer, env unsafe.Pointer) int32         `C:"krun_set_exec"`
-	SetConsoleOutput   func(ctxID uint32, path string) int32                                                  `C:"krun_set_console_output"`
-	StartEnter         func(ctxID uint32) int32                                                               `C:"krun_start_enter"`
-	AddVsockPort       func(ctxID, port uint32, path string, listen bool) int32                               `C:"krun_add_vsock_port2"`
-	AddVirtiofs        func(ctxID uint32, tag, path string) int32                                             `C:"krun_add_virtiofs"`
-	GetShutdownEventfd func(ctxID uint32) int32                                                               `C:"krun_get_shutdown_eventfd"`
-	SetGpuOptions      func(ctxID, flag uint32) int32                                                         `C:"krun_set_gpu_options"`
-	SetGvproxyPath     func(ctxID uint32, path string) int32                                                  `C:"krun_set_gvproxy_path"`
-	SetNetMac          func(ctxID uint32, mac []uint8) int32                                                  `C:"krun_set_net_mac"`
-	AddDisk            func(ctxID uint32, blockId, path string, readonly bool) int32                          `C:"krun_add_disk"`
-	AddDisk2           func(ctxID uint32, blockId, path string, diskFmt uint32, readonly bool) int32          `C:"krun_add_disk2"`
-	AddNetUnixstream   func(ctxID uint32, path string, fd int, mac []uint8, features, flags uint32) int32     `C:"krun_add_net_unixstream"`
-	AddNetUnixgram     func(ctxID uint32, path string, fd int, mac []uint8, features, flags uint32) int32     `C:"krun_add_net_unixgram"`
+	SetLogLevel      func(level uint32) int32                                                               `C:"krun_set_log_level"`
+	InitLog          func(fd uintptr, level uint32, style uint32, options uint32) int32                     `C:"krun_init_log"`
+	CreateCtx        func() int32                                                                           `C:"krun_create_ctx"`
+	FreeCtx          func(ctxID uint32) int32                                                               `C:"krun_free_ctx"`
+	SetVMConfig      func(ctxID uint32, cpu uint8, ram uint32) int32                                        `C:"krun_set_vm_config"`
+	SetKernel        func(ctxID uint32, path string, format uint32, initramfs string, cmdline string) int32 `C:"krun_set_kernel"`
+	SetExec          func(ctxID uint32, path string, args unsafe.Pointer, env unsafe.Pointer) int32         `C:"krun_set_exec"`
+	SetConsoleOutput func(ctxID uint32, path string) int32                                                  `C:"krun_set_console_output"`
+	StartEnter       func(ctxID uint32) int32                                                               `C:"krun_start_enter"`
+	AddVsockPort     func(ctxID, port uint32, path string, listen bool) int32                               `C:"krun_add_vsock_port2"`
+	// AddVirtiofs3 forwards a virtio-fs share with explicit flags. shmSize
+	// requests a DAX window size in bytes for the share; 0 means "use the
+	// libkrun default" (which is what every call site here passes). Plumb a
+	// caller-provided value through MountConfig if/when a use case appears.
+	AddVirtiofs3       func(ctxID uint32, tag, path string, shmSize uint64, readonly bool) int32          `C:"krun_add_virtiofs3"`
+	GetShutdownEventfd func(ctxID uint32) int32                                                           `C:"krun_get_shutdown_eventfd"`
+	SetGpuOptions      func(ctxID, flag uint32) int32                                                     `C:"krun_set_gpu_options"`
+	SetGvproxyPath     func(ctxID uint32, path string) int32                                              `C:"krun_set_gvproxy_path"`
+	SetNetMac          func(ctxID uint32, mac []uint8) int32                                              `C:"krun_set_net_mac"`
+	AddDisk            func(ctxID uint32, blockId, path string, readonly bool) int32                      `C:"krun_add_disk"`
+	AddDisk2           func(ctxID uint32, blockId, path string, diskFmt uint32, readonly bool) int32      `C:"krun_add_disk2"`
+	AddNetUnixstream   func(ctxID uint32, path string, fd int, mac []uint8, features, flags uint32) int32 `C:"krun_add_net_unixstream"`
+	AddNetUnixgram     func(ctxID uint32, path string, fd int, mac []uint8, features, flags uint32) int32 `C:"krun_add_net_unixgram"`
 
 	/*
 		All functions (As of July 2025)
@@ -284,6 +288,7 @@ type libkrun struct {
 		krun_add_vsock_port
 		krun_set_vm_config
 		krun_add_virtiofs2
+		krun_add_virtiofs3
 		krun_set_console_output
 		krun_set_env
 		krun_set_gvproxy_path

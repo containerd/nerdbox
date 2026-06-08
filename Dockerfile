@@ -258,7 +258,7 @@ FROM "${GOLANG_IMAGE}" AS dlv
 RUN go install github.com/go-delve/delve/cmd/dlv@latest
 
 FROM "${RUST_IMAGE}" AS libkrun-build
-ARG LIBKRUN_VERSION=v1.17.4
+ARG LIBKRUN_VERSION=v1.18.1
 
 RUN --mount=type=cache,sharing=locked,id=libkrun-aptlib,target=/var/lib/apt \
     --mount=type=cache,sharing=locked,id=libkrun-aptcache,target=/var/cache/apt \

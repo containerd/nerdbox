@@ -111,7 +111,9 @@ nerdctl needs the following configuration, as it does not use the transfer servi
 
 ### Running
 
-Install libkrun, erofs-utils, e2fsprogs on your host
+Install libkrun (>= 1.18), erofs-utils, e2fsprogs on your host. libkrun 1.18
+is required for the `krun_add_virtiofs3` entry point used to mark read-only
+virtio-fs shares.
 
 > #### macOS Tip
 >

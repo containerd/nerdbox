@@ -35,6 +35,17 @@ import (
 	"github.com/containerd/nerdbox/internal/shim/task/bundle"
 )
 
+// gptLayerThreshold is the number of plain (non-multi-device) erofs mounts
+// above which the shim packs them into a single GPT-partitioned VMDK rather
+// than allocating one virtio-block device per mount. Multi-device erofs
+// mounts (those carrying device= options) are not affected: they continue
+// to use the existing flat-concat VMDK path inline.
+//
+// Packing into a GPT VMDK reduces virtio-block consumption (which is capped
+// at 25 letters per VM) and lets the shim handle deep stacks of independent
+// erofs mounts without coordinating layer offsets in the snapshotter.
+const gptLayerThreshold = 8
+
 // diskAllocator assigns sequential virtio disk letters (vda, vdb, …).
 // A single instance is shared across rootfs and volume disk allocation so
 // that all disks within a container get unique, collision-free letters.
@@ -54,29 +65,43 @@ type diskOptions struct {
 	vmdk     bool
 }
 
+// erofsCandidate describes a plain erofs mount that has been deferred from
+// the first pass of transformMounts. After all mounts are classified, the
+// number of candidates determines whether they are each turned into raw
+// virtio-block disks or packed into a single GPT-partitioned VMDK.
+type erofsCandidate struct {
+	outIdx  int      // index in `am` reserved for this mount
+	source  string   // host path of the erofs file
+	target  string   // VM target path
+	options []string // remaining options (no device= entries)
+}
+
 // transformMounts does not perform any local mounts but transforms
-// the mounts to be used inside the VM via virtio
+// the mounts to be used inside the VM via virtio.
+//
+// erofs mounts that carry device= options are processed inline using the
+// existing flat-concat VMDK path. Plain erofs mounts (no device= options)
+// are deferred and resolved after the first pass: when more than
+// gptLayerThreshold are present, they are packed into a single GPT-
+// partitioned VMDK with one partition per mount; otherwise each becomes
+// its own raw virtio-block device.
+//
+// All generated VMDK descriptor files and auxiliary blobs are written into
+// bundleDir, which is owned by the shim and torn down with the container.
+// The shim must not write into the source image directories.
 func transformMounts(ctx context.Context, id string, ms []*types.Mount, da *diskAllocator, bundleDir string) ([]*types.Mount, []sandbox.Opt, error) {
 	var (
-		addDisks []diskOptions
-		am       []*types.Mount
-		sbOpts   []sandbox.Opt
-		err      error
+		addDisks  []diskOptions
+		am        []*types.Mount
+		sbOpts    []sandbox.Opt
+		erofsList []erofsCandidate
 	)
 
 	log.G(ctx).Trace("transformMounts", ms)
 	for _, m := range ms {
 		switch m.Type {
 		case "erofs":
-			letter := da.Next()
-			disk := fmt.Sprintf("disk-%d-%s", letter, id)
-			// virtiofs implementation has a limit of 36 characters for the tag
-			if len(disk) > 36 {
-				disk = disk[:36]
-			}
-
 			var Options []string
-
 			devices := []string{m.Source}
 			for _, o := range m.Options {
 				if d, f := strings.CutPrefix(o, "device="); f {
@@ -87,14 +112,23 @@ func transformMounts(ctx context.Context, id string, ms []*types.Mount, da *disk
 			}
 
 			if len(devices) > 1 {
-				// Write the VMDK descriptor into the per-instance bundle directory
-				// so it is torn down with the bundle and never shared across
-				// container instances. Regenerate unconditionally on every mount
-				// so the descriptor always reflects the current device list.
-				mergedfsPath := filepath.Join(bundleDir, "merged_fs.vmdk")
+				// Multi-device erofs: existing flat-concat VMDK path,
+				// applied inline so it is independent of GPT packing.
+				// Write the descriptor into bundleDir (owned by the shim)
+				// and regenerate unconditionally so it always reflects the
+				// current device list; the shim must not mutate source dirs.
+				letter := da.Next()
+				disk := fmt.Sprintf("disk-%d-%s", letter, id)
+				if len(disk) > 36 {
+					disk = disk[:36]
+				}
+				// Use the disk letter in the filename so that multiple
+				// multi-device erofs mounts within the same bundle each get
+				// a distinct descriptor and don't overwrite each other.
+				mergedfsPath := filepath.Join(bundleDir, fmt.Sprintf("merged_fs_%c.vmdk", letter))
 				if err := erofs.DumpVMDKDescriptorToFile(mergedfsPath, 0xfffffffe, devices); err != nil {
 					log.G(ctx).Warnf("failed to generate %v: %v", mergedfsPath, err)
-					return nil, nil, errdefs.ErrNotImplemented
+					return nil, nil, fmt.Errorf("erofs vmdk: %w", errdefs.ErrNotImplemented)
 				}
 				addDisks = append(addDisks, diskOptions{
 					name:     disk,
@@ -102,19 +136,23 @@ func transformMounts(ctx context.Context, id string, ms []*types.Mount, da *disk
 					readOnly: true,
 					vmdk:     true,
 				})
-			} else {
-				addDisks = append(addDisks, diskOptions{
-					name:     disk,
-					source:   m.Source,
-					readOnly: true,
-					vmdk:     false,
+				am = append(am, &types.Mount{
+					Type:    "erofs",
+					Source:  fmt.Sprintf("/dev/vd%c", letter),
+					Target:  m.Target,
+					Options: filterOptions(Options),
 				})
+				continue
 			}
-			am = append(am, &types.Mount{
-				Type:    "erofs",
-				Source:  fmt.Sprintf("/dev/vd%c", letter),
-				Target:  m.Target,
-				Options: filterOptions(Options),
+
+			// Plain erofs: defer and reserve a slot in `am` so the output
+			// preserves the input mount ordering.
+			am = append(am, nil)
+			erofsList = append(erofsList, erofsCandidate{
+				outIdx:  len(am) - 1,
+				source:  m.Source,
+				target:  m.Target,
+				options: Options,
 			})
 
 		case "ext4":
@@ -172,6 +210,10 @@ func transformMounts(ctx context.Context, id string, ms []*types.Mount, da *disk
 		}
 	}
 
+	if err := finalizeErofsCandidates(ctx, id, da, bundleDir, erofsList, am, &addDisks); err != nil {
+		return nil, nil, err
+	}
+
 	for _, do := range addDisks {
 		var flags sandbox.DiskFlags
 		if do.readOnly {
@@ -184,7 +226,91 @@ func transformMounts(ctx context.Context, id string, ms []*types.Mount, da *disk
 		sbOpts = append(sbOpts, sandbox.WithDisk(do.name, do.source, flags))
 	}
 
-	return am, sbOpts, err
+	return am, sbOpts, nil
+}
+
+// finalizeErofsCandidates resolves the deferred plain erofs mounts. When
+// the candidate count exceeds gptLayerThreshold, all candidates are packed
+// into a single GPT-partitioned VMDK consuming one virtio-block letter.
+// Below the threshold, each candidate becomes its own raw virtio-block
+// device, matching the long-standing single-mount-per-disk behavior.
+//
+// The GPT VMDK descriptor and its auxiliary blobs are written into bundleDir,
+// which is owned by the shim and torn down with the container.
+//
+// The reserved slots in `am` (set during the first pass of transformMounts)
+// are filled in with the resulting mounts; new disks are appended to
+// addDisks. The order of da.Next() calls inside this function is contiguous
+// with whatever the first pass already consumed, preserving the invariant
+// that the Nth virtio-block letter corresponds to the Nth disk in addDisks.
+func finalizeErofsCandidates(ctx context.Context, id string, da *diskAllocator, bundleDir string, candidates []erofsCandidate, am []*types.Mount, addDisks *[]diskOptions) error {
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	if len(candidates) > gptLayerThreshold {
+		sources := make([]string, len(candidates))
+		for i, c := range candidates {
+			sources[i] = c.source
+		}
+		// Write the GPT VMDK and its auxiliary blobs into bundleDir so the
+		// shim does not mutate the source image directories.  Cache by
+		// stat-check: setupMounts may be called more than once per bundle
+		// (e.g. on restore) but the layer set for a given bundle is fixed.
+		gptPath := filepath.Join(bundleDir, "merged_fs_gpt.vmdk")
+		if _, err := os.Stat(gptPath); err != nil {
+			if !os.IsNotExist(err) {
+				log.G(ctx).Warnf("failed to stat %v: %v", gptPath, err)
+				return fmt.Errorf("erofs gpt vmdk: %w", errdefs.ErrNotImplemented)
+			}
+			if err := erofs.DumpGPTVMDKDescriptorToFile(gptPath, 0xfffffffe, sources); err != nil {
+				log.G(ctx).Warnf("failed to generate %v: %v", gptPath, err)
+				return fmt.Errorf("erofs gpt vmdk: %w", errdefs.ErrNotImplemented)
+			}
+		}
+		letter := da.Next()
+		disk := fmt.Sprintf("disk-%d-%s", letter, id)
+		if len(disk) > 36 {
+			disk = disk[:36]
+		}
+		*addDisks = append(*addDisks, diskOptions{
+			name:     disk,
+			source:   gptPath,
+			readOnly: true,
+			vmdk:     true,
+		})
+		for i, c := range candidates {
+			am[c.outIdx] = &types.Mount{
+				Type:    "erofs",
+				Source:  fmt.Sprintf("/dev/vd%c%d", letter, i+1),
+				Target:  c.target,
+				Options: filterOptions(c.options),
+			}
+		}
+		return nil
+	}
+
+	// Below the threshold: one raw virtio-block device per candidate.
+	for _, c := range candidates {
+		letter := da.Next()
+		disk := fmt.Sprintf("disk-%d-%s", letter, id)
+		if len(disk) > 36 {
+			disk = disk[:36]
+		}
+		*addDisks = append(*addDisks, diskOptions{
+			name:     disk,
+			source:   c.source,
+			readOnly: true,
+			vmdk:     false,
+		})
+		am[c.outIdx] = &types.Mount{
+			Type:    "erofs",
+			Source:  fmt.Sprintf("/dev/vd%c", letter),
+			Target:  c.target,
+			Options: filterOptions(c.options),
+		}
+	}
+	return nil
 }
 
 func filterOptions(options []string) []string {

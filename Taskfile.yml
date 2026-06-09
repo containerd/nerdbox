@@ -23,10 +23,18 @@ tasks:
       - HOST_OS={{OS}} KERNEL_ARCH={{.KERNEL_ARCH}} docker buildx bake
 
   build:shim:
-    desc: Build containerd-shim-nerdbox-v1 for the current platform
+    desc: "Build containerd-shim-nerdbox-v1. Override target with GOOS/GOARCH env vars for cross-compilation."
+    vars:
+      # Resolve target GOOS/GOARCH: env vars override, then fall back to
+      # the Go toolchain's native values.
+      TARGET_GOOS:
+        sh: 'if [ -n "$GOOS" ]; then echo "$GOOS"; else go env GOOS; fi'
+      TARGET_GOARCH:
+        sh: 'if [ -n "$GOARCH" ]; then echo "$GOARCH"; else go env GOARCH; fi'
+      TARGET_SUFFIX: '{{if eq .TARGET_GOOS "windows"}}.exe{{end}}'
     cmds:
       - mkdir -p {{.OUTPUT_DIR}}
-      - go build {{.GO_TAGS}} {{.GO_LDFLAGS}} -o {{.OUTPUT_DIR}}/containerd-shim-nerdbox-v1{{if eq OS "windows"}}.exe{{end}} ./cmd/containerd-shim-nerdbox-v1
+      - GOOS={{.TARGET_GOOS}} GOARCH={{.TARGET_GOARCH}} go build {{.GO_TAGS}} {{.GO_LDFLAGS}} -o {{.OUTPUT_DIR}}/containerd-shim-nerdbox-v1{{.TARGET_SUFFIX}} ./cmd/containerd-shim-nerdbox-v1
       - cmd: codesign --entitlements cmd/containerd-shim-nerdbox-v1/containerd-shim-nerdbox-v1.entitlements --force -s - {{.OUTPUT_DIR}}/containerd-shim-nerdbox-v1
         platforms: [darwin]
 
@@ -71,6 +79,24 @@ tasks:
     desc: Run unit tests (excludes integration and shim test packages)
     cmds:
       - go test -count=1 ./api/... ./cmd/... ./internal/... ./pkg/... ./plugins/...
+
+  test:fuzz:
+    desc: "Run all fuzz targets for a short duration (default 60s each). Override with FUZZTIME env var: FUZZTIME=30s task test:fuzz"
+    vars:
+      FUZZTIME: '{{default "60s" .FUZZTIME}}'
+    cmds:
+      - cmd: |
+          # Find all packages containing fuzz tests and run each target.
+          # go test -fuzz only accepts one package at a time and one
+          # matching fuzz target, so we discover and iterate.
+          grep -r --include='*_test.go' -l '^func Fuzz' . --exclude-dir=test | while read -r file; do
+            pkg=$(dirname "$file")
+            grep -o '^func Fuzz[A-Za-z0-9_]*' "$file" | sed 's/^func //' | while read -r target; do
+              echo "=== Fuzzing ${target} in ${pkg} ==="
+              go test "${pkg}" -fuzz="^${target}$" -fuzztime={{.FUZZTIME}}
+            done
+          done
+        platforms: [linux, darwin]
 
   test:integration:
     desc: "Run integration tests (each test in its own process). Extra flags are forwarded to the test binary: task test:integration -- -run TestSystemInfo -v"

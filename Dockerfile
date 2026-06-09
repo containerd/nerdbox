@@ -223,6 +223,21 @@ WORKDIR /usr/src/crun
 ARG TARGETARCH
 RUN mkdir /build && wget -O /build/crun https://github.com/containers/crun/releases/download/1.24/crun-1.24-linux-${TARGETARCH}-disable-systemd
 
+# Static C helper that performs setns(CLONE_NEWNS) + bind mount inside an
+# existing container's mount namespace. Needed because Go's runtime spawns
+# sysmon before user code runs, and the kernel forbids setns(CLONE_NEWNS)
+# from any multi-threaded process. vminitd execs this helper to do the work.
+#
+# Built on TARGETPLATFORM (no cross-compile): the initrd architecture matches
+# the build VM's, so the host's musl-gcc produces a statically-linked binary
+# the guest kernel can run directly.
+FROM debian:${BASE_DEBIAN_DISTRO}-slim AS nsmount-build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        musl-tools musl-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY cmd/nsmount-helper/nsmount.c /usr/src/nsmount.c
+RUN mkdir /build && musl-gcc -static -O2 -s -o /build/nerdbox-nsmount /usr/src/nsmount.c
+
 FROM base AS initrd-build
 WORKDIR /usr/src/init
 ARG TARGETPLATFORM
@@ -234,10 +249,11 @@ RUN mkdir sbin proc sys tmp run
 
 COPY --from=vminit-build /build/vminitd ./init
 COPY --from=crun-build /build/crun ./sbin/crun
+COPY --from=nsmount-build /build/nerdbox-nsmount ./sbin/nerdbox-nsmount
 
 RUN <<EOT
     set -e
-    chmod +x sbin/crun
+    chmod +x sbin/crun sbin/nerdbox-nsmount
     mkdir /build
     (find . -print0 | cpio --null -H newc -o ) | gzip -9 > /build/nerdbox-initrd
 EOT
@@ -258,7 +274,7 @@ FROM "${GOLANG_IMAGE}" AS dlv
 RUN go install github.com/go-delve/delve/cmd/dlv@latest
 
 FROM "${RUST_IMAGE}" AS libkrun-build
-ARG LIBKRUN_VERSION=v1.17.4
+ARG LIBKRUN_VERSION=v1.18.1
 
 RUN --mount=type=cache,sharing=locked,id=libkrun-aptlib,target=/var/lib/apt \
     --mount=type=cache,sharing=locked,id=libkrun-aptcache,target=/var/cache/apt \

@@ -11,6 +11,8 @@ type TTRPCMountService interface {
 	MountAll(context.Context, *MountAllRequest) (*MountAllResponse, error)
 	Unmount(context.Context, *UnmountRequest) (*UnmountResponse, error)
 	UnmountAll(context.Context, *UnmountAllRequest) (*UnmountAllResponse, error)
+	MountInContainer(context.Context, *MountInContainerRequest) (*MountInContainerResponse, error)
+	UnmountInContainer(context.Context, *UnmountInContainerRequest) (*UnmountInContainerResponse, error)
 }
 
 func RegisterTTRPCMountService(srv *ttrpc.Server, svc TTRPCMountService) {
@@ -36,6 +38,20 @@ func RegisterTTRPCMountService(srv *ttrpc.Server, svc TTRPCMountService) {
 					return nil, err
 				}
 				return svc.UnmountAll(ctx, &req)
+			},
+			"MountInContainer": func(ctx context.Context, unmarshal func(interface{}) error) (interface{}, error) {
+				var req MountInContainerRequest
+				if err := unmarshal(&req); err != nil {
+					return nil, err
+				}
+				return svc.MountInContainer(ctx, &req)
+			},
+			"UnmountInContainer": func(ctx context.Context, unmarshal func(interface{}) error) (interface{}, error) {
+				var req UnmountInContainerRequest
+				if err := unmarshal(&req); err != nil {
+					return nil, err
+				}
+				return svc.UnmountInContainer(ctx, &req)
 			},
 		},
 	})
@@ -70,6 +86,22 @@ func (c *ttrpcmountClient) Unmount(ctx context.Context, req *UnmountRequest) (*U
 func (c *ttrpcmountClient) UnmountAll(ctx context.Context, req *UnmountAllRequest) (*UnmountAllResponse, error) {
 	var resp UnmountAllResponse
 	if err := c.client.Call(ctx, "containerd.vminitd.services.mount.v1.Mount", "UnmountAll", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *ttrpcmountClient) MountInContainer(ctx context.Context, req *MountInContainerRequest) (*MountInContainerResponse, error) {
+	var resp MountInContainerResponse
+	if err := c.client.Call(ctx, "containerd.vminitd.services.mount.v1.Mount", "MountInContainer", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *ttrpcmountClient) UnmountInContainer(ctx context.Context, req *UnmountInContainerRequest) (*UnmountInContainerResponse, error) {
+	var resp UnmountInContainerResponse
+	if err := c.client.Call(ctx, "containerd.vminitd.services.mount.v1.Mount", "UnmountInContainer", req, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil

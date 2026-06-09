@@ -24,6 +24,25 @@ service Mount {
 	rpc MountAll(MountAllRequest) returns (MountAllResponse);
 	rpc Unmount(UnmountRequest) returns (UnmountResponse);
 	rpc UnmountAll(UnmountAllRequest) returns (UnmountAllResponse);
+	// MountInContainer performs a single bind mount inside the mount
+	// namespace of an existing container, identified by its PID inside
+	// the VM. The target's parent directory is created with mkdir -p
+	// semantics if needed; the target itself is created if missing
+	// (regular file when source is a regular file, directory otherwise).
+	//
+	// Bind-only — type and options other than "ro" / "rw" are ignored.
+	// "ro" performs an MS_REMOUNT|MS_BIND|MS_RDONLY follow-up so the
+	// mount is genuinely read-only at the FS layer.
+	//
+	// The implementation execs a small static C helper (shipped in the
+	// initrd at /sbin/nerdbox-nsmount): setns(CLONE_NEWNS) is rejected
+	// by the kernel from any multi-threaded process, and Go's runtime
+	// is multi-threaded by the time service handlers run.
+	rpc MountInContainer(MountInContainerRequest) returns (MountInContainerResponse);
+	// UnmountInContainer performs umount(2) on a target inside an
+	// existing container's mount namespace. Idempotent: EINVAL/ENOENT
+	// (target isn't a mount or doesn't exist) are treated as success.
+	rpc UnmountInContainer(UnmountInContainerRequest) returns (UnmountInContainerResponse);
 }
 
 message MountSpec {
@@ -48,3 +67,23 @@ message UnmountResponse {}
 message UnmountAllRequest {}
 
 message UnmountAllResponse {}
+
+// MountInContainerRequest carries a single mount to apply inside the
+// mount namespace owned by an existing container.
+message MountInContainerRequest {
+	// container_pid is a PID, inside the VM, of any process belonging to
+	// the target container; vminitd reads /proc/<pid>/ns/mnt to find the
+	// mount namespace.
+	uint32 container_pid = 1;
+	MountSpec mount = 2;
+}
+
+message MountInContainerResponse {}
+
+// UnmountInContainerRequest names a single in-container target to umount.
+message UnmountInContainerRequest {
+	uint32 container_pid = 1;
+	string target = 2;
+}
+
+message UnmountInContainerResponse {}

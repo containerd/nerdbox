@@ -39,10 +39,15 @@ jobs:
         with:
           go-version-file: '.github/.tool-versions'
 
+      - uses: go-task/setup-task@01a4adf9db2d14c1de7a560f09170b6e0df736aa  # v2.1.0
+        with:
+          version: 3.x
+
       - name: Build shim
-        run: |
-          mkdir -p _output
-          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o _output/containerd-shim-nerdbox-v1${{ matrix.suffix }} -ldflags '-s -w' -tags 'no_grpc' ./cmd/containerd-shim-nerdbox-v1
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: task build:shim
 
       - name: Verify binary
         run: file _output/containerd-shim-nerdbox-v1${{ matrix.suffix }}

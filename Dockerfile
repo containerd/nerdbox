@@ -304,6 +304,8 @@ COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-buildx /usr/
 COPY --from=dlv /go/bin/dlv /usr/local/bin/dlv
 
 COPY --from=libkrun /libkrun-nerdbox-${KERNEL_ARCH}.so /usr/local/lib64/libkrun-nerdbox-${KERNEL_ARCH}.so
+RUN ln -s libkrun-nerdbox-${KERNEL_ARCH}.so /usr/local/lib64/libkrun-nerdbox.so && \
+    ln -s libkrun-nerdbox-${KERNEL_ARCH}.so /usr/local/lib64/libkrun.so
 ENV LIBKRUN_PATH=/go/src/github.com/containerd/nerdbox/_output
 
 VOLUME /var/lib/containerd

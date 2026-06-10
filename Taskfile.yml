@@ -38,6 +38,15 @@ tasks:
       - cmd: codesign --entitlements cmd/containerd-shim-nerdbox-v1/containerd-shim-nerdbox-v1.entitlements --force -s - {{.OUTPUT_DIR}}/containerd-shim-nerdbox-v1
         platforms: [darwin]
 
+  build:libkrun:
+    desc: Build libkrun via Docker Buildx Bake and create generic symlinks in _output/
+    cmds:
+      - KERNEL_ARCH={{.KERNEL_ARCH}} docker buildx bake libkrun
+      - cmd: |
+          cd {{.OUTPUT_DIR}}
+          ln -sf libkrun-nerdbox-{{.KERNEL_ARCH}}.so libkrun-nerdbox.so
+          ln -sf libkrun-nerdbox-{{.KERNEL_ARCH}}.so libkrun.so
+
   build:guest:
     desc: Build guest artifacts (kernel and initrd) via Docker Buildx Bake
     cmds:

@@ -136,18 +136,10 @@ func Run(ctx context.Context) error {
 
 	ctx, shutdownSvc := shutdown.WithShutdown(ctx)
 
-	dhcpRenewer, err := systemInit(ctx, config, shutdownSvc)
-	if err != nil {
+	if err := systemInit(ctx, config, shutdownSvc); err != nil {
 		runErr = err
 		return err
 	}
-
-	go func() {
-		if err := dhcpRenewer(ctx); err != nil {
-			log.G(ctx).WithError(err).Error("failed to renew DHCP leases")
-			shutdownSvc.Shutdown()
-		}
-	}()
 
 	if config.DumpInfo {
 		systools.DumpInfo(ctx)
@@ -199,29 +191,35 @@ func Run(ctx context.Context) error {
 	}
 }
 
-func systemInit(ctx context.Context, config Config, shutdownSvc shutdown.Service) (func(context.Context) error, error) {
+func systemInit(ctx context.Context, config Config, shutdownSvc shutdown.Service) error {
+	t := time.Now()
+
 	if err := systemMounts(); err != nil {
-		return nil, err
+		return err
 	}
 
 	if err := setupCgroupControl(); err != nil {
-		return nil, err
-	}
-
-	if err := os.Mkdir("/etc", 0755); err != nil && !os.IsExist(err) {
-		return nil, fmt.Errorf("failed to create /etc: %w", err)
+		return err
 	}
 
 	dhcpRenewer, dhcpReleaser, err := vmnetworking.SetupVM(ctx, config.Networks, config.Debug)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	shutdownSvc.RegisterCallback(func(ctx context.Context) error {
 		return dhcpReleaser()
 	})
 
-	return dhcpRenewer, nil
+	go func() {
+		if err := dhcpRenewer(ctx); err != nil {
+			log.G(ctx).WithError(err).Error("failed to renew DHCP leases")
+			shutdownSvc.Shutdown()
+		}
+	}()
+
+	log.G(ctx).WithField("elapsed", time.Since(t)).Info("system init completed")
+	return nil
 }
 
 func systemMounts() error {
@@ -251,16 +249,22 @@ func systemMounts() error {
 		},
 		{
 			Type:    "tmpfs",
-			Source:  "tmpsfs",
+			Source:  "tmpfs",
 			Target:  "/tmp",
 			Options: []string{"nosuid", "noexec", "nodev"},
 		},
+		// Mount a tmpfs over /etc so that runtime writes (resolv.conf,
+		// hosts, etc.) succeed even though the erofs rootfs is read-only.
+		// The /etc directory is pre-created in the erofs image as a mount
+		// point.
 		{
-			Type:    "devtmpfs",
-			Source:  "devtmpsfs",
-			Target:  "/dev",
-			Options: []string{"nosuid", "noexec"},
+			Type:    "tmpfs",
+			Source:  "tmpfs",
+			Target:  "/etc",
+			Options: []string{"nosuid", "noexec", "nodev", "mode=755"},
 		},
+		// /dev is handled by the kernel via CONFIG_DEVTMPFS_MOUNT=y before
+		// the init process starts; no explicit mount is needed here.
 	}, "/")
 }
 

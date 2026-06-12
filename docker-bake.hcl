@@ -86,7 +86,7 @@ group "host-binaries" {
 }
 
 group "guest-binaries" {
-  targets = ["initrd"]
+  targets = ["rootfs"]
 }
 
 target "menuconfig" {
@@ -101,9 +101,9 @@ target "kernel" {
   output = ["${DESTDIR}"]
 }
 
-target "initrd" {
+target "rootfs" {
   inherits = ["_guest_common"]
-  target = "initrd"
+  target = "erofs"
   output = ["${DESTDIR}"]
 }
 

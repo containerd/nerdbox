@@ -41,6 +41,19 @@ type localsandbox struct {
 	instance vm.Instance
 }
 
+// diskReserver is a package-private optional interface for vm.Manager
+// implementations that pre-attach virtio-block devices before container disks.
+type diskReserver interface {
+	ReservedDisks() int
+}
+
+func (s *localsandbox) ReservedDisks() int {
+	if dr, ok := s.vmm.(diskReserver); ok {
+		return dr.ReservedDisks()
+	}
+	return 0
+}
+
 func (s *localsandbox) Start(ctx context.Context, opts ...sandbox.Opt) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

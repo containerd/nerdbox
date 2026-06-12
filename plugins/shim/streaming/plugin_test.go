@@ -134,6 +134,7 @@ type fakeSandbox struct {
 func (s *fakeSandbox) Start(context.Context, ...sandbox.Opt) error { return errdefs.ErrNotImplemented }
 func (s *fakeSandbox) Stop(context.Context) error                  { return errdefs.ErrNotImplemented }
 func (s *fakeSandbox) Client() (*ttrpc.Client, error)              { return nil, errdefs.ErrNotImplemented }
+func (s *fakeSandbox) ReservedDisks() int                          { return 0 }
 func (s *fakeSandbox) StartStream(context.Context, string) (net.Conn, error) {
 	return s.conn, nil
 }
@@ -333,6 +334,7 @@ type fakeMultiSandbox struct {
 	conns map[string]net.Conn
 }
 
+func (s *fakeMultiSandbox) ReservedDisks() int { return 0 }
 func (s *fakeMultiSandbox) Start(context.Context, ...sandbox.Opt) error {
 	return errdefs.ErrNotImplemented
 }

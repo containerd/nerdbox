@@ -260,21 +260,27 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 
 	// da is shared across rootfs and volume disk allocation so that all
 	// virtio-block devices within a container get unique, sequential letters.
-	da := newDiskAllocator()
+	// Start after the disks the VM implementation reserves for its own use
+	// (e.g. the erofs rootfs at /dev/vda in the libkrun backend).
+	reservedDisks := s.sb.ReservedDisks()
+	da := newDiskAllocator(reservedDisks)
 	m, mountOpts, err := setupMounts(ctx, r.ID, r.Rootfs, b.Rootfs, filepath.Join(r.Bundle, "mounts"), &da, r.Bundle)
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
 
 	// Process ext4 volume mounts in the OCI spec after rootfs disks have been
-	// allocated, so that rootfs always gets vda/vdb and volumes get vdc+.
+	// allocated, so that rootfs disks always precede volume disks.
 	var blockM blockMounter
 	if err := blockM.FromBundle(ctx, b, r.ID, &da); err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
 
-	if da.count() > 25 {
-		return nil, errgrpc.ToGRPCf(errdefs.ErrNotImplemented, "exceeded maximum virtio disk count: %d > 25", da.count())
+	// Enforce the virtio-block letter limit (vda–vdz = 26 devices total).
+	// count() reflects only container disks; add the reserved range to get
+	// the true total and compare against the full alphabet.
+	if total := reservedDisks + da.count(); total > 26 {
+		return nil, errgrpc.ToGRPCf(errdefs.ErrNotImplemented, "exceeded maximum virtio disk count: %d > 26", total)
 	}
 
 	var opts []sandbox.Opt

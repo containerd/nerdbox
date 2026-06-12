@@ -41,22 +41,33 @@ import (
 // mounts (those carrying device= options) are not affected: they continue
 // to use the existing flat-concat VMDK path inline.
 //
-// Packing into a GPT VMDK reduces virtio-block consumption (which is capped
-// at 25 letters per VM) and lets the shim handle deep stacks of independent
-// erofs mounts without coordinating layer offsets in the snapshotter.
+// Packing into a GPT VMDK reduces virtio-block consumption (vda–vdz = 26
+// devices total, some of which are reserved by the VM implementation) and
+// lets the shim handle deep stacks of independent erofs mounts without
+// coordinating layer offsets in the snapshotter.
 const gptLayerThreshold = 8
 
-// diskAllocator assigns sequential virtio disk letters (vda, vdb, …).
+// diskAllocator assigns sequential virtio disk letters starting after any
+// disks reserved by the VM implementation (see vm.Manager.ReservedDisks).
 // A single instance is shared across rootfs and volume disk allocation so
 // that all disks within a container get unique, collision-free letters.
-type diskAllocator struct{ next byte }
+type diskAllocator struct {
+	start byte // first letter available for container disks
+	next  byte // next letter to assign
+}
 
-func newDiskAllocator() diskAllocator { return diskAllocator{next: 'a'} }
+// newDiskAllocator returns a diskAllocator whose first letter is
+// 'a'+reserved, skipping the virtio-block devices the VM implementation
+// pre-attaches before any container disks.
+func newDiskAllocator(reserved int) diskAllocator {
+	first := byte('a') + byte(reserved)
+	return diskAllocator{start: first, next: first}
+}
 
 func (d *diskAllocator) Next() byte { c := d.next; d.next++; return c }
 
-// count returns the total number of disks allocated so far.
-func (d *diskAllocator) count() int { return int(d.next - 'a') }
+// count returns the number of container disks allocated so far.
+func (d *diskAllocator) count() int { return int(d.next - d.start) }
 
 type diskOptions struct {
 	name     string
@@ -351,7 +362,7 @@ func (bm *bindMounter) FromBundle(ctx context.Context, b *bundle.Bundle) error {
 
 		hash := sha256.Sum256([]byte(m.Destination))
 		tag := fmt.Sprintf("bind-%x", hash[:8])
-		vmTarget := "/mnt/" + tag
+		vmTarget := "/run/mnt/" + tag
 
 		// For files, share the parent directory via virtiofs since virtiofs
 		// operates on directories. The spec source points to the file within
@@ -425,7 +436,7 @@ type blockMounter struct {
 
 // FromBundle iterates the OCI spec mounts and for each ext4 mount:
 //   - allocates a virtio-block disk letter via the shared diskAllocator
-//   - rewrites the spec source to /mnt/sdX (where vminitd will mount it)
+//   - rewrites the spec source to /run/mnt/sdX (where vminitd will mount it)
 //   - records a sandbox.WithDisk opt for the host image path
 //   - records a -blockmount init arg so vminitd mounts the device at startup
 func (bm *blockMounter) FromBundle(ctx context.Context, b *bundle.Bundle, id string, da *diskAllocator) error {
@@ -443,7 +454,7 @@ func (bm *blockMounter) FromBundle(ctx context.Context, b *bundle.Bundle, id str
 		}
 
 		device := fmt.Sprintf("/dev/vd%c", letter)
-		vmTarget := fmt.Sprintf("/mnt/sd%c", letter)
+		vmTarget := fmt.Sprintf("/run/mnt/sd%c", letter)
 
 		hostSrc := b.Spec.Mounts[i].Source
 		b.Spec.Mounts[i].Type = "bind"

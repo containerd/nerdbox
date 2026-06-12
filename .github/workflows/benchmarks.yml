@@ -106,7 +106,7 @@ jobs:
 
       - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
 
-      - name: Build remaining artifacts (initrd and shim)
+      - name: Build remaining artifacts (rootfs and shim)
         run: docker buildx bake host-binaries guest-binaries
 
       - name: Add _output to PATH

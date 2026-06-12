@@ -32,6 +32,12 @@ type Sandbox interface {
 	Stop(context.Context) error
 	Client() (*ttrpc.Client, error)
 	StartStream(context.Context, string) (net.Conn, error)
+
+	// ReservedDisks returns the number of virtio-block devices that the
+	// underlying VM implementation pre-attaches before any
+	// container-supplied disks. The disk allocator uses this value to
+	// start container disk letters after the reserved range.
+	ReservedDisks() int
 }
 
 type Filesystem struct {

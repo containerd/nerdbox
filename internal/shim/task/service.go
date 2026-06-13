@@ -29,6 +29,7 @@ import (
 
 	taskAPI "github.com/containerd/containerd/api/runtime/task/v3"
 	"github.com/containerd/containerd/api/types"
+	runcOptions "github.com/containerd/containerd/api/types/runc/options"
 	"github.com/containerd/containerd/v2/core/runtime"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	ptypes "github.com/containerd/containerd/v2/pkg/protobuf/types"
@@ -39,6 +40,7 @@ import (
 	"github.com/containerd/errdefs/pkg/errgrpc"
 	"github.com/containerd/log"
 	"github.com/containerd/ttrpc"
+	"github.com/containerd/typeurl/v2"
 
 	bundleAPI "github.com/containerd/nerdbox/api/services/bundle/v1"
 	mountAPI "github.com/containerd/nerdbox/api/services/mount/v1"
@@ -52,6 +54,69 @@ var (
 	_     = shim.TTRPCService(&service{})
 	empty = &ptypes.Empty{}
 )
+
+// guestRuncOptions constructs a fresh runc Options message containing only the
+// fields that are meaningful inside the VM guest, and returns it as a
+// marshalled Any suitable for forwarding to vminitd.
+//
+// The runc Options proto conflates two distinct concerns:
+//
+//   - Host-side shim configuration: ShimCgroup, IoUid, IoGid, BinaryName, Root,
+//     and TaskApiAddress. These reference host UID/GID values and host filesystem
+//     paths and have no meaning inside the VM.
+//
+//   - Guest-side container configuration: NoPivotRoot, NoNewKeyring.
+//     These affect how the OCI runtime inside the VM sets up the container
+//     and are forwarded.
+//
+// Fields that are explicitly not forwarded, with a warning logged if set:
+//
+//   - SystemdCgroup: the VM has no systemd; the in-guest crun always uses the
+//     cgroupsv2 fs driver.
+//   - CriuImagePath / CriuWorkPath: host filesystem paths for checkpoint images;
+//     checkpoint/restore is coordinated at the VM level by the shim.
+//
+// A new Options message is always constructed rather than filtering the incoming
+// one, so that any unrecognised or future fields default to zero inside the guest.
+// If opts is nil or empty, an empty Options is returned (zero values).
+// If opts is not a runc Options message an error is returned; the shim knows the
+// guest runtime and passing through an opaque blob would be unsafe.
+func guestRuncOptions(ctx context.Context, opts *ptypes.Any) (*ptypes.Any, error) {
+	out := &runcOptions.Options{}
+
+	if opts.GetTypeUrl() != "" {
+		v, err := typeurl.UnmarshalAny(opts)
+		if err != nil {
+			return nil, fmt.Errorf("%w: failed to decode task options: %w", errdefs.ErrInvalidArgument, err)
+		}
+		src, ok := v.(*runcOptions.Options)
+		if !ok {
+			return nil, fmt.Errorf("%w: unsupported options type %T, guest runtime only supports runc options", errdefs.ErrInvalidArgument, v)
+		}
+
+		// Allow-listed fields that are meaningful inside the VM.
+		out.NoPivotRoot = src.NoPivotRoot
+		out.NoNewKeyring = src.NoNewKeyring
+
+		// Warn about fields that were set but will not be forwarded, so the
+		// caller knows the guest will not honour them.
+		if src.SystemdCgroup {
+			log.G(ctx).Warn("task options: SystemdCgroup ignored — the VM guest has no systemd; crun uses the cgroupsv2 fs driver")
+		}
+		if src.CriuImagePath != "" {
+			log.G(ctx).WithField("criu_image_path", src.CriuImagePath).Warn("task options: CriuImagePath ignored — checkpoint/restore is coordinated at the VM level")
+		}
+		if src.CriuWorkPath != "" {
+			log.G(ctx).WithField("criu_work_path", src.CriuWorkPath).Warn("task options: CriuWorkPath ignored — checkpoint/restore is coordinated at the VM level")
+		}
+	}
+
+	a, err := typeurl.MarshalAny(out)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal guest runc options: %w", err)
+	}
+	return typeurl.MarshalProto(a), nil
+}
 
 // NewTaskService creates a new instance of a task service
 func NewTaskService(ctx context.Context, sb sandbox.Sandbox, publisher shim.Publisher, sd shutdown.Service) (taskAPI.TTRPCTaskService, error) {
@@ -409,6 +474,14 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		execShutdowns: make(map[string]func(context.Context) error),
 	}
 
+	guestOpts, err := guestRuncOptions(ctx, r.Options)
+	if err != nil {
+		if err := ioShutdown(ctx); err != nil {
+			log.G(ctx).WithError(err).Error("failed to shutdown io after options error")
+		}
+		return nil, errgrpc.ToGRPC(fmt.Errorf("invalid task options: %w", err))
+	}
+
 	tc := taskAPI.NewTTRPCTaskClient(vmc)
 	resp, err := tc.Create(ctx, &taskAPI.CreateTaskRequest{
 		ID:       r.ID,
@@ -418,7 +491,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		Stdin:    cio.Stdin,
 		Stdout:   cio.Stdout,
 		Stderr:   cio.Stderr,
-		Options:  r.Options,
+		Options:  guestOpts,
 	})
 	if err != nil {
 		log.G(ctx).WithError(err).Error("failed to create task")

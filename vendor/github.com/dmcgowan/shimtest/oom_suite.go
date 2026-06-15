@@ -89,5 +89,5 @@ func (s *OOMSuite) testOOM(t *testing.T) {
 	}
 
 	tc.Delete(ctx, &taskAPI.DeleteRequest{ID: containerID})
-	tc.Shutdown(ctx, &taskAPI.ShutdownRequest{ID: containerID})
+	shutdownTask(ctx, tc, containerID)
 }

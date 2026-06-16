@@ -47,8 +47,8 @@ github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSs
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
-github.com/dmcgowan/shimtest v0.1.7 h1:+2+lcbK4/XkKEx7NIh/e8RwR+hCZHHBQZxd9s1zgWbw=
-github.com/dmcgowan/shimtest v0.1.7/go.mod h1:vV3SFMMBAY8xLOp8bO2xL3hFwlzCZWhVGTgKfV0L1EE=
+github.com/dmcgowan/shimtest v0.1.8 h1:+HAqYd9EfClqrOHQ4vR3sTrW2DGpgb/vqdlUS7QRkZc=
+github.com/dmcgowan/shimtest v0.1.8/go.mod h1:vV3SFMMBAY8xLOp8bO2xL3hFwlzCZWhVGTgKfV0L1EE=
 github.com/docker/go-events v0.0.0-20190806004212-e31b211e4f1c h1:+pKlWGMw7gf6bQ+oDZB4KHQFypsfjYlq/C4rfL7D3g8=
 github.com/docker/go-events v0.0.0-20190806004212-e31b211e4f1c/go.mod h1:Uw6UezgYA44ePAFQYUehOuCzmy5zmg/+nl2ZfMWGkpA=
 github.com/docker/go-units v0.5.0 h1:69rxXcBk27SvSaaxTtLh/8llcHD8vYHT7WSdRZ/jvr4=

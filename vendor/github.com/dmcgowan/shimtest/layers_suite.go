@@ -221,5 +221,5 @@ func (s *LayersSuite) testHundredLayers(t *testing.T) {
 	tc.Kill(ctx, &taskAPI.KillRequest{ID: cid, Signal: uint32(syscall.SIGKILL), All: true})
 	tc.Wait(ctx, &taskAPI.WaitRequest{ID: cid})
 	tc.Delete(ctx, &taskAPI.DeleteRequest{ID: cid})
-	tc.Shutdown(ctx, &taskAPI.ShutdownRequest{ID: cid})
+	shutdownTask(ctx, tc, cid)
 }

@@ -48,13 +48,14 @@ func dialShimConn(address string, _ time.Duration) (net.Conn, error) {
 
 // containerdSockPath returns the unix socket path the shim dials as
 // its containerd events endpoint. On macOS, AF_UNIX paths are limited
-// to 104 bytes, so a short /tmp path is used when the bundle is too
-// deep. The result is cached per bundleDir so all callers within a
-// single test get the same path.
+// to 104 bytes total for sun_path (including the null terminator), so
+// the usable path length is at most 103 bytes. A short /tmp path is
+// used when the bundle dir is too deep. The result is cached per
+// bundleDir so all callers within a single test get the same path.
 func containerdSockPath(tb testing.TB, bundleDir string) string {
 	tb.Helper()
 	candidate := filepath.Join(bundleDir, "c.sock")
-	if len(candidate) <= 104 {
+	if len(candidate) < 104 {
 		return candidate
 	}
 	if v, ok := shortSocketPaths.Load(bundleDir); ok {

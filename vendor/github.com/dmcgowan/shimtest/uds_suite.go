@@ -59,7 +59,7 @@ func (s *UDSSuite) testRoundTrip(t *testing.T) {
 	shimBin, bundleDir, rootfsMounts := shimSetup(t, s.cfg)
 	containerID := containerID(t)
 
-	hostSockDir, err := os.MkdirTemp("", "nb-uds-")
+	hostSockDir, err := os.MkdirTemp(unixSafeDir(), "nb-uds-")
 	if err != nil {
 		t.Fatal("create uds dir:", err)
 	}
@@ -167,5 +167,5 @@ func (s *UDSSuite) testRoundTrip(t *testing.T) {
 	tc.Kill(ctx, &taskAPI.KillRequest{ID: containerID, Signal: uint32(syscall.SIGKILL), All: true})
 	tc.Wait(ctx, &taskAPI.WaitRequest{ID: containerID})
 	tc.Delete(ctx, &taskAPI.DeleteRequest{ID: containerID})
-	tc.Shutdown(ctx, &taskAPI.ShutdownRequest{ID: containerID})
+	shutdownTask(ctx, tc, containerID)
 }

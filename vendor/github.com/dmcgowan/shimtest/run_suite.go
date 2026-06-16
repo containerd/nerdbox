@@ -151,9 +151,7 @@ func (s *RunSuite) testLifecycle(t *testing.T) {
 	t.Log("task deleted, pid:", deleteResp.Pid, "exit status:", deleteResp.ExitStatus)
 
 	t.Log("shutting down shim")
-	if _, err := tc.Shutdown(ctx, &taskAPI.ShutdownRequest{ID: containerID}); err != nil {
-		t.Log("shutdown returned:", err)
-	}
+	shutdownTask(ctx, tc, containerID)
 }
 
 // testInitExitCodes runs /bin/exit N as the container's init for a
@@ -196,7 +194,7 @@ func (s *RunSuite) testInitExitCodes(t *testing.T) {
 			}
 
 			tc.Delete(ctx, &taskAPI.DeleteRequest{ID: cid})
-			tc.Shutdown(ctx, &taskAPI.ShutdownRequest{ID: cid})
+			shutdownTask(ctx, tc, cid)
 		})
 	}
 }
@@ -277,7 +275,7 @@ func (s *RunSuite) testOutputThenExit(t *testing.T) {
 	}
 
 	tc.Delete(ctx, &taskAPI.DeleteRequest{ID: containerID})
-	tc.Shutdown(ctx, &taskAPI.ShutdownRequest{ID: containerID})
+	shutdownTask(ctx, tc, containerID)
 }
 
 // testEvents verifies that the shim publishes the expected task
@@ -336,7 +334,7 @@ func (s *RunSuite) testEvents(t *testing.T) {
 		}
 	}
 
-	tc.Shutdown(ctx, &taskAPI.ShutdownRequest{ID: containerID})
+	shutdownTask(ctx, tc, containerID)
 
 	got := rec.topics()
 	t.Log("received topics:", got)

@@ -148,7 +148,7 @@ func (s *ExecSuite) testExec(t *testing.T) {
 	tc.Kill(ctx, &taskAPI.KillRequest{ID: containerID, Signal: uint32(syscall.SIGKILL), All: true})
 	tc.Wait(ctx, &taskAPI.WaitRequest{ID: containerID})
 	tc.Delete(ctx, &taskAPI.DeleteRequest{ID: containerID})
-	tc.Shutdown(ctx, &taskAPI.ShutdownRequest{ID: containerID})
+	shutdownTask(ctx, tc, containerID)
 }
 
 // TestStdioRoundTrip writes a token to stdin of an exec'd `cat` and
@@ -246,7 +246,7 @@ func (s *ExecSuite) testStdioRoundTrip(t *testing.T) {
 	tc.Kill(ctx, &taskAPI.KillRequest{ID: containerID, Signal: uint32(syscall.SIGKILL), All: true})
 	tc.Wait(ctx, &taskAPI.WaitRequest{ID: containerID})
 	tc.Delete(ctx, &taskAPI.DeleteRequest{ID: containerID})
-	tc.Shutdown(ctx, &taskAPI.ShutdownRequest{ID: containerID})
+	shutdownTask(ctx, tc, containerID)
 }
 
 // TestClock verifies the in-container clock matches the host's
@@ -349,7 +349,7 @@ func (s *ExecSuite) testClock(t *testing.T) {
 	tc.Kill(ctx, &taskAPI.KillRequest{ID: containerID, Signal: uint32(syscall.SIGKILL), All: true})
 	tc.Wait(ctx, &taskAPI.WaitRequest{ID: containerID})
 	tc.Delete(ctx, &taskAPI.DeleteRequest{ID: containerID})
-	tc.Shutdown(ctx, &taskAPI.ShutdownRequest{ID: containerID})
+	shutdownTask(ctx, tc, containerID)
 }
 
 // TestExitCodes runs /bin/exit N inside a container via exec for a
@@ -426,7 +426,7 @@ func (s *ExecSuite) testExitCodes(t *testing.T) {
 	tc.Kill(ctx, &taskAPI.KillRequest{ID: containerID, Signal: uint32(syscall.SIGKILL), All: true})
 	tc.Wait(ctx, &taskAPI.WaitRequest{ID: containerID})
 	tc.Delete(ctx, &taskAPI.DeleteRequest{ID: containerID})
-	tc.Shutdown(ctx, &taskAPI.ShutdownRequest{ID: containerID})
+	shutdownTask(ctx, tc, containerID)
 }
 
 // TestLargeFileRead reads /data/bigfile (a 64 MiB fixture from the
@@ -556,7 +556,7 @@ func (s *ExecSuite) runHashverify(t *testing.T, path, hashHex string, extraMount
 	tc.Kill(ctx, &taskAPI.KillRequest{ID: cid, Signal: uint32(syscall.SIGKILL), All: true})
 	tc.Wait(ctx, &taskAPI.WaitRequest{ID: cid})
 	tc.Delete(ctx, &taskAPI.DeleteRequest{ID: cid})
-	tc.Shutdown(ctx, &taskAPI.ShutdownRequest{ID: cid})
+	shutdownTask(ctx, tc, cid)
 }
 
 

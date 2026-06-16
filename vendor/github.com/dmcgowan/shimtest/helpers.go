@@ -266,8 +266,6 @@ func shimSetup(tb testing.TB, cfg Config) (shimBin, bundleDir string, rootfsMoun
 // in connect_unix.go / connect_windows.go.
 var shortSocketPaths sync.Map
 
-
-
 // newCreateTaskRequest builds a CreateTaskRequest with runc Options.
 // SystemdCgroup is forced off so root and rootless runs both use the
 // cgroupfs manager — otherwise root on systemd hosts pays tens of ms
@@ -366,7 +364,7 @@ func parseBootstrapResult(data []byte, params *bootstrapParams) error {
 func startShim(tb testing.TB, shimBin, bundleDir, id, ns string, cfg Config) bootstrapParams {
 	tb.Helper()
 
-	socketDir, err := os.MkdirTemp("", "nb-")
+	socketDir, err := os.MkdirTemp(unixSafeDir(), "nb-")
 	if err != nil {
 		tb.Fatal("failed to create socket dir:", err)
 	}
@@ -409,7 +407,12 @@ func startShim(tb testing.TB, shimBin, bundleDir, id, ns string, cfg Config) boo
 	}
 	tb.Cleanup(func() {
 		logReader.Close()
-		<-done
+		// Cap the wait: if the shim holds its log pipe open (e.g. nerdbox
+		// doesn't exit cleanly after Shutdown), don't block indefinitely.
+		select {
+		case <-done:
+		case <-time.After(shutdownTimeout):
+		}
 	})
 
 	containerdAddr := containerdSockPath(tb, bundleDir)
@@ -549,6 +552,46 @@ func shimPidViaConnect(address, id string, retryFor time.Duration) (int, error) 
 	}
 }
 
+// unixSafeDir returns a base directory for os.MkdirTemp that keeps the
+// resulting unix socket paths within the 104-byte AF_UNIX pathname limit
+// on macOS. The shim creates its socket at:
+//
+//	<socketDir>/<sha256hex>
+//
+// where socketDir is the result of os.MkdirTemp(base, "nb-") — roughly
+// len(base) + 14 bytes ("/nb-" + up to 10 random digits). sha256hex is
+// always 64 bytes, so the maximum safe length for base is:
+//
+//	104 (AF_UNIX limit) - 64 (sha256hex) - 14 (dir overhead) = 26 bytes
+//
+// If os.TempDir() exceeds that threshold, fall back to /tmp, which is
+// always short enough. On Windows /tmp does not exist, so os.TempDir()
+// is always used regardless of length.
+func unixSafeDir() string {
+	if runtime.GOOS == "windows" {
+		return os.TempDir()
+	}
+	const (
+		afUnixLimit   = 104 // macOS AF_UNIX pathname length limit
+		socketNameLen = 64  // sha256 hex digest
+		dirOverhead   = 14  // "/nb-" prefix + up to 10 random digits
+		maxBaseLen    = afUnixLimit - socketNameLen - dirOverhead // 26
+	)
+	if len(os.TempDir()) > maxBaseLen {
+		return "/tmp"
+	}
+	return os.TempDir()
+}
+
+// shutdownTask calls Shutdown on tc with a bounded shutdownTimeout derived
+// from ctx. Shims that exit without sending a ttrpc response will surface as
+// a context-deadline error rather than hanging the test indefinitely.
+func shutdownTask(ctx context.Context, tc taskAPI.TTRPCTaskService, id string) {
+	shutCtx, cancel := context.WithTimeout(ctx, shutdownTimeout)
+	defer cancel()
+	tc.Shutdown(shutCtx, &taskAPI.ShutdownRequest{ID: id})
+}
+
 // parseIntBytes parses a decimal integer from a byte slice.
 func parseIntBytes(b []byte) (int, error) {
 	s := strings.TrimSpace(string(b))
@@ -561,5 +604,3 @@ func parseIntBytes(b []byte) (int, error) {
 	}
 	return n, nil
 }
-
-

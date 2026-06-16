@@ -178,7 +178,9 @@ func doFullLifecycle(t *testing.T, baseCtx context.Context, cfg Config, ttrpcClo
 	if _, err := tc.Delete(ctx, &taskAPI.DeleteRequest{ID: cid}); err != nil {
 		return fmt.Errorf("delete: %w", err)
 	}
-	if _, err := tc.Shutdown(ctx, &taskAPI.ShutdownRequest{ID: cid}); err != nil {
+	shutCtx, cancel := context.WithTimeout(ctx, shutdownTimeout)
+	defer cancel()
+	if _, err := tc.Shutdown(shutCtx, &taskAPI.ShutdownRequest{ID: cid}); err != nil {
 		if strings.Contains(err.Error(), "ttrpc: closed") {
 			ttrpcClosedOnShutdown.Add(1)
 		} else {
@@ -530,12 +532,12 @@ func readGuestMem(ctx context.Context, env *shimEnv, execID string) (int64, erro
 // The runc shim has negligible overhead per exec; 5 s is already very
 // generous and reliably catches hangs.
 //
-// # Windows (15 s)
+// # Windows and macOS (15 s)
 //
 // Each Transfer iteration opens a fresh TTRPC bidi stream, which the
-// shim bridges to the VM via krun's vsock muxer.  Under concurrent load
-// (3 goroutines × ~200 iterations/s) the vsock muxer occasionally queues
-// up, causing the ack handshake in vmInstance.StartStream to stall.
+// shim bridges to the VM via a vsock muxer. Under concurrent load
+// (3 goroutines × ~200 iterations/s) the muxer occasionally queues up,
+// causing the ack handshake in vmInstance.StartStream to stall.
 // The observed stalls that triggered false-failures ranged from 5–30 s.
 //
 // 15 s is chosen as the new threshold:
@@ -546,7 +548,7 @@ func readGuestMem(ctx context.Context, env *shimEnv, execID string) (int64, erro
 //   - A genuinely wedged shim (infinite hang) is still detected; the
 //     outer stressCtx deadline terminates the run regardless.
 var stressIterationTimeout = func() time.Duration {
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
 		return 15 * time.Second
 	}
 	return 5 * time.Second
@@ -726,11 +728,12 @@ func stressFileContent(i int) string {
 // from the parent so cancellation of the parent does not propagate
 // into an in-flight iteration.
 //
-// Transient timeout handling (Windows): VM scheduling on Windows can
-// cause individual operations to stall beyond stressIterationTimeout
-// without indicating a real shim bug. We treat context.DeadlineExceeded
-// from fn as a recoverable miss on Windows and keep running. On Linux
-// (no VM overhead) such stalls are genuine and still fail the test.
+// Transient timeout handling (Windows, macOS): VM scheduling on Windows
+// (krun) and macOS (HVF) can cause individual operations to stall beyond
+// stressIterationTimeout without indicating a real shim bug. We treat
+// context.DeadlineExceeded from fn as a recoverable miss on those
+// platforms and keep running. On Linux (no VM overhead) such stalls are
+// genuine and still fail the test.
 //
 // Deadline-race: when the outer ctx fires, the last fn call may still
 // be in flight. If fn then returns an error after the outer context was
@@ -750,10 +753,10 @@ func runStress(ctx context.Context, fn func(ctx context.Context) error) (int64, 
 			if ctx.Err() != nil {
 				break
 			}
-			// On Windows, individual context.DeadlineExceeded errors are
-			// caused by hypervisor scheduling stalls, not shim bugs.
-			// Skip the iteration rather than failing the test.
-			if runtime.GOOS == "windows" && errors.Is(err, context.DeadlineExceeded) {
+			// On Windows and macOS, individual context.DeadlineExceeded
+			// errors are caused by hypervisor scheduling stalls, not shim
+			// bugs. Skip the iteration rather than failing the test.
+			if (runtime.GOOS == "windows" || runtime.GOOS == "darwin") && errors.Is(err, context.DeadlineExceeded) {
 				continue
 			}
 			return iters, time.Since(start), err

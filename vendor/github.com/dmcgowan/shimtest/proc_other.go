@@ -19,17 +19,26 @@
 package shimtest
 
 import (
-	"errors"
+	"fmt"
+	"os/exec"
 	"runtime"
+	"strconv"
+	"strings"
 	"testing"
 )
 
-// readRSS is unimplemented on non-Linux platforms. The Linux version
-// reads /proc/<pid>/status; macOS would use task_info(), Windows would
-// use GetProcessMemoryInfo. Callers handle the error by skipping RSS
-// monitoring (StressSuite.testExec calls t.Skipf).
+// readRSS returns the Resident Set Size of pid in bytes.
+// Uses ps(1) which is available on macOS and most non-Linux Unixes.
 func readRSS(pid int) (int64, error) {
-	return 0, errors.New("readRSS is not implemented on " + runtime.GOOS)
+	out, err := exec.Command("ps", "-o", "rss=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return 0, fmt.Errorf("ps rss for pid %d: %w", pid, err)
+	}
+	kb, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse rss for pid %d: %w", pid, err)
+	}
+	return kb * 1024, nil
 }
 
 // shimCmdlineInfo is unimplemented on non-Linux platforms. Returns an

@@ -20,8 +20,11 @@ package task
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"net"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -90,14 +93,14 @@ func copyStreams(ctx context.Context, streams [3]io.ReadWriteCloser, stdin, stdo
 		}
 
 		var (
-			fw io.WriteCloser
+			fw  io.WriteCloser
 			err error
 		)
 
 		// On Windows, check if the path is a named pipe (\\.\pipe\...).
 		// Otherwise, fall back to regular file I/O.
 		if isNamedPipe(i.name) {
-			fw, err = winio.DialPipe(i.name, &pipeDialTimeout)
+			fw, err = dialPipeWaiting(ctx, i.name)
 			if err != nil {
 				return fmt.Errorf("containerd-shim: connecting to named pipe %q failed: %w", i.name, err)
 			}
@@ -119,7 +122,7 @@ func copyStreams(ctx context.Context, streams [3]io.ReadWriteCloser, stdin, stdo
 	if stdin != "" {
 		var f io.ReadCloser
 		if isNamedPipe(stdin) {
-			conn, err := winio.DialPipe(stdin, &pipeDialTimeout)
+			conn, err := dialPipeWaiting(ctx, stdin)
 			if err != nil {
 				return fmt.Errorf("containerd-shim: connecting to named pipe %q for stdin failed: %w", stdin, err)
 			}
@@ -151,4 +154,43 @@ func isNamedPipe(path string) bool {
 	return len(path) > 9 && path[:9] == `\\.\pipe\`
 }
 
-var pipeDialTimeout = 5 * time.Second
+// dialPipeWaiting dials the named pipe at path, waiting for the pipe to be
+// created if it does not exist yet. winio.DialPipe already retries while the
+// pipe exists but all server instances are busy (ERROR_PIPE_BUSY); it fails
+// immediately if the pipe does not exist (ERROR_FILE_NOT_FOUND). For client-owned
+// process I/O, the consumer is the pipe server and may not have called ListenPipe
+// yet when the shim binds stdio, so we also poll through "not found" until
+// ctx is cancelled or pipeConnectTimeout elapses.
+func dialPipeWaiting(ctx context.Context, path string) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(ctx, pipeConnectTimeout)
+	defer cancel()
+	for {
+		// DialPipeContext honors ctx promptly — including while it retries a
+		// busy pipe (ERROR_PIPE_BUSY) — so a caller's cancellation or deadline
+		// is observed within winio's 10ms retry granularity rather than after a
+		// fixed per-dial timeout. It returns immediately when the pipe does not
+		// exist yet (ERROR_FILE_NOT_FOUND), which we treat as "not ready" and
+		// poll below.
+		conn, err := winio.DialPipeContext(ctx, path)
+		if err == nil {
+			return conn, nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(pipeNotFoundPoll):
+		}
+	}
+}
+
+// pipeConnectTimeout bounds the overall connect: waiting both for a busy pipe's
+// server instance to free up (ERROR_PIPE_BUSY) and for a not-yet-created pipe
+// server to come up (ERROR_FILE_NOT_FOUND).
+var pipeConnectTimeout = 30 * time.Second
+
+// pipeNotFoundPoll is the backoff between dial attempts while the pipe does
+// not yet exist.
+const pipeNotFoundPoll = 20 * time.Millisecond

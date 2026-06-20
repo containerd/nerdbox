@@ -269,7 +269,9 @@ func (p *Init) Delete(ctx context.Context) error {
 }
 
 func (p *Init) delete(ctx context.Context) error {
-	waitTimeout(ctx, &p.wg, 2*time.Second)
+	// Wait up to 30 seconds for the IO copy goroutines to drain. See
+	// execProcess.delete for the full rationale.
+	waitTimeout(ctx, &p.wg, 30*time.Second)
 	err := p.runtime.Delete(ctx, p.id, nil)
 	// ignore errors if a runtime has already deleted the process
 	// but we still hold metadata and pipes

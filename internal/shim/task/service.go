@@ -540,9 +540,15 @@ func (s *service) Exec(ctx context.Context, r *taskAPI.ExecProcessRequest) (*pty
 	}
 
 	s.mu.Lock()
-	if c, ok := s.containers[r.ID]; ok {
+	c, ok := s.containers[r.ID]
+	if ok && ioShutdown != nil {
 		c.execShutdowns[r.ExecID] = ioShutdown
-	} else {
+	}
+	s.mu.Unlock()
+
+	if !ok {
+		// The container is gone, so nothing is tracking this exec's IO.
+		// Shut it down here before sending back container not found.
 		if ioShutdown != nil {
 			if err := ioShutdown(ctx); err != nil {
 				log.G(ctx).WithError(err).Error("failed to shutdown exec io after container not found")
@@ -550,7 +556,6 @@ func (s *service) Exec(ctx context.Context, r *taskAPI.ExecProcessRequest) (*pty
 		}
 		return nil, errgrpc.ToGRPCf(errdefs.ErrNotFound, "container %q not found", r.ID)
 	}
-	s.mu.Unlock()
 
 	vr := &taskAPI.ExecProcessRequest{
 		ID:       r.ID,
@@ -563,16 +568,22 @@ func (s *service) Exec(ctx context.Context, r *taskAPI.ExecProcessRequest) (*pty
 	}
 	resp, err := taskAPI.NewTTRPCTaskClient(vmc).Exec(ctx, vr)
 	if err != nil {
+		// Take the tracked shutdown out under the lock, but run it after
+		// unlocking so a slow shutdown doesn't block other task operations.
 		s.mu.Lock()
+		var execShutdown func(context.Context) error
 		if c, ok := s.containers[r.ID]; ok {
-			if ioShutdown, ok := c.execShutdowns[r.ExecID]; ok {
-				if err := ioShutdown(ctx); err != nil {
-					log.G(ctx).WithError(err).Error("failed to shutdown exec io after exec failure")
-				}
+			if f, ok := c.execShutdowns[r.ExecID]; ok {
+				execShutdown = f
 				delete(c.execShutdowns, r.ExecID)
 			}
 		}
 		s.mu.Unlock()
+		if execShutdown != nil {
+			if err := execShutdown(ctx); err != nil {
+				log.G(ctx).WithError(err).Error("failed to shutdown exec io after exec failure")
+			}
+		}
 		return nil, err
 	}
 

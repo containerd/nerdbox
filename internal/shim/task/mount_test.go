@@ -242,6 +242,11 @@ func TestBindMountsProvider(t *testing.T) {
 			},
 		},
 		{
+			// A read-only *file* bind mount is backed by sharing its parent
+			// directory (virtio-fs operates on directories), so the share itself
+			// must stay writable — the parent holds unrelated writable siblings.
+			// The file keeps its read-only guarantee via the guest `ro` mount
+			// preserved in wantSpecSources. Hence readOnly/Readonly are false.
 			name: "single file bind mount read-only",
 			mounts: []specs.Mount{
 				{Type: "bind", Source: testfile, Destination: "/container/testfile", Options: []string{"bind", "ro"}},
@@ -251,7 +256,7 @@ func TestBindMountsProvider(t *testing.T) {
 					tag:      "bind-6dace5108a719565",
 					hostSrc:  tmpDir,
 					vmTarget: "/run/mnt/bind-6dace5108a719565",
-					readOnly: true,
+					readOnly: false,
 				},
 			},
 			wantSpecSources: []string{"/run/mnt/bind-6dace5108a719565/testfile.txt"},
@@ -259,7 +264,7 @@ func TestBindMountsProvider(t *testing.T) {
 				{Type: "virtiofs", Source: "bind-6dace5108a719565", Target: "/run/mnt/bind-6dace5108a719565"},
 			},
 			wantFS: []sandbox.Filesystem{
-				{Tag: "bind-6dace5108a719565", MountPath: tmpDir, Readonly: true},
+				{Tag: "bind-6dace5108a719565", MountPath: tmpDir, Readonly: false},
 			},
 		},
 		{

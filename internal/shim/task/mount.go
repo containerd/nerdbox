@@ -369,27 +369,35 @@ func (bm *bindMounter) FromBundle(ctx context.Context, b *bundle.Bundle) error {
 		// the mounted directory.
 		hostSrc := m.Source
 		specSrc := vmTarget
-		if !fi.IsDir() {
+		readOnly := false
+		if fi.IsDir() {
+			// Honor a read-only request from the OCI spec by marking the
+			// virtiofs share read-only at the host edge. The guest `ro`
+			// mount option preserved in the OCI spec acts as defense in
+			// depth. Match typical mount-option semantics: scan all options
+			// without short-circuiting so that later `rw` overrides an
+			// earlier `ro` (and vice-versa).
+			//
+			// Only directory mounts get host-edge read-only: a file mount
+			// shares its *parent* directory (see the else branch), which also
+			// holds unrelated writable files — the container's own runtime
+			// state and stdio fifos live there — so marking that whole share
+			// read-only would wrongly deny those writes and stall container
+			// start. A read-only file mount is still honored by the guest `ro`
+			// OCI mount preserved in the spec.
+			for _, opt := range m.Options {
+				switch opt {
+				case "ro":
+					readOnly = true
+				case "rw":
+					readOnly = false
+				}
+			}
+		} else {
 			hostSrc = filepath.Dir(m.Source)
 			// Use path.Join (not filepath.Join) because this path is used
 			// inside the Linux VM where forward slashes are required.
 			specSrc = path.Join(vmTarget, filepath.Base(m.Source))
-		}
-
-		// Honor a read-only request from the OCI spec by marking the
-		// virtiofs share read-only at the host edge. The guest `ro`
-		// mount option preserved in the OCI spec acts as defense in
-		// depth. Match typical mount-option semantics: scan all options
-		// without short-circuiting so that later `rw` overrides an
-		// earlier `ro` (and vice-versa).
-		readOnly := false
-		for _, opt := range m.Options {
-			switch opt {
-			case "ro":
-				readOnly = true
-			case "rw":
-				readOnly = false
-			}
 		}
 
 		transformed := bindMount{

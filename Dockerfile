@@ -263,7 +263,7 @@ FROM "${GOLANG_IMAGE}" AS dlv
 RUN go install github.com/go-delve/delve/cmd/dlv@latest
 
 FROM "${RUST_IMAGE}" AS libkrun-build
-ARG LIBKRUN_VERSION=v1.18.1
+ARG LIBKRUN_VERSION=v1.19.0
 # Pin to the commit that fixes get_extent_at binary search at extent
 # boundaries (merged into imago main as 1907e11b).  A [patch.crates-io]
 # git override substitutes by crate name regardless of version, so this

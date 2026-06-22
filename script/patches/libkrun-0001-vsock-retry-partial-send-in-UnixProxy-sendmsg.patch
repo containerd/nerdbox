@@ -1,0 +1,79 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Derek McGowan <derek@mcg.dev>
+Date: Fri, 20 Jun 2026 00:00:00 +0000
+Subject: [PATCH] vsock: retry partial send in UnixProxy::sendmsg
+
+send(2) on a blocking SOCK_STREAM unix socket can return fewer bytes
+than requested when interrupted by a signal (EINTR) or on a short
+write. UnixProxy::sendmsg was treating the returned byte count as
+authoritative and discarding the unwritten tail, causing silent stdout
+truncation when the VM-side goroutine produced large amounts of output
+right before the connection was closed.
+
+Fix by looping until the full buffer has been sent, advancing the
+buffer slice on each iteration. EINTR is absorbed and retried; all
+other errors break the loop and are reported as before. An Ok(0)
+return (connection closed mid-send) breaks with ECONNRESET to avoid
+an infinite spin.
+
+Signed-off-by: Derek McGowan <derek@mcg.dev>
+---
+ src/devices/src/virtio/vsock/unix.rs | 35 ++++++++++++++++++++--------
+ 1 file changed, 25 insertions(+), 10 deletions(-)
+
+diff --git a/src/devices/src/virtio/vsock/unix.rs b/src/devices/src/virtio/vsock/unix.rs
+index 1111111..2222222 100644
+--- a/src/devices/src/virtio/vsock/unix.rs
++++ b/src/devices/src/virtio/vsock/unix.rs
+@@ -397,23 +397,35 @@ impl Proxy for UnixProxy {
+             #[cfg(target_os = "linux")]
+             let flags = MsgFlags::MSG_NOSIGNAL;
+
+-            match send(self.fd.as_raw_fd(), buf, flags) {
+-                Ok(sent) => {
+-                    if sent != buf.len() {
+-                        error!("couldn't set everything: buf={}, sent={}", buf.len(), sent);
++            // Loop to handle partial writes and EINTR. send(2) on a
++            // blocking SOCK_STREAM socket may return fewer bytes than
++            // requested; silently discarding the remainder truncates
++            // the stream. EINTR is retried transparently.
++            let mut remaining = buf;
++            let mut total: i32 = 0;
++            let ret = loop {
++                match send(self.fd.as_raw_fd(), remaining, flags) {
++                    Ok(0) => break -libc::ECONNRESET,
++                    Ok(n) => {
++                        total += n as i32;
++                        remaining = &remaining[n..];
++                        if remaining.is_empty() {
++                            break total;
++                        }
++                    }
++                    Err(nix::errno::Errno::EINTR) => continue,
++                    Err(err) => {
++                        #[cfg(target_os = "macos")]
++                        break -linux_errno_raw(err as i32);
++                        #[cfg(target_os = "linux")]
++                        break -(err as i32);
+                     }
+-                    self.tx_cnt += Wrapping(sent as u32);
+-                    sent as i32
+-                }
+-                Err(err) => {
+-                    #[cfg(target_os = "macos")]
+-                    let errno = -linux_errno_raw(err as i32);
+-
+-                    #[cfg(target_os = "linux")]
+-                    let errno = -(err as i32);
+-                    errno
+                 }
++            };
++            if ret > 0 {
++                self.tx_cnt += Wrapping(ret as u32);
+             }
++            ret
+         } else {
+             -libc::EINVAL
+         };
+--
+2.39.0

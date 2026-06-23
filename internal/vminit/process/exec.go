@@ -105,7 +105,14 @@ func (e *execProcess) Delete(ctx context.Context) error {
 }
 
 func (e *execProcess) delete(ctx context.Context) error {
-	waitTimeout(ctx, &e.wg, 2*time.Second)
+	// Wait up to 30 seconds for the IO copy goroutines to finish draining
+	// buffered output through the vsock before closing the streams. The
+	// previous 2-second limit was too short: the process may exit while
+	// the copy goroutine still has data buffered in the vsock send queue,
+	// and closing the stream before that data is transmitted truncates the
+	// output observed by the host. 30 seconds matches the host-side
+	// ioShutdown drain timeout.
+	waitTimeout(ctx, &e.wg, 30*time.Second)
 	if e.io != nil {
 		for _, c := range e.closers {
 			c.Close()

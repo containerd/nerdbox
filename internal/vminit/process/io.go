@@ -65,15 +65,26 @@ type processIO struct {
 }
 
 func (p *processIO) Close() error {
+	var result []error
 	if p.io != nil {
-		return p.io.Close()
-	}
-	for i, s := range p.streams {
-		if s != nil && (i != 2 || s != p.streams[1]) {
-			s.Close()
+		if err := p.io.Close(); err != nil {
+			result = append(result, err)
 		}
 	}
-	return nil
+
+	// Close the stream connections here so EOF is propagated immediately.
+	// On the normal exit path, the copyPipes goroutines close the streams themselves
+	// once the runc pipes EOF, but if the exec process fails to start, copyPipes is
+	// never reached and this Close is the only cleanup. Streams already closed by
+	// copyPipes return ErrClosed which callers ignore.
+	for i, s := range p.streams {
+		if s != nil && (i != 2 || s != p.streams[1]) {
+			if err := s.Close(); err != nil {
+				result = append(result, err)
+			}
+		}
+	}
+	return errors.Join(result...)
 }
 
 func (p *processIO) IO() runc.IO {

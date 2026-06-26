@@ -84,11 +84,26 @@ func NewTaskService(ctx context.Context, sb sandbox.Sandbox, publisher shim.Publ
 
 type container struct {
 	ioShutdown func(context.Context) error
+	// ioDone is closed when the host-side copy goroutines for the init
+	// process have fully drained output to the destination FIFO.
+	ioDone <-chan struct{}
+	// stdinEOF, when non-nil, signals the host stdin goroutine to stop
+	// reading the FIFO and send OP_SHUTDOWN(SEND) in-order on the stdin
+	// stream. Called by CloseIO instead of forwarding the RPC out-of-band,
+	// guaranteeing the EOF arrives after all in-flight stdin bytes.
+	stdinEOF func() error
 
 	// forwarder is the UNIX socket forwarder for this specific container.
 	forwarder *socketForwarder
 
 	execShutdowns map[string]func(context.Context) error
+	// execIODone holds the ioDone channel for each exec's host-side copy
+	// goroutines. The host Wait handler blocks on this before returning so
+	// that all output bytes are guaranteed to be in the destination FIFO
+	// before the caller can issue Delete.
+	execIODone map[string]<-chan struct{}
+	// execStdinEOF holds the in-band stdin EOF sender per exec ID.
+	execStdinEOF map[string]func() error
 }
 
 // shutdown shuts down the container's IO streams, socket forwarding, and all
@@ -384,7 +399,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		Terminal: r.Terminal,
 	}
 
-	cio, ioShutdown, err := s.forwardIO(ctx, s.sb, r.ID, rio)
+	cio, ioShutdown, initIODone, initStdinEOF, err := s.forwardIO(ctx, s.sb, r.ID, rio)
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
@@ -406,7 +421,11 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	preCreate := time.Now()
 	c := &container{
 		ioShutdown:    ioShutdown,
+		ioDone:        initIODone,
+		stdinEOF:      initStdinEOF,
 		execShutdowns: make(map[string]func(context.Context) error),
+		execIODone:    make(map[string]<-chan struct{}),
+		execStdinEOF:  make(map[string]func() error),
 	}
 
 	tc := taskAPI.NewTTRPCTaskClient(vmc)
@@ -505,6 +524,8 @@ func (s *service) Delete(ctx context.Context, r *taskAPI.DeleteRequest) (*taskAP
 						log.G(ctx).WithError(err).WithField("exec", r.ExecID).Error("failed to shutdown exec io after delete")
 					}
 					delete(c.execShutdowns, r.ExecID)
+					delete(c.execIODone, r.ExecID)
+					delete(c.execStdinEOF, r.ExecID)
 				}
 			} else {
 				if err := c.shutdown(ctx); err != nil {
@@ -534,7 +555,7 @@ func (s *service) Exec(ctx context.Context, r *taskAPI.ExecProcessRequest) (*pty
 		Terminal: r.Terminal,
 	}
 
-	cio, ioShutdown, err := s.forwardIO(ctx, s.sb, r.ID+"-"+r.ExecID, rio)
+	cio, ioShutdown, ioDone, stdinEOF, err := s.forwardIO(ctx, s.sb, r.ID+"-"+r.ExecID, rio)
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
@@ -543,6 +564,12 @@ func (s *service) Exec(ctx context.Context, r *taskAPI.ExecProcessRequest) (*pty
 	c, ok := s.containers[r.ID]
 	if ok && ioShutdown != nil {
 		c.execShutdowns[r.ExecID] = ioShutdown
+		if ioDone != nil {
+			c.execIODone[r.ExecID] = ioDone
+		}
+		if stdinEOF != nil {
+			c.execStdinEOF[r.ExecID] = stdinEOF
+		}
 	}
 	s.mu.Unlock()
 
@@ -665,6 +692,35 @@ func (s *service) Pids(ctx context.Context, r *taskAPI.PidsRequest) (*taskAPI.Pi
 // CloseIO of a process
 func (s *service) CloseIO(ctx context.Context, r *taskAPI.CloseIORequest) (*ptypes.Empty, error) {
 	log.G(ctx).WithFields(log.Fields{"id": r.ID, "exec": r.ExecID, "stdin": r.Stdin}).Info("close io")
+	if r.Stdin {
+		// Deliver stdin EOF in-band on the stream connection rather than
+		// forwarding the RPC out-of-band. The in-band CloseWrite sends
+		// OP_SHUTDOWN(SEND) ordered after all data already written to the
+		// stream, preventing truncation caused by an out-of-band RPC on a
+		// separate vsock connection racing in-flight stdin bytes.
+		s.mu.Lock()
+		var stdinEOF func() error
+		if c, ok := s.containers[r.ID]; ok {
+			if r.ExecID != "" {
+				stdinEOF = c.execStdinEOF[r.ExecID]
+			} else {
+				stdinEOF = c.stdinEOF
+			}
+		}
+		s.mu.Unlock()
+
+		if stdinEOF != nil {
+			if err := stdinEOF(); err != nil {
+				log.G(ctx).WithError(err).WithFields(log.Fields{
+					"id":   r.ID,
+					"exec": r.ExecID,
+				}).Error("failed to send stdin EOF")
+				return nil, errgrpc.ToGRPC(err)
+			}
+			return empty, nil
+		}
+	}
+	// Non-stdin CloseIO or no stream registered: forward to the guest.
 	vmc, err := s.sb.Client()
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
@@ -707,7 +763,46 @@ func (s *service) Wait(ctx context.Context, r *taskAPI.WaitRequest) (*taskAPI.Wa
 		return nil, errgrpc.ToGRPC(err)
 	}
 	tc := taskAPI.NewTTRPCTaskClient(vmc)
-	return tc.Wait(ctx, r)
+	resp, err := tc.Wait(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	// Block until the host-side copy goroutines have fully drained output
+	// to the destination FIFO before returning the exit status to the
+	// caller. This guarantees that by the time the caller sees the Wait
+	// response, all process output is in the FIFO — so a subsequent
+	// Delete cannot race with in-flight bytes still buffered in the
+	// VM→host vsock transport.
+	//
+	// This mirrors the guarantee runc shims provide natively: with runc
+	// the process output pipe is local, so EOF on the FIFO is synchronous
+	// with process exit. With nerdbox the output travels through a
+	// vsock→Unix socket bridge, introducing a transport lag that the
+	// Wait response must account for.
+	s.mu.Lock()
+	var ioDone <-chan struct{}
+	if c, ok := s.containers[r.ID]; ok {
+		if r.ExecID != "" {
+			ioDone = c.execIODone[r.ExecID]
+		} else {
+			ioDone = c.ioDone
+		}
+	}
+	s.mu.Unlock()
+
+	if ioDone != nil {
+		drainCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		select {
+		case <-ioDone:
+		case <-drainCtx.Done():
+			log.G(ctx).WithError(drainCtx.Err()).WithFields(log.Fields{
+				"id":   r.ID,
+				"exec": r.ExecID,
+			}).Warn("timed out waiting for IO drain after wait")
+		}
+	}
+	return resp, nil
 }
 
 // Connect returns shim information such as the shim's pid

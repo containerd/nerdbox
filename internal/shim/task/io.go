@@ -46,14 +46,14 @@ func generateStreamID(prefix string) string {
 	return fmt.Sprintf("%s-%d-%s", prefix, time.Now().UnixNano(), base64.RawURLEncoding.EncodeToString(b[:]))
 }
 
-func (s *service) forwardIO(ctx context.Context, ss streamCreator, idPrefix string, sio stdio.Stdio) (stdio.Stdio, func(ctx context.Context) error, error) {
+func (s *service) forwardIO(ctx context.Context, ss streamCreator, idPrefix string, sio stdio.Stdio) (stdio.Stdio, func(ctx context.Context) error, <-chan struct{}, func() error, error) {
 	pio := sio
 	if pio.IsNull() {
-		return pio, nil, nil
+		return pio, nil, nil, nil, nil
 	}
 	u, err := url.Parse(pio.Stdout)
 	if err != nil {
-		return stdio.Stdio{}, nil, fmt.Errorf("unable to parse stdout uri: %w", err)
+		return stdio.Stdio{}, nil, nil, nil, fmt.Errorf("unable to parse stdout uri: %w", err)
 	}
 	if u.Scheme == "" {
 		u.Scheme = defaultScheme
@@ -62,37 +62,37 @@ func (s *service) forwardIO(ctx context.Context, ss streamCreator, idPrefix stri
 	switch u.Scheme {
 	case "stream":
 		// Pass through
-		return pio, nil, nil
+		return pio, nil, nil, nil, nil
 	case "fifo", "pipe":
 		pio, streams, err = createStreams(ctx, ss, idPrefix, pio)
 		if err != nil {
-			return stdio.Stdio{}, nil, err
+			return stdio.Stdio{}, nil, nil, nil, err
 		}
 
 		//pio.io, err = runc.NewPipeIO(ioUID, ioGID, withConditionalIO(stdio))
 	case "file":
 		filePath := u.Path
 		if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
-			return stdio.Stdio{}, nil, err
+			return stdio.Stdio{}, nil, nil, nil, err
 		}
 		var f *os.File
 		f, err = os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
-			return stdio.Stdio{}, nil, err
+			return stdio.Stdio{}, nil, nil, nil, err
 		}
 		f.Close()
 		pio.Stdout = filePath
 		pio.Stderr = filePath
 		pio, streams, err = createStreams(ctx, ss, idPrefix, pio)
 		if err != nil {
-			return stdio.Stdio{}, nil, err
+			return stdio.Stdio{}, nil, nil, nil, err
 		}
 	default:
 		// TODO: Support "binary"
-		return stdio.Stdio{}, nil, fmt.Errorf("unsupported STDIO scheme %s: %w", u.Scheme, errdefs.ErrNotImplemented)
+		return stdio.Stdio{}, nil, nil, nil, fmt.Errorf("unsupported STDIO scheme %s: %w", u.Scheme, errdefs.ErrNotImplemented)
 	}
 	if err != nil {
-		return stdio.Stdio{}, nil, err
+		return stdio.Stdio{}, nil, nil, nil, err
 	}
 
 	defer func() {
@@ -105,25 +105,17 @@ func (s *service) forwardIO(ctx context.Context, ss streamCreator, idPrefix stri
 		}
 	}()
 	ioDone := make(chan struct{})
-	if err = copyStreams(ctx, streams, sio.Stdin, sio.Stdout, sio.Stderr, ioDone); err != nil {
-		return stdio.Stdio{}, nil, err
+	stdinEOF, err := copyStreams(ctx, streams, sio.Stdin, sio.Stdout, sio.Stderr, ioDone)
+	if err != nil {
+		return stdio.Stdio{}, nil, nil, nil, err
 	}
 	return pio, func(ctx context.Context) error {
-		// Wait for the copy goroutines to finish draining before closing
-		// the stream connections. Closing first causes goroutines that are
-		// mid-Read to see "use of closed network connection" and return
-		// early, dropping bytes still buffered in the kernel socket receive
-		// queue (the close-before-drain race).
-		//
-		// In normal operation ioDone always fires on its own: the container
-		// process exiting closes the runc pipe, vminitd's copy goroutine
-		// sees EOF and closes its vsock conn, which propagates EOF to the
-		// host copy goroutines here. ctx.Done() is only reached in
-		// exceptional cases (VM crash, vminitd hang, kernel wedge).
-		//
-		// Ensure the wait is always bounded: if the caller did not provide
-		// a deadline, apply a default so a wedged guest cannot pin cleanup
-		// indefinitely.
+		// ioDone is expected to already be closed by the time ioShutdown
+		// is called: the host Wait handler blocks until ioDone fires before
+		// returning to the caller, ensuring all buffered bytes have been
+		// drained to the FIFO before Delete is issued. This select is a
+		// safety net for error paths (VM crash, vminitd hang) where Wait
+		// may not have been called or ioDone may not have fired naturally.
 		if _, ok := ctx.Deadline(); !ok {
 			var cancel context.CancelFunc
 			ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
@@ -141,7 +133,7 @@ func (s *service) forwardIO(ctx context.Context, ss streamCreator, idPrefix stri
 			}
 		}
 		return err
-	}, nil
+	}, ioDone, stdinEOF, nil
 }
 
 func createStreams(ctx context.Context, ss streamCreator, idPrefix string, io stdio.Stdio) (_ stdio.Stdio, conns [3]io.ReadWriteCloser, err error) {

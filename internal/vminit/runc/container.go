@@ -392,15 +392,11 @@ func (c *Container) Kill(ctx context.Context, r *task.KillRequest) error {
 
 // CloseIO of a process
 func (c *Container) CloseIO(ctx context.Context, r *task.CloseIORequest) error {
-	p, err := c.Process(r.ExecID)
-	if err != nil {
-		return err
-	}
-	if stdin := p.Stdin(); stdin != nil {
-		if err := stdin.Close(); err != nil {
-			return fmt.Errorf("close stdin: %w", err)
-		}
-	}
+	// Stdin EOF is delivered in-band by the host via OP_SHUTDOWN(SEND) on
+	// the vsock stdin stream (triggered by the host's CloseIO handler).
+	// The host no longer forwards this RPC over the out-of-band ttrpc
+	// connection to avoid a race between the RPC and in-flight stdin bytes
+	// on the stream connection. This handler is therefore a no-op.
 	return nil
 }
 

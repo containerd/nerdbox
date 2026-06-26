@@ -31,7 +31,20 @@ import (
 	"github.com/containerd/log"
 )
 
-func copyStreams(ctx context.Context, streams [3]io.ReadWriteCloser, stdin, stdout, stderr string, done chan struct{}) error {
+// stdinStreamWriteCloser is the interface the host-side stdin vsock stream
+// connection must implement. CloseWrite sends OP_SHUTDOWN(SEND) in-order
+// after all data, delivering EOF to the guest without a destructive transport
+// close. Asserting at setup time ensures a future wrapper that drops
+// CloseWrite fails loudly rather than silently hanging the guest's read.
+type stdinStreamWriteCloser interface {
+	io.ReadWriteCloser
+	CloseWrite() error
+}
+
+// copyStreams returns a stdinEOF function that, when called (by CloseIO),
+// signals the stdin goroutine to stop reading the FIFO and send the
+// OP_SHUTDOWN(SEND) in-band EOF to the guest. It is nil when stdin is empty.
+func copyStreams(ctx context.Context, streams [3]io.ReadWriteCloser, stdin, stdout, stderr string, done chan struct{}) (stdinEOF func() error, err error) {
 	var cwg sync.WaitGroup
 	var copying atomic.Int32
 	copying.Store(2)
@@ -90,7 +103,7 @@ func copyStreams(ctx context.Context, streams [3]io.ReadWriteCloser, stdin, stdo
 		}
 		ok, err := fifo.IsFifo(i.name)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		var (
 			fw io.WriteCloser
@@ -98,10 +111,10 @@ func copyStreams(ctx context.Context, streams [3]io.ReadWriteCloser, stdin, stdo
 		)
 		if ok {
 			if fw, err = fifo.OpenFifo(ctx, i.name, syscall.O_WRONLY, 0); err != nil {
-				return fmt.Errorf("containerd-shim: opening w/o fifo %q failed: %w", i.name, err)
+				return nil, fmt.Errorf("containerd-shim: opening w/o fifo %q failed: %w", i.name, err)
 			}
 			if fr, err = fifo.OpenFifo(ctx, i.name, syscall.O_RDONLY, 0); err != nil {
-				return fmt.Errorf("containerd-shim: opening r/o fifo %q failed: %w", i.name, err)
+				return nil, fmt.Errorf("containerd-shim: opening r/o fifo %q failed: %w", i.name, err)
 			}
 		} else {
 			if sameFile != nil {
@@ -110,7 +123,7 @@ func copyStreams(ctx context.Context, streams [3]io.ReadWriteCloser, stdin, stdo
 				continue
 			}
 			if fw, err = os.OpenFile(i.name, syscall.O_WRONLY|syscall.O_APPEND, 0); err != nil {
-				return fmt.Errorf("containerd-shim: opening file %q failed: %w", i.name, err)
+				return nil, fmt.Errorf("containerd-shim: opening file %q failed: %w", i.name, err)
 			}
 			if stdout == stderr {
 				sameFile = newCountingWriteCloser(fw, 1)
@@ -119,21 +132,37 @@ func copyStreams(ctx context.Context, streams [3]io.ReadWriteCloser, stdin, stdo
 		i.dest(fw, fr)
 	}
 	if stdin != "" {
+		// Assert early: the stdin vsock stream must implement CloseWrite so
+		// we can send OP_SHUTDOWN(SEND) in-order when CloseIO fires, rather
+		// than forwarding an out-of-band RPC that races in-flight bytes.
+		sc, ok := streams[0].(stdinStreamWriteCloser)
+		if !ok {
+			return nil, fmt.Errorf("stdin stream connection does not implement CloseWrite; vsock conn required")
+		}
 		f, err := fifo.OpenFifo(context.Background(), stdin, syscall.O_RDONLY|syscall.O_NONBLOCK, 0)
 		if err != nil {
-			return fmt.Errorf("containerd-shim: opening %s failed: %s", stdin, err)
+			return nil, fmt.Errorf("containerd-shim: opening %s failed: %s", stdin, err)
 		}
+		// closeCh is closed by the stdinEOF function (triggered by CloseIO).
+		closeCh := make(chan struct{})
 		cwg.Add(1)
 		go func() {
 			cwg.Done()
 			p := bufPool.Get().(*[]byte)
 			defer bufPool.Put(p)
-
-			io.CopyBuffer(streams[0], f, *p)
-			streams[0].Close()
+			copyStdinUntilClose(ctx, sc, f, *p, closeCh)
+			// Do NOT Close sc here; deferred to ioShutdown/forwardIO cleanup
+			// so the transport outlives the in-band EOF and the host can
+			// close its end cleanly after the guest drains.
 			f.Close()
 		}()
+		stdinEOF = func() error {
+			// Signal the goroutine to stop reading the FIFO and send
+			// OP_SHUTDOWN(SEND) in-order on the stdin stream.
+			close(closeCh)
+			return nil
+		}
 	}
 	cwg.Wait()
-	return nil
+	return stdinEOF, nil
 }

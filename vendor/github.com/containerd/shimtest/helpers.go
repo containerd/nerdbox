@@ -538,9 +538,9 @@ func shimPidViaConnect(address, id string, retryFor time.Duration) (int, error) 
 			cancel()
 			client.Close()
 			if callErr != nil {
-				lastErr = fmt.Errorf("Connect RPC: %w", callErr)
+				lastErr = fmt.Errorf("connect RPC: %w", callErr)
 			} else if resp.ShimPid == 0 {
-				lastErr = fmt.Errorf("Connect returned ShimPid=0")
+				lastErr = fmt.Errorf("connect returned ShimPid=0")
 			} else {
 				return int(resp.ShimPid), nil
 			}
@@ -572,9 +572,9 @@ func unixSafeDir() string {
 		return os.TempDir()
 	}
 	const (
-		afUnixLimit   = 104 // macOS AF_UNIX pathname length limit
-		socketNameLen = 64  // sha256 hex digest
-		dirOverhead   = 14  // "/nb-" prefix + up to 10 random digits
+		afUnixLimit   = 104                                       // macOS AF_UNIX pathname length limit
+		socketNameLen = 64                                        // sha256 hex digest
+		dirOverhead   = 14                                        // "/nb-" prefix + up to 10 random digits
 		maxBaseLen    = afUnixLimit - socketNameLen - dirOverhead // 26
 	)
 	if len(os.TempDir()) > maxBaseLen {

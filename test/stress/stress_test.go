@@ -39,7 +39,7 @@ import (
 	"github.com/containerd/typeurl/v2"
 	"github.com/opencontainers/runtime-spec/specs-go"
 
-	"github.com/dmcgowan/shimtest"
+	"github.com/containerd/shimtest"
 )
 
 const shimBinaryName = "containerd-shim-nerdbox-v1"

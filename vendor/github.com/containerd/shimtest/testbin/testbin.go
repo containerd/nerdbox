@@ -1,3 +1,19 @@
+/*
+   Copyright The containerd Authors.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+*/
+
 // Package testbin implements the multicall container binary used by shimtest
 // suites. It is intentionally stdlib-only so that it can be compiled as a
 // fully static linux binary with CGO_ENABLED=0 and no external dependencies.
@@ -6,7 +22,7 @@
 //
 //	package main
 //
-//	import "github.com/dmcgowan/shimtest/internal/testbin"
+//	import "github.com/containerd/shimtest/internal/testbin"
 //
 //	func main() { testbin.Main() }
 package testbin
@@ -378,18 +394,31 @@ func cmdTickexit(_ []string) {
 	os.Exit(7)
 }
 
+// infiniteTileReader emits an infinite repeating 0x00..0xff tile stream.
+// Wrap with io.LimitReader to produce a deterministic payload of exactly
+// n bytes without allocating the full buffer.
+type infiniteTileReader struct{ off int64 }
+
+func (r *infiniteTileReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = byte((r.off + int64(i)) % 256)
+	}
+	r.off += int64(len(p))
+	return len(p), nil
+}
+
 // cmdBurstexit writes a deterministic byte stream of the requested
 // size to stdout as fast as possible, then exits immediately. The
-// stream is a repeating sequence of bytes 0x00..0xff so that any
-// truncation or corruption is detectable by length or content checks.
+// stream is a repeating 0x00..0xff tile so that any truncation or
+// corruption is detectable by length or CRC-32 checks.
 //
 // Usage: burstexit <size_bytes> [exit_code]
 //
 // This is used by the FastExitOutput and FastExitInit tests to expose
 // the close-before-drain race in the shim's IO cleanup path: the
-// process exits while bytes are still in-flight through the vsock copy
-// goroutines, and a shim that closes the stream connections before
-// waiting for the goroutines to drain will truncate the output.
+// process exits while bytes are still in-flight, and a shim that
+// closes stream connections before the goroutines drain will truncate
+// the output.
 func cmdBurstexit(args []string) {
 	if len(args) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: burstexit <size_bytes> [exit_code]")
@@ -409,25 +438,8 @@ func cmdBurstexit(args []string) {
 		}
 	}
 
-	// Write in 32 KiB chunks to avoid a single enormous syscall while
-	// still producing output much faster than the vsock copy goroutine
-	// can drain it.
-	const chunkSize = 32 * 1024
-	chunk := make([]byte, chunkSize)
-	for i := 0; i < chunkSize; i++ {
-		chunk[i] = byte(i % 256)
-	}
-
-	remaining := size
-	for remaining > 0 {
-		n := remaining
-		if n > chunkSize {
-			n = chunkSize
-		}
-		if _, err := os.Stdout.Write(chunk[:n]); err != nil {
-			os.Exit(1)
-		}
-		remaining -= n
+	if _, err := io.Copy(os.Stdout, io.LimitReader(&infiniteTileReader{}, int64(size))); err != nil {
+		os.Exit(1)
 	}
 	os.Exit(exitCode)
 }

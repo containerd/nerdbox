@@ -31,7 +31,14 @@ import (
 	"github.com/containerd/log"
 )
 
-func copyStreams(ctx context.Context, streams [3]io.ReadWriteCloser, stdin, stdout, stderr string, done chan struct{}) error {
+// stdinStreamWriteCloser mirrors the Unix definition; both builds need it for
+// the CloseIO-driven in-band stdin EOF.
+type stdinStreamWriteCloser interface {
+	io.ReadWriteCloser
+	CloseWrite() error
+}
+
+func copyStreams(ctx context.Context, streams [3]io.ReadWriteCloser, stdin, stdout, stderr string, done chan struct{}) (stdinEOF func() error, err error) {
 	var cwg sync.WaitGroup
 	var copying atomic.Int32
 	copying.Store(2)
@@ -90,7 +97,7 @@ func copyStreams(ctx context.Context, streams [3]io.ReadWriteCloser, stdin, stdo
 		}
 
 		var (
-			fw io.WriteCloser
+			fw  io.WriteCloser
 			err error
 		)
 
@@ -99,7 +106,7 @@ func copyStreams(ctx context.Context, streams [3]io.ReadWriteCloser, stdin, stdo
 		if isNamedPipe(i.name) {
 			fw, err = winio.DialPipe(i.name, &pipeDialTimeout)
 			if err != nil {
-				return fmt.Errorf("containerd-shim: connecting to named pipe %q failed: %w", i.name, err)
+				return nil, fmt.Errorf("containerd-shim: connecting to named pipe %q failed: %w", i.name, err)
 			}
 		} else {
 			if sameFile != nil {
@@ -108,7 +115,7 @@ func copyStreams(ctx context.Context, streams [3]io.ReadWriteCloser, stdin, stdo
 				continue
 			}
 			if fw, err = os.OpenFile(i.name, os.O_WRONLY|os.O_APPEND, 0); err != nil {
-				return fmt.Errorf("containerd-shim: opening file %q failed: %w", i.name, err)
+				return nil, fmt.Errorf("containerd-shim: opening file %q failed: %w", i.name, err)
 			}
 			if stdout == stderr {
 				sameFile = newCountingWriteCloser(fw, 1)
@@ -117,33 +124,40 @@ func copyStreams(ctx context.Context, streams [3]io.ReadWriteCloser, stdin, stdo
 		i.dest(fw, nil)
 	}
 	if stdin != "" {
+		sc, ok := streams[0].(stdinStreamWriteCloser)
+		if !ok {
+			return nil, fmt.Errorf("stdin stream connection does not implement CloseWrite; vsock conn required")
+		}
 		var f io.ReadCloser
 		if isNamedPipe(stdin) {
 			conn, err := winio.DialPipe(stdin, &pipeDialTimeout)
 			if err != nil {
-				return fmt.Errorf("containerd-shim: connecting to named pipe %q for stdin failed: %w", stdin, err)
+				return nil, fmt.Errorf("containerd-shim: connecting to named pipe %q for stdin failed: %w", stdin, err)
 			}
 			f = conn
 		} else {
 			var err error
 			f, err = os.Open(stdin)
 			if err != nil {
-				return fmt.Errorf("containerd-shim: opening %s failed: %s", stdin, err)
+				return nil, fmt.Errorf("containerd-shim: opening %s failed: %s", stdin, err)
 			}
 		}
+		closeCh := make(chan struct{})
 		cwg.Add(1)
 		go func() {
 			cwg.Done()
 			p := bufPool.Get().(*[]byte)
 			defer bufPool.Put(p)
-
-			io.CopyBuffer(streams[0], f, *p)
-			streams[0].Close()
+			copyStdinUntilClose(ctx, sc, f, *p, closeCh)
 			f.Close()
 		}()
+		stdinEOF = func() error {
+			close(closeCh)
+			return nil
+		}
 	}
 	cwg.Wait()
-	return nil
+	return stdinEOF, nil
 }
 
 // isNamedPipe checks if a path looks like a Windows named pipe (\\.\pipe\...).

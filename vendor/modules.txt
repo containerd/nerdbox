@@ -145,6 +145,11 @@ github.com/containerd/platforms
 ## explicit; go 1.22
 github.com/containerd/plugin
 github.com/containerd/plugin/registry
+# github.com/containerd/shimtest v0.2.1
+## explicit; go 1.26.3
+github.com/containerd/shimtest
+github.com/containerd/shimtest/internal/transfer
+github.com/containerd/shimtest/testbin
 # github.com/containerd/ttrpc v1.2.9-0.20260501231634-6c2eed2b612e
 ## explicit; go 1.23
 github.com/containerd/ttrpc
@@ -157,11 +162,6 @@ github.com/coreos/go-systemd/v22/dbus
 # github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc
 ## explicit
 github.com/davecgh/go-spew/spew
-# github.com/dmcgowan/shimtest v0.1.8
-## explicit; go 1.26.3
-github.com/dmcgowan/shimtest
-github.com/dmcgowan/shimtest/internal/transfer
-github.com/dmcgowan/shimtest/testbin
 # github.com/docker/go-events v0.0.0-20190806004212-e31b211e4f1c
 ## explicit
 github.com/docker/go-events

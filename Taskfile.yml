@@ -67,7 +67,7 @@ tasks:
         sh: go env GOARCH
     sources:
       - test/testbin/main.go
-      - vendor/github.com/dmcgowan/shimtest/testbin/testbin.go
+      - vendor/github.com/containerd/shimtest/testbin/testbin.go
     generates:
       - test/shim/testdata/testbin
       - test/stress/testdata/testbin

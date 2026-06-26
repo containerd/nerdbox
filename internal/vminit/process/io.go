@@ -54,6 +54,20 @@ var bufPool = sync.Pool{
 	},
 }
 
+// StreamWriteCloser is the interface that vsock stream connections must
+// implement. CloseWrite sends OP_SHUTDOWN(SEND) in-order after all data,
+// signalling the peer to drain and deliver EOF without a destructive
+// transport close. The transport is closed later (at delete/shutdown) via
+// Close, by which point the peer has already fully drained.
+//
+// Asserting this interface at setup time (rather than per-call) ensures a
+// future wrapper type that inadvertently drops CloseWrite causes a loud
+// setup failure instead of silently hanging on the peer's read-to-EOF.
+type StreamWriteCloser interface {
+	io.ReadWriteCloser
+	CloseWrite() error
+}
+
 type processIO struct {
 	io runc.IO
 
@@ -65,15 +79,27 @@ type processIO struct {
 }
 
 func (p *processIO) Close() error {
+	var errs []error
 	if p.io != nil {
-		return p.io.Close()
-	}
-	for i, s := range p.streams {
-		if s != nil && (i != 2 || s != p.streams[1]) {
-			s.Close()
+		if err := p.io.Close(); err != nil {
+			errs = append(errs, err)
 		}
 	}
-	return nil
+	// Always close the vsock stream connections regardless of whether a
+	// runc PipeIO is also present. In the stream scheme both co-exist
+	// (processIO.io = PipeIO, processIO.streams = vsock conns), and the
+	// goroutines only call CloseWrite (not Close) on the stream conns,
+	// deferring transport teardown here so it happens after the peer has
+	// drained. The dedup guard (i != 2 || s != p.streams[1]) ensures the
+	// shared stdout==stderr conn is closed exactly once.
+	for i, s := range p.streams {
+		if s != nil && (i != 2 || s != p.streams[1]) {
+			if err := s.Close(); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (p *processIO) IO() runc.IO {
@@ -167,49 +193,11 @@ func copyPipes(ctx context.Context, rio runc.IO, stdin, stdout, stderr string, s
 	for _, i := range []struct {
 		name  string
 		index int
-		dest  func(wc io.WriteCloser, rc io.Closer)
+		src   func() io.Reader
+		label string
 	}{
-		{
-			name:  stdout,
-			index: 1,
-			dest: func(wc io.WriteCloser, rc io.Closer) {
-				wg.Add(1)
-				cwg.Add(1)
-				go func() {
-					cwg.Done()
-					p := bufPool.Get().(*[]byte)
-					defer bufPool.Put(p)
-					if _, err := io.CopyBuffer(wc, rio.Stdout(), *p); err != nil {
-						log.G(ctx).WithError(err).Warn("error copying stdout")
-					}
-					wg.Done()
-					wc.Close()
-					if rc != nil {
-						rc.Close()
-					}
-				}()
-			},
-		}, {
-			name:  stderr,
-			index: 2,
-			dest: func(wc io.WriteCloser, rc io.Closer) {
-				wg.Add(1)
-				cwg.Add(1)
-				go func() {
-					cwg.Done()
-					p := bufPool.Get().(*[]byte)
-					defer bufPool.Put(p)
-					if _, err := io.CopyBuffer(wc, rio.Stderr(), *p); err != nil {
-						log.G(ctx).WithError(err).Warn("error copying stderr")
-					}
-					wg.Done()
-					wc.Close()
-					if rc != nil {
-						rc.Close()
-					}
-				}()
-			},
-		},
+		{name: stdout, index: 1, src: func() io.Reader { return rio.Stdout() }, label: "stdout"},
+		{name: stderr, index: 2, src: func() io.Reader { return rio.Stderr() }, label: "stderr"},
 	} {
 		if i.name == "" {
 			continue
@@ -219,11 +207,41 @@ func copyPipes(ctx context.Context, rio runc.IO, stdin, stdout, stderr string, s
 			fr io.Closer
 		)
 		if streams[i.index] != nil {
-			if streams[i.index] == nil {
-				continue
+			// Assert the vsock stream connection implements CloseWrite early,
+			// at setup time. CloseWrite sends OP_SHUTDOWN(SEND) in-order after
+			// all data so the host drains gracefully; the transport Close is
+			// deferred to processIO.Close() at delete time. Failing here loudly
+			// prevents a silent hang if a future wrapper drops CloseWrite.
+			sc, ok := streams[i.index].(StreamWriteCloser)
+			if !ok {
+				return nil, fmt.Errorf("stream connection for %s does not implement CloseWrite; vsock conn required", i.label)
 			}
-			fw = streams[i.index]
+			src := i.src
+			label := i.label
+			wg.Add(1)
+			cwg.Add(1)
+			go func() {
+				cwg.Done()
+				p := bufPool.Get().(*[]byte)
+				defer bufPool.Put(p)
+				if _, err := io.CopyBuffer(sc, src(), *p); err != nil {
+					log.G(ctx).WithError(err).Warnf("error copying %s", label)
+				}
+				// CloseWrite sends OP_SHUTDOWN(SEND) ordered after all data,
+				// signalling the host to drain and deliver EOF to the FIFO.
+				// Do NOT Close the transport here; that is deferred to
+				// processIO.Close() at delete time, which runs after the host
+				// has confirmed receipt (the Wait-drain gate ensures this).
+				if err := sc.CloseWrite(); err != nil {
+					log.G(ctx).WithError(err).Warnf("error closing %s stream", label)
+				}
+				wg.Done()
+			}()
+			continue
 		} else {
+			// Non-stream path: fifo or plain file. Uses a simple raw copy
+			// with transport close in the goroutine (no CloseWrite needed
+			// for local fifos/files).
 			ok, err := fifo.IsFifo(i.name)
 			if err != nil {
 				return nil, err
@@ -238,18 +256,35 @@ func copyPipes(ctx context.Context, rio runc.IO, stdin, stdout, stderr string, s
 			} else {
 				if sameFile != nil {
 					sameFile.bumpCount(1)
-					i.dest(sameFile, nil)
-					continue
-				}
-				if fw, err = os.OpenFile(i.name, syscall.O_WRONLY|syscall.O_APPEND, 0); err != nil {
-					return nil, fmt.Errorf("containerd-shim: opening file %q failed: %w", i.name, err)
-				}
-				if stdout == stderr {
-					sameFile = newCountingWriteCloser(fw, 1)
+					fw = sameFile
+				} else {
+					if fw, err = os.OpenFile(i.name, syscall.O_WRONLY|syscall.O_APPEND, 0); err != nil {
+						return nil, fmt.Errorf("containerd-shim: opening file %q failed: %w", i.name, err)
+					}
+					if stdout == stderr {
+						sameFile = newCountingWriteCloser(fw, 1)
+						fw = sameFile
+					}
 				}
 			}
+			src := i.src
+			label := i.label
+			wg.Add(1)
+			cwg.Add(1)
+			go func() {
+				cwg.Done()
+				p := bufPool.Get().(*[]byte)
+				defer bufPool.Put(p)
+				if _, err := io.CopyBuffer(fw, src(), *p); err != nil {
+					log.G(ctx).WithError(err).Warnf("error copying %s", label)
+				}
+				wg.Done()
+				fw.Close()
+				if fr != nil {
+					fr.Close()
+				}
+			}()
 		}
-		i.dest(fw, fr)
 	}
 	if stdin == "" {
 		return nil, nil

@@ -36,7 +36,6 @@ import (
 // UDSSuite contains the UDS-mount tests, gated on the "uds" feature.
 type UDSSuite struct {
 	cfg Config
-	
 }
 
 // NewUDSSuite constructs a UDSSuite from the given options.

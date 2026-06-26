@@ -108,9 +108,15 @@ func (p *linuxPlatform) CopyConsole(ctx context.Context, console console.Console
 
 	switch uri.Scheme {
 	case "stream":
-		out, err := p.streams.Get(strings.TrimPrefix(stdout, "stream://"))
+		raw, err := p.streams.Get(strings.TrimPrefix(stdout, "stream://"))
 		if err != nil {
 			return nil, err
+		}
+		// Assert CloseWrite at setup time so a future wrapper that drops it
+		// causes an immediate failure rather than a silent hang.
+		sc, ok := raw.(process.StreamWriteCloser)
+		if !ok {
+			return nil, fmt.Errorf("console stdout stream connection does not implement CloseWrite; vsock conn required")
 		}
 		wg.Add(1)
 		cwg.Add(1)
@@ -118,9 +124,13 @@ func (p *linuxPlatform) CopyConsole(ctx context.Context, console console.Console
 			cwg.Done()
 			buf := bufPool.Get().(*[]byte)
 			defer bufPool.Put(buf)
-			io.CopyBuffer(out, epollConsole, *buf)
-
-			out.Close()
+			io.CopyBuffer(sc, epollConsole, *buf)
+			// CloseWrite sends OP_SHUTDOWN(SEND) in-order after all data.
+			// Do NOT Close the transport here; deferred to processIO.Close.
+			if err := sc.CloseWrite(); err != nil {
+				// Non-fatal: log only; transport will be closed at delete.
+				_ = err
+			}
 			wg.Done()
 		}()
 		cwg.Wait()

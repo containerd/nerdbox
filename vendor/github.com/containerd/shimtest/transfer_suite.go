@@ -32,7 +32,7 @@ import (
 	"github.com/containerd/typeurl/v2"
 	"github.com/opencontainers/runtime-spec/specs-go"
 
-	"github.com/dmcgowan/shimtest/internal/transfer"
+	"github.com/containerd/shimtest/internal/transfer"
 )
 
 // TransferSuite contains tests gated on the "transfer" feature: the

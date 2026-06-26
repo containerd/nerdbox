@@ -20,10 +20,10 @@
 // shim and stress test suites can embed it in their container rootfs images.
 //
 // This main is intentionally a one-liner: all logic lives in the importable
-// github.com/dmcgowan/shimtest/testbin package so it is covered by
+// github.com/containerd/shimtest/testbin package so it is covered by
 // go mod vendor and stays in sync with the vendored shimtest version.
 package main
 
-import "github.com/dmcgowan/shimtest/testbin"
+import "github.com/containerd/shimtest/testbin"
 
 func main() { testbin.Main() }

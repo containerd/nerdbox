@@ -372,12 +372,12 @@ func TestBidirectionalStreaming(t *testing.T) {
 // or allocates unbounded memory.
 func FuzzRecv(f *testing.F) {
 	// Seed with interesting cases
-	f.Add([]byte{})                                     // empty
-	f.Add([]byte{0, 0, 0, 0})                           // zero-length frame (EOF)
-	f.Add([]byte{0, 0, 0, 5, 1, 2, 3, 4, 5})           // valid 5-byte frame
-	f.Add([]byte{0, 0, 0, 1, 0xff})                     // 1-byte frame
+	f.Add([]byte{})                                      // empty
+	f.Add([]byte{0, 0, 0, 0})                            // zero-length frame (EOF)
+	f.Add([]byte{0, 0, 0, 5, 1, 2, 3, 4, 5})             // valid 5-byte frame
+	f.Add([]byte{0, 0, 0, 1, 0xff})                      // 1-byte frame
 	f.Add([]byte{0xff, 0xff, 0xff, 0xff})                // max uint32 length
-	f.Add([]byte{0, 0, 0, 3, 1, 2})                     // truncated data
+	f.Add([]byte{0, 0, 0, 3, 1, 2})                      // truncated data
 	f.Add([]byte{0, 0, 0, 1})                            // length but no data
 	f.Add([]byte{0, 0, 0, 5, 10, 5, 116, 101, 115, 116}) // valid proto Any
 

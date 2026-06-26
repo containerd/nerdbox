@@ -30,7 +30,6 @@ import (
 // can't reliably trigger the kernel OOM killer).
 type OOMSuite struct {
 	cfg Config
-	
 }
 
 // NewOOMSuite constructs an OOMSuite from the given options.

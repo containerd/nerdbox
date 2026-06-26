@@ -72,9 +72,22 @@ func pipeName() string {
 var pipeListeners sync.Map // map[string]net.Listener
 
 // pipeCfg is the pipe configuration used for all shimtest named pipes.
-// nil uses the default named pipe ACL (current user has full access),
-// which is what containerd itself passes to winio.ListenPipe.
-var pipeCfg *winio.PipeConfig
+// MessageMode is enabled so that the shim can use CloseWrite() (a
+// zero-length message) to signal EOF without closing the handle, avoiding
+// the Windows byte-mode pipe behaviour where closing the client handle
+// discards any unread data in the server's read buffer.
+//
+// InputBufferSize and OutputBufferSize are set to 64 KiB so that the
+// Windows kernel can buffer up to 16 × 4 KiB messages simultaneously.
+// The default buffer (4 KiB) equals exactly one 4 KiB message, which
+// forces the writer to block after each write until the reader issues
+// the next ReadFile, serialising writes and reads and drastically
+// reducing throughput.
+var pipeCfg = &winio.PipeConfig{
+	MessageMode:      true,
+	InputBufferSize:  65536,
+	OutputBufferSize: 65536,
+}
 
 // listenPipe creates a named-pipe server at path, stores the listener in
 // pipeListeners, and registers a cleanup on tb.
@@ -145,6 +158,56 @@ func drainFifo(tb testing.TB, _ context.Context, path string) {
 			}
 		}
 	}()
+}
+
+// drainFifoIntoDone accepts one connection on the named pipe at path, copies
+// all data into buf (protected by mu), and closes the returned channel when
+// the connection is closed (i.e. when the write end is done). Use this
+// instead of drainFifoInto when the caller needs to block until the pipe is
+// fully drained before inspecting buf.
+//
+// Windows named-pipe note: when the write-end client calls Close(), a pending
+// ReadFile on the server side may immediately return (0, ERROR_BROKEN_PIPE)
+// even if the pipe buffer still contains unread bytes. A subsequent ReadFile
+// WILL return those bytes. This function therefore issues a post-error drain
+// loop to recover any residual data before closing the done channel.
+func drainFifoIntoDone(tb testing.TB, _ context.Context, path string, buf *bytes.Buffer, mu *sync.Mutex) <-chan struct{} {
+	tb.Helper()
+	l := popListener(tb, path)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		b := make([]byte, 4096)
+		for {
+			n, err := c.Read(b)
+			if n > 0 {
+				mu.Lock()
+				buf.Write(b[:n])
+				mu.Unlock()
+			}
+			if err != nil {
+				// The write end was closed (or an error occurred). On Windows,
+				// the ReadFile that was pending when the client disconnected
+				// may return (0, error) while data remains in the pipe buffer.
+				// Drain any such residual bytes before exiting.
+				for {
+					n2, _ := c.Read(b)
+					if n2 == 0 {
+						return
+					}
+					mu.Lock()
+					buf.Write(b[:n2])
+					mu.Unlock()
+				}
+			}
+		}
+	}()
+	return done
 }
 
 // drainFifoInto accepts one connection on the named pipe at path and copies
@@ -244,6 +307,33 @@ type rawPipeState struct {
 	pw *io.PipeWriter
 }
 
+// createRawPipeWriter creates a Windows named-pipe server and returns its
+// path, a WriteCloser for the write end (host → shim direction), and a
+// cleanup function. The shim connects as the client and reads from the pipe.
+// Used in contexts without a testing.TB (e.g. runExecRoundTrip in stress_suite.go).
+func createRawPipeWriter(_, name string) (path string, w io.WriteCloser, cleanup func(), err error) {
+	path = `\\.\pipe\shimtest-raw-` + name + `-` + randomSuffix()
+	l, err := winio.ListenPipe(path, pipeCfg)
+	if err != nil {
+		return "", nil, nil, fmt.Errorf("ListenPipe %s: %w", path, err)
+	}
+	pr, pw := io.Pipe()
+	go func() {
+		c, err := l.Accept()
+		if err != nil {
+			pr.CloseWithError(err)
+			return
+		}
+		defer c.Close()
+		io.Copy(c, pr)
+	}()
+	cleanup = func() {
+		l.Close()
+		pw.Close()
+	}
+	return path, pw, cleanup, nil
+}
+
 // createRawPipe creates a named-pipe server and returns its path, a
 // ReadCloser for the read end, and a cleanup function. Used in contexts
 // without a testing.TB (e.g. runOneExec in stress_suite.go).
@@ -324,8 +414,8 @@ func dialPipeAsync(path string, timeout time.Duration) <-chan net.Conn {
 // the deferredPipeConnection pattern in containerd's shim_windows.go.
 type deferredPipeReader struct {
 	ch   <-chan net.Conn
-	conn net.Conn   // set on first Read after dial completes
-	once sync.Once  // ensures we receive from ch exactly once
+	conn net.Conn  // set on first Read after dial completes
+	once sync.Once // ensures we receive from ch exactly once
 	err  error
 }
 

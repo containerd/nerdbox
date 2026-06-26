@@ -163,6 +163,21 @@ func openPipeReader(ctx context.Context, path string) (io.ReadWriteCloser, error
 	return fifo.OpenFifo(ctx, path, syscall.O_RDONLY|syscall.O_NONBLOCK, 0)
 }
 
+// createRawPipeWriter creates a FIFO and returns its path, a WriteCloser
+// for the write end (host → shim direction), and a cleanup function. Used
+// in contexts without a testing.TB (e.g. runExecRoundTrip in stress_suite.go).
+func createRawPipeWriter(dir, name string) (path string, w io.WriteCloser, cleanup func(), err error) {
+	path = filepath.Join(dir, name)
+	if err = syscall.Mkfifo(path, 0600); err != nil {
+		return "", nil, nil, fmt.Errorf("mkfifo %s: %w", path, err)
+	}
+	f, err := fifo.OpenFifo(context.Background(), path, syscall.O_WRONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return "", nil, nil, fmt.Errorf("open fifo %s: %w", path, err)
+	}
+	return path, f, func() { f.Close() }, nil
+}
+
 // createRawPipe creates a FIFO and returns its path, a ReadCloser for
 // the read end, and a cleanup function. Used in contexts without a
 // testing.TB (e.g. runOneExec in stress_suite.go).

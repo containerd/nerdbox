@@ -235,6 +235,23 @@ func TestForwardConsoleLogs_DebugLevel(t *testing.T) {
 	}
 }
 
+func TestWithJSONFormat(t *testing.T) {
+	cfg := shimLogConfig{format: formatText}
+	WithJSONFormat()(&cfg)
+	if cfg.format != formatJSON {
+		t.Errorf("WithJSONFormat: got %d, want %d", cfg.format, formatJSON)
+	}
+}
+
+func TestSetupShimLogDefaultIsText(t *testing.T) {
+	// formatText must be the zero value so that a shimLogConfig without
+	// explicit initialisation defaults to text (backward-compatible).
+	var cfg shimLogConfig
+	if cfg.format != formatText {
+		t.Errorf("zero-value shimLogConfig.format = %d, want formatText (%d)", cfg.format, formatText)
+	}
+}
+
 func TestForwardJSONLog_InvalidJSON(t *testing.T) {
 	SetBaseHandler(discardHandler{})
 	if forwardJSONLog("{not json") {

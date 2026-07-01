@@ -31,10 +31,34 @@ import (
 	"github.com/containerd/log"
 )
 
+// SetupShimLogOption configures [SetupShimLog].
+type SetupShimLogOption func(*shimLogConfig)
+
+type format int
+
+const (
+	formatText format = iota
+	formatJSON
+)
+
+type shimLogConfig struct {
+	format format
+}
+
+// WithJSONFormat sets the log output format to emit one JSON object per line.
+func WithJSONFormat() SetupShimLogOption {
+	return func(c *shimLogConfig) {
+		c.format = formatJSON
+	}
+}
+
 // SetupShimLog configures slog-based logging for the shim process.
 // It opens the platform-specific log output (FIFO on Unix, named pipe
-// on Windows), then creates a slog TextHandler and sets it as the
-// default logger with a "component=shim" attribute.
+// on Windows), then creates a slog handler and sets it as the default
+// logger with a "component=shim" attribute.
+//
+// The handler's format defaults to text format. Pass [WithJSONFormat]
+// to emit JSON, which structured log consumers can unwrap directly.
 //
 // The base handler (without component) is stored for use by
 // [ForwardConsoleLogs] so that forwarded records carry their own
@@ -42,7 +66,12 @@ import (
 //
 // For the short-lived start and delete actions, only [log.UseSlog] is
 // called to route logrus through slog; the log output is not opened.
-func SetupShimLog() {
+func SetupShimLog(opts ...SetupShimLogOption) {
+	cfg := shimLogConfig{format: formatText}
+	for _, o := range opts {
+		o(&cfg)
+	}
+
 	log.UseSlog()
 
 	var (
@@ -81,7 +110,15 @@ func SetupShimLog() {
 		log.SetLevel("debug") //nolint:errcheck
 	}
 
-	handler := slog.NewTextHandler(w, &slog.HandlerOptions{Level: &level}).WithAttrs(attrs)
+	handlerOpts := &slog.HandlerOptions{Level: &level}
+	var handler slog.Handler
+	switch cfg.format {
+	case formatJSON:
+		handler = slog.NewJSONHandler(w, handlerOpts)
+	default:
+		handler = slog.NewTextHandler(w, handlerOpts)
+	}
+	handler = handler.WithAttrs(attrs)
 	SetBaseHandler(handler)
 	slog.SetDefault(slog.New(handler).With("component", "shim"))
 }

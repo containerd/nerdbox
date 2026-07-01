@@ -21,6 +21,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"os"
 	"strings"
 	"testing"
 )
@@ -232,6 +233,49 @@ func TestForwardConsoleLogs_DebugLevel(t *testing.T) {
 	}
 	if ch.records[0].Level != slog.LevelDebug {
 		t.Errorf("expected DEBUG, got %s", ch.records[0].Level)
+	}
+}
+
+func TestResolveFormat(t *testing.T) {
+	tests := []struct {
+		name     string
+		env      string
+		terminal bool
+		want     Format
+	}{
+		{"env json overrides terminal", "json", true, FormatJSON},
+		{"env text overrides pipe", "text", false, FormatText},
+		{"env case-insensitive", "JSON", false, FormatJSON},
+		{"env trims whitespace", "  json  ", false, FormatJSON},
+		{"auto terminal is text", "", true, FormatText},
+		{"auto pipe is json", "", false, FormatJSON},
+		{"unrecognised env falls back to auto (pipe)", "logfmt", false, FormatJSON},
+		{"unrecognised env falls back to auto (terminal)", "yaml", true, FormatText},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := resolveFormat(tt.env, tt.terminal); got != tt.want {
+				t.Errorf("resolveFormat(%q, %v) = %d, want %d", tt.env, tt.terminal, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsTerminal_NonFileWriter(t *testing.T) {
+	if isTerminal(&bytes.Buffer{}) {
+		t.Error("expected non-*os.File writer to report false")
+	}
+}
+
+func TestIsTerminal_Pipe(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer r.Close()
+	defer w.Close()
+	if isTerminal(w) {
+		t.Error("expected pipe to report false")
 	}
 }
 

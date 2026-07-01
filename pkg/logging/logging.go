@@ -31,10 +31,47 @@ import (
 	"github.com/containerd/log"
 )
 
+// Format identifies the encoding used for shim log output.
+type Format int
+
+const (
+	// FormatText emits human-readable slog text output.
+	FormatText Format = iota
+	// FormatJSON emits one JSON object per line.
+	FormatJSON
+)
+
+// ShimLogFormatEnv overrides the auto-detected shim log format. Accepted
+// values are "json" and "text" (case-insensitive, surrounding whitespace
+// ignored); any other value leaves auto-detection in effect.
+const ShimLogFormatEnv = "SHIM_LOG_FORMAT"
+
+// resolveFormat picks the concrete output format. An explicit, recognised
+// value of [ShimLogFormatEnv] (passed as env) always wins. Otherwise the
+// format is auto-detected: text when the sink is a terminal (interactive
+// debugging), JSON otherwise (the normal shim path, where the sink is the
+// log FIFO/pipe).
+func resolveFormat(env string, terminal bool) Format {
+	switch strings.ToLower(strings.TrimSpace(env)) {
+	case "json":
+		return FormatJSON
+	case "text":
+		return FormatText
+	}
+	if terminal {
+		return FormatText
+	}
+	return FormatJSON
+}
+
 // SetupShimLog configures slog-based logging for the shim process.
 // It opens the platform-specific log output (FIFO on Unix, named pipe
-// on Windows), then creates a slog TextHandler and sets it as the
-// default logger with a "component=shim" attribute.
+// on Windows), then creates a slog handler and sets it as the default
+// logger with a "component=shim" attribute.
+//
+// The handler's format is resolved by [resolveFormat]: JSON on the normal
+// shim path (the sink is a pipe) and text when attached to a terminal,
+// overridable via [ShimLogFormatEnv].
 //
 // The base handler (without component) is stored for use by
 // [ForwardConsoleLogs] so that forwarded records carry their own
@@ -81,7 +118,15 @@ func SetupShimLog() {
 		log.SetLevel("debug") //nolint:errcheck
 	}
 
-	handler := slog.NewTextHandler(w, &slog.HandlerOptions{Level: &level}).WithAttrs(attrs)
+	opts := &slog.HandlerOptions{Level: &level}
+	var handler slog.Handler
+	switch resolveFormat(os.Getenv(ShimLogFormatEnv), isTerminal(w)) {
+	case FormatJSON:
+		handler = slog.NewJSONHandler(w, opts)
+	default:
+		handler = slog.NewTextHandler(w, opts)
+	}
+	handler = handler.WithAttrs(attrs)
 	SetBaseHandler(handler)
 	slog.SetDefault(slog.New(handler).With("component", "shim"))
 }

@@ -66,3 +66,15 @@ func openShimLog(ns, id string) io.Writer {
 
 	return pw
 }
+
+// isTerminal reports whether w is attached to a console. The pipe
+// returned on the normal shim path is not a console, so this returns
+// false and log format auto-detection selects JSON.
+func isTerminal(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	var mode uint32
+	return windows.GetConsoleMode(windows.Handle(f.Fd()), &mode) == nil
+}

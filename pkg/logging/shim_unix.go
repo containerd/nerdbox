@@ -36,3 +36,18 @@ func openShimLog(string, string) io.Writer {
 	}
 	return f
 }
+
+// isTerminal reports whether w is backed by a terminal (character)
+// device. The FIFO returned on the normal shim path is not an *os.File,
+// so this returns false and log format auto-detection selects JSON.
+func isTerminal(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
+}

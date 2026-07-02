@@ -46,10 +46,20 @@ func copyStdinUntilClose(ctx context.Context, sc interface {
 		case <-closeCh:
 			// CloseIO fired: drain the pending read then send in-band EOF.
 			res := <-readCh
-			if res.n > 0 {
-				if _, err := sc.Write(buf[:res.n]); err != nil {
-					log.G(ctx).WithError(err).Warn("error writing stdin on CloseIO")
+			for {
+				if res.n > 0 {
+					if _, err := sc.Write(buf[:res.n]); err != nil {
+						log.G(ctx).WithError(err).Warn("error writing stdin on CloseIO")
+						break
+					}
 				}
+				if res.err != nil || res.n == 0 {
+					// EOF (client closed its write end) or a read error:
+					// nothing left to drain.
+					break
+				}
+
+				res.n, res.err = f.Read(buf)
 			}
 			if err := sc.CloseWrite(); err != nil {
 				log.G(ctx).WithError(err).Warn("error sending stdin EOF via CloseWrite")

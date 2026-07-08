@@ -53,7 +53,7 @@ func DumpInfo(ctx context.Context) {
 	} else {
 		log.G(ctx).WithField("cmdline", string(b)).Debug("kernel command line")
 	}
-	log.G(ctx).WithField("ncpu", runtime.NumCPU()).Debug("Runtime info")
+	log.G(ctx).WithField("num_cpus", runtime.NumCPU()).Debug("Runtime info")
 
 	if b, err := exec.CommandContext(ctx, "/sbin/crun", "--version").Output(); err != nil {
 		log.G(ctx).WithError(err).Error("failed to get crun version")
@@ -69,11 +69,11 @@ func DumpFile(ctx context.Context, name string) {
 	}
 	b, err := os.ReadFile(name)
 	if err != nil {
-		log.G(ctx).WithError(err).WithField("f", name).Warn("failed to read file to dump")
+		log.G(ctx).WithError(err).WithField("file", name).Warn("failed to read file to dump")
 		return
 	}
 	log.G(ctx).WithFields(log.Fields{
-		"f":       name,
+		"file":    name,
 		"content": string(b),
 	}).Debug("dump file")
 }

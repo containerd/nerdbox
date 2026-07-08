@@ -81,7 +81,7 @@ func (s *service) Stream(ctx context.Context, srv streamapi.TTRPCStreaming_Strea
 		return err
 	}
 
-	log.G(ctx).WithField("stream", i.ID).Debug("creating stream bridge")
+	log.G(ctx).WithField("stream_id", i.ID).Debug("creating stream bridge")
 
 	// Create a stream connection to the VM, passing through the stream ID
 	vmConn, err := s.sb.StartStream(ctx, i.ID)
@@ -90,7 +90,7 @@ func (s *service) Stream(ctx context.Context, srv streamapi.TTRPCStreaming_Strea
 	}
 	defer vmConn.Close()
 
-	log.G(ctx).WithField("stream", i.ID).Debug("stream bridge established")
+	log.G(ctx).WithField("stream_id", i.ID).Debug("stream bridge established")
 
 	// Send ack back to containerd client
 	e, _ := typeurl.MarshalAnyToProto(&ptypes.Empty{})
@@ -115,10 +115,10 @@ func (s *service) Stream(ctx context.Context, srv streamapi.TTRPCStreaming_Strea
 		// io.EOF filter on the bridge log below, leaving the VM
 		// hanging while waiting for the marker.
 		if eofErr := binary.Write(vmConn, binary.BigEndian, uint32(0)); eofErr != nil {
-			log.G(ctx).WithError(eofErr).WithField("stream", i.ID).Debug("failed to write EOF marker to vm")
+			log.G(ctx).WithError(eofErr).WithField("stream_id", i.ID).Debug("failed to write EOF marker to vm")
 		}
 		if err != nil && !errors.Is(err, io.EOF) {
-			log.G(ctx).WithError(err).WithField("stream", i.ID).Debug("client->server bridge ended")
+			log.G(ctx).WithError(err).WithField("stream_id", i.ID).Debug("client->server bridge ended")
 		}
 	}()
 
@@ -145,7 +145,7 @@ func (s *service) Stream(ctx context.Context, srv streamapi.TTRPCStreaming_Strea
 	select {
 	case err := <-v2t:
 		if err != nil && !errors.Is(err, io.EOF) {
-			log.G(ctx).WithError(err).WithField("stream", i.ID).Debug("server->client bridge ended")
+			log.G(ctx).WithError(err).WithField("stream_id", i.ID).Debug("server->client bridge ended")
 		}
 	case <-ctx.Done():
 	}

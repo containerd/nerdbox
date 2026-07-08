@@ -67,10 +67,9 @@ func configureDHCP(ctx context.Context, iface netlink.Link, nw Network, debug bo
 	defer func() {
 		if retErr != nil {
 			if err := c.Release(l); err != nil {
-				log.G(ctx).WithFields(log.Fields{
-					"err":      err,
-					"orig_err": retErr,
-					"lease":    l.ACK.String(),
+				log.G(ctx).WithError(err).WithFields(log.Fields{
+					"cause": retErr,
+					"lease": l.ACK.String(),
 				}).Error("failed to release DHCP lease")
 			}
 		}
@@ -131,7 +130,7 @@ const defaultRenewalInterval = 86400 * time.Second // 24 hours
 func (l *DHCPLease) RenewLoop(ctx context.Context) error {
 	for {
 		interval := l.lease.ACK.IPAddressRenewalTime(defaultRenewalInterval)
-		log.G(ctx).Debugf("renewing DHCP lease in %s", interval)
+		log.G(ctx).WithField("interval", interval).Debug("renewing DHCP lease")
 
 		select {
 		case <-ctx.Done():

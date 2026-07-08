@@ -66,7 +66,7 @@ func (s *service) Create(ctx context.Context, r *api.CreateRequest) (*api.Create
 	if err := os.Mkdir(d, 0755); err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
-	log.G(ctx).Infof("Creating bundle at %s", d)
+	log.G(ctx).WithField("path", d).Info("creating bundle")
 	if err := os.Mkdir(filepath.Join(d, "rootfs"), 0755); err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}

@@ -151,7 +151,7 @@ func Run(ctx context.Context) error {
 		return err
 	}
 
-	log.G(ctx).WithField("t", time.Since(t1)).Debug("initialized vminitd")
+	log.G(ctx).WithField("t_init", time.Since(t1)).Debug("initialized vminitd")
 
 	runtime.GOMAXPROCS(2)
 
@@ -350,7 +350,7 @@ func newService(ctx context.Context, config Config, shutdownSvc shutdown.Service
 		instance, err := p.Instance()
 		if err != nil {
 			if plugin.IsSkipPlugin(err) {
-				log.G(ctx).WithFields(log.Fields{"error": err, "plugin_id": id}).Info("skip loading plugin")
+				log.G(ctx).WithError(err).WithField("plugin_id", id).Info("skip loading plugin")
 				continue
 			}
 

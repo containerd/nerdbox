@@ -246,9 +246,9 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	ctx = log.WithLogger(ctx, log.G(ctx).WithField("id", r.ID))
+	ctx = log.WithLogger(ctx, log.G(ctx).WithField("container_id", r.ID))
 
-	log.G(ctx).WithField("bundle", r.Bundle).Infof("Create task")
+	log.G(ctx).WithField("bundle", r.Bundle).Info("Create task")
 
 	s.lifecycleMu.Lock()
 	handleStarted, cleanup := s.preStart(nil)
@@ -262,7 +262,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
-	log.G(ctx).Infof("new container %s", container.ID)
+	log.G(ctx).WithField("container_id", container.ID).Info("container created")
 
 	waitForConnect, err := ctrnetworking.Connect(ctx, r.Bundle, container.Pid())
 	if err != nil {
@@ -359,9 +359,9 @@ func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.
 			} else {
 				if err := cg.ToggleControllers(allControllers, cgroupsv2.Enable); err != nil {
 					if userns.RunningInUserNS() {
-						log.G(ctx).WithError(err).Debugf("failed to enable controllers (%v)", allControllers)
+						log.G(ctx).WithError(err).WithField("controllers", allControllers).Debug("failed to enable cgroup controllers")
 					} else {
-						log.G(ctx).WithError(err).Errorf("failed to enable controllers (%v)", allControllers)
+						log.G(ctx).WithError(err).WithField("controllers", allControllers).Error("failed to enable cgroup controllers")
 					}
 				}
 			}
@@ -754,7 +754,7 @@ func (s *service) handleInitExit(e runcC.Exit, c *runc.Container, p *process.Ini
 	// kill all running container processes
 	if runc.ShouldKillAllOnExit(s.context, c.Bundle) {
 		if err := p.KillAll(s.context); err != nil {
-			log.G(s.context).WithError(err).WithField("id", p.ID()).
+			log.G(s.context).WithError(err).WithField("container_id", p.ID()).
 				Error("failed to kill init's children")
 		}
 	}
@@ -876,9 +876,6 @@ func (s *service) waitForCtrNetConnect(ctx context.Context, id string) error {
 
 	ts := time.Now()
 	err := wait()
-	log.G(ctx).WithFields(log.Fields{
-		"error":     err,
-		"waitedFor": time.Since(ts),
-	}).Debug("Container network connects completed")
+	log.G(ctx).WithError(err).WithField("t_wait", time.Since(ts)).Debug("Container network connects completed")
 	return err
 }

@@ -79,10 +79,7 @@ func SetupVM(ctx context.Context, nws []Network, debug bool) (func(context.Conte
 		return nil, nil, err
 	}
 	if err := netlink.LinkSetUp(link); err != nil {
-		log.G(ctx).WithFields(log.Fields{
-			"err":   err,
-			"iface": link.Attrs().Name,
-		}).Error("failed to bring up lo interface")
+		log.G(ctx).WithError(err).WithField("iface", link.Attrs().Name).Error("failed to bring up lo interface")
 		return nil, nil, err
 	}
 	log.G(ctx).Debug("brought up lo interface")
@@ -225,8 +222,7 @@ func configureStatic(ctx context.Context, iface netlink.Link, nw Network) error 
 			// network.
 			Flags: unix.IFA_F_PERMANENT | unix.IFA_F_NODAD,
 		}); err != nil {
-			log.G(ctx).WithFields(log.Fields{
-				"error": err,
+			log.G(ctx).WithError(err).WithFields(log.Fields{
 				"addr":  prefix.String(),
 				"iface": iface.Attrs().Name,
 			}).Error("failed to add IP address to virtio interface")

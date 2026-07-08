@@ -139,7 +139,7 @@ func (s *service) Run() {
 		s.mu.Lock()
 		if _, ok := s.streams[streamID]; ok {
 			s.mu.Unlock()
-			log.L.WithField("stream", streamID).Debug("duplicate stream ID, rejecting")
+			log.L.WithField("stream_id", streamID).Debug("duplicate stream ID, rejecting")
 			// Send back an error message so the client gets a meaningful rejection
 			errMsg := fmt.Sprintf("stream %q already exists", streamID)
 			writeString(conn, errMsg)

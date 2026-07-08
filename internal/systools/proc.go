@@ -36,7 +36,7 @@ func DumpPids(ctx context.Context) {
 		return
 	}
 	if len(es) == 0 {
-		log.G(ctx).Infof("no files in /proc")
+		log.G(ctx).Info("no files in /proc")
 	}
 	for _, e := range es {
 		if _, err := strconv.Atoi(e.Name()); err == nil {
@@ -48,7 +48,7 @@ func DumpPids(ctx context.Context) {
 func dumpProcPid(ctx context.Context, pid string) {
 	f, err := os.Open(filepath.Join("/proc", pid, "status"))
 	if err != nil {
-		log.G(ctx).WithError(err).Errorf("failed to open /proc/%s/status", pid)
+		log.G(ctx).WithError(err).WithField("pid", pid).Error("failed to open /proc status file")
 		return
 	}
 	defer f.Close()

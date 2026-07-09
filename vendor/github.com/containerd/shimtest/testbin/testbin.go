@@ -84,6 +84,8 @@ func Main() {
 		cmdMemhog(args)
 	case "nc":
 		cmdNC(args)
+	case "host":
+		cmdHost(args)
 	case "tickexit":
 		cmdTickexit(args)
 	default:
@@ -444,20 +446,98 @@ func cmdBurstexit(args []string) {
 	os.Exit(exitCode)
 }
 
-// cmdNC connects to a unix domain socket and copies bidirectionally
-// between the socket and stdio. Usage: nc -U <path>
+// cmdNC is a minimal netcat-compatible tool supporting three modes:
+//
+//	nc -U <path>           connect to a unix domain socket
+//	nc <host> <port>       connect via TCP
+//	nc -u <host> <port>    exchange a single UDP datagram
+//
+// In all modes data flows verbatim between the network endpoint and stdio,
+// matching the behaviour of the standard nc(1) utility:
+//   - TCP / unix: bidirectional io.Copy (stdin→socket, socket→stdout).
+//   - UDP: one unconnected sendto (stdin→remote) then one recvfrom
+//     (remote→stdout).  The socket is unconnected (ListenPacket / WriteTo /
+//     ReadFrom, i.e. sendto/recvfrom) so that shim networking layers cannot
+//     short-circuit routing based on the local connect(2) call, which for UDP
+//     always succeeds regardless of whether any peer is listening.
 func cmdNC(args []string) {
-	if len(args) < 3 || args[1] != "-U" {
-		fmt.Fprintln(os.Stderr, "usage: nc -U <socket-path>")
+	if len(args) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: nc [-u] <host> <port> | nc -U <socket-path>")
 		os.Exit(1)
 	}
-	conn, err := net.Dial("unix", args[2])
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "nc: %s: %v\n", args[2], err)
-		os.Exit(1)
-	}
-	defer conn.Close()
 
+	switch args[1] {
+	case "-U":
+		// Unix domain socket mode.
+		if len(args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: nc -U <socket-path>")
+			os.Exit(1)
+		}
+		conn, err := net.Dial("unix", args[2])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "nc: %s: %v\n", args[2], err)
+			os.Exit(1)
+		}
+		defer conn.Close()
+		ncStream(conn)
+
+	case "-u":
+		// UDP datagram mode.
+		if len(args) < 4 {
+			fmt.Fprintln(os.Stderr, "usage: nc -u <host> <port>")
+			os.Exit(1)
+		}
+		raddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(args[2], args[3]))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "nc: resolve %s:%s: %v\n", args[2], args[3], err)
+			os.Exit(1)
+		}
+		pc, err := net.ListenPacket("udp", ":0")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "nc: udp listen: %v\n", err)
+			os.Exit(1)
+		}
+		defer pc.Close()
+
+		payload, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "nc: read stdin: %v\n", err)
+			os.Exit(1)
+		}
+		if _, err := pc.WriteTo(payload, raddr); err != nil {
+			fmt.Fprintf(os.Stderr, "nc: udp send: %v\n", err)
+			os.Exit(1)
+		}
+		buf := make([]byte, 65536)
+		n, _, err := pc.ReadFrom(buf)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "nc: udp recv: %v\n", err)
+			os.Exit(1)
+		}
+		os.Stdout.Write(buf[:n])
+
+	default:
+		// TCP mode: nc <host> <port>
+		if len(args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: nc <host> <port>")
+			os.Exit(1)
+		}
+		conn, err := net.Dial("tcp", net.JoinHostPort(args[1], args[2]))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "nc: %s:%s: %v\n", args[1], args[2], err)
+			os.Exit(1)
+		}
+		defer conn.Close()
+		ncStream(conn)
+	}
+}
+
+// ncStream copies bidirectionally between conn and stdio, mirroring the
+// behaviour of nc(1) in stream (TCP / unix) mode: stdin is forwarded to the
+// connection and the connection's output is forwarded to stdout.  Both
+// directions run concurrently; ncStream returns when both copies have
+// finished.
+func ncStream(conn net.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
@@ -469,4 +549,32 @@ func cmdNC(args []string) {
 		io.Copy(conn, os.Stdin)
 	}()
 	wg.Wait()
+}
+
+// cmdHost looks up the IP addresses for a hostname and prints them in the
+// format used by the standard host(1) utility from bind-utils:
+//
+//	<hostname> has address <ip>
+//
+// one line per address.  Only A/AAAA records are printed; the tool does not
+// perform reverse lookups or print NS/MX records.
+//
+// Usage: host <hostname>
+//
+// Exits 0 on success. Exits 1 with a diagnostic on stderr if resolution
+// fails.
+func cmdHost(args []string) {
+	if len(args) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: host <hostname>")
+		os.Exit(1)
+	}
+	name := args[1]
+	addrs, err := net.LookupHost(name)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "host: %s: %v\n", name, err)
+		os.Exit(1)
+	}
+	for _, a := range addrs {
+		fmt.Printf("%s has address %s\n", name, a)
+	}
 }

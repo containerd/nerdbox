@@ -59,9 +59,9 @@ func (e *Exchange) Forward(ctx context.Context, envelope *events.Envelope) (err 
 
 	defer func() {
 		logger := log.G(ctx).WithFields(log.Fields{
-			"topic": envelope.Topic,
-			"ns":    envelope.Namespace,
-			"type":  envelope.Event.GetTypeUrl(),
+			"topic":     envelope.Topic,
+			"namespace": envelope.Namespace,
+			"type":      envelope.Event.GetTypeUrl(),
 		})
 
 		if err != nil {
@@ -97,9 +97,9 @@ func (e *Exchange) Publish(ctx context.Context, topic string, event events.Event
 
 	defer func() {
 		logger := log.G(ctx).WithFields(log.Fields{
-			"topic": envelope.Topic,
-			"ns":    envelope.Namespace,
-			"type":  envelope.Event.GetTypeUrl(),
+			"topic":     envelope.Topic,
+			"namespace": envelope.Namespace,
+			"type":      envelope.Event.GetTypeUrl(),
 		})
 
 		if err != nil {

@@ -64,15 +64,15 @@ func connectAndCopyConsole(pipeName string, pw *io.PipeWriter) {
 			conn = c
 			break
 		}
-		log.L.WithError(err).Debugf("console pipe not ready, retrying in %s...", d)
+		log.L.WithError(err).WithField("retry_delay", d).Debug("console pipe not ready, retrying")
 		time.Sleep(d)
 	}
 	if conn == nil {
-		log.L.Warnf("failed to connect to console pipe %s within timeout", pipeName)
+		log.L.WithField("pipe", pipeName).Warn("failed to connect to console pipe within timeout")
 		return
 	}
 	defer conn.Close()
-	log.L.Debugf("connected to console pipe %s", pipeName)
+	log.L.WithField("pipe", pipeName).Debug("connected to console pipe")
 
 	if _, err := io.Copy(pw, conn); err != nil {
 		log.L.WithError(err).Debug("console pipe copy ended")

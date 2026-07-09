@@ -56,7 +56,7 @@ func copyStreams(ctx context.Context, streams [3]io.ReadWriteCloser, stdin, stdo
 					p := bufPool.Get().(*[]byte)
 					defer bufPool.Put(p)
 					if _, err := io.CopyBuffer(wc, streams[1], *p); err != nil {
-						log.G(ctx).WithError(err).WithField("stream", streams[1]).Warn("error copying stdout")
+						log.G(ctx).WithError(err).WithField("stream_id", streams[1]).Warn("error copying stdout")
 					}
 					if copying.Add(-1) == 0 {
 						close(done)

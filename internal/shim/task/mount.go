@@ -138,7 +138,7 @@ func transformMounts(ctx context.Context, id string, ms []*types.Mount, da *disk
 				// a distinct descriptor and don't overwrite each other.
 				mergedfsPath := filepath.Join(bundleDir, fmt.Sprintf("merged_fs_%c.vmdk", letter))
 				if err := erofs.DumpVMDKDescriptorToFile(mergedfsPath, 0xfffffffe, devices); err != nil {
-					log.G(ctx).Warnf("failed to generate %v: %v", mergedfsPath, err)
+					log.G(ctx).WithError(err).WithField("path", mergedfsPath).Warn("failed to generate erofs vmdk descriptor")
 					return nil, nil, fmt.Errorf("erofs vmdk: %w", errdefs.ErrNotImplemented)
 				}
 				addDisks = append(addDisks, diskOptions{
@@ -212,7 +212,7 @@ func transformMounts(ctx context.Context, id string, ms []*types.Mount, da *disk
 					return nil, nil, fmt.Errorf("cannot use virtiofs for upper dir in overlay: %w", errdefs.ErrNotImplemented)
 				}
 			} else {
-				log.G(ctx).WithField("options", m.Options).Warnf("overlayfs missing workdir or upperdir")
+				log.G(ctx).WithField("options", m.Options).Warn("overlayfs missing workdir or upperdir")
 			}
 
 			am = append(am, m)
@@ -271,11 +271,11 @@ func finalizeErofsCandidates(ctx context.Context, id string, da *diskAllocator, 
 		gptPath := filepath.Join(bundleDir, "merged_fs_gpt.vmdk")
 		if _, err := os.Stat(gptPath); err != nil {
 			if !os.IsNotExist(err) {
-				log.G(ctx).Warnf("failed to stat %v: %v", gptPath, err)
+				log.G(ctx).WithError(err).WithField("path", gptPath).Warn("failed to stat erofs gpt vmdk descriptor")
 				return fmt.Errorf("erofs gpt vmdk: %w", errdefs.ErrNotImplemented)
 			}
 			if err := erofs.DumpGPTVMDKDescriptorToFile(gptPath, 0xfffffffe, sources); err != nil {
-				log.G(ctx).Warnf("failed to generate %v: %v", gptPath, err)
+				log.G(ctx).WithError(err).WithField("path", gptPath).Warn("failed to generate erofs gpt vmdk descriptor")
 				return fmt.Errorf("erofs gpt vmdk: %w", errdefs.ErrNotImplemented)
 			}
 		}

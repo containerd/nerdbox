@@ -62,13 +62,13 @@ func SetupShimLog() {
 			if i+1 < len(args) {
 				i++
 				ns = args[i]
-				attrs = append(attrs, slog.String("ns", ns))
+				attrs = append(attrs, slog.String("namespace", ns))
 			}
 		case "-id":
 			if i+1 < len(args) {
 				i++
 				id = args[i]
-				attrs = append(attrs, slog.String("id", id))
+				attrs = append(attrs, slog.String("container_id", id))
 			}
 		}
 	}

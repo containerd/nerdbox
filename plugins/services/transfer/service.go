@@ -18,6 +18,7 @@ package transfer
 
 import (
 	"context"
+	"fmt"
 
 	transferapi "github.com/containerd/containerd/api/services/transfer/v1"
 	"github.com/containerd/containerd/v2/core/streaming"
@@ -95,7 +96,7 @@ func (s *service) Transfer(ctx context.Context, req *transferapi.TransferRequest
 		} else if !errdefs.IsNotImplemented(err) {
 			return nil, err
 		}
-		log.G(ctx).WithError(err).Debugf("transfer not implemented for %T to %T", src, dst)
+		log.G(ctx).WithError(err).WithField("src_type", fmt.Sprintf("%T", src)).WithField("dst_type", fmt.Sprintf("%T", dst)).Debug("transfer not implemented for type pair")
 	}
 	return nil, status.Errorf(codes.Unimplemented, "method Transfer not implemented for %s to %s", req.Source.GetTypeUrl(), req.Destination.GetTypeUrl())
 }

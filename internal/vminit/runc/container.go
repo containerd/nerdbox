@@ -94,7 +94,7 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 	}
 
 	if len(r.Rootfs) != 0 && (len(r.Rootfs) != 1 || r.Rootfs[0].Type != "bind" || r.Rootfs[0].Source != rootfs) {
-		log.G(ctx).WithField("mounts", r.Rootfs).Debugf("mounting rootfs components")
+		log.G(ctx).WithField("mounts", r.Rootfs).Debug("mounting rootfs components")
 		mdir := filepath.Join(r.Bundle, "mounts")
 		if err := mountutil.All(ctx, rootfs, mdir, r.Rootfs); err != nil {
 			return nil, err
@@ -451,18 +451,18 @@ func loadProcessCgroup(ctx context.Context, pid int) (cg interface{}, err error)
 	if cgroups.Mode() == cgroups.Unified {
 		g, err := cgroupsv2.PidGroupPath(pid)
 		if err != nil {
-			log.G(ctx).WithError(err).Errorf("loading cgroup2 for %d", pid)
+			log.G(ctx).WithError(err).WithField("pid", pid).Error("failed to resolve cgroup v2 path for process")
 			return nil, err
 		}
 		cg, err = cgroupsv2.Load(g)
 		if err != nil {
-			log.G(ctx).WithError(err).Errorf("loading cgroup2 for %d", pid)
+			log.G(ctx).WithError(err).WithField("pid", pid).Error("failed to load cgroup v2 for process")
 			return nil, err
 		}
 	} else {
 		cg, err = cgroup1.Load(cgroup1.PidPath(pid))
 		if err != nil {
-			log.G(ctx).WithError(err).Errorf("loading cgroup for %d", pid)
+			log.G(ctx).WithError(err).WithField("pid", pid).Error("failed to load cgroup v1 for process")
 			return nil, err
 		}
 	}

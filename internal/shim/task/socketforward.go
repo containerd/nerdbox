@@ -97,7 +97,7 @@ func (p *socketForwardsProvider) FromBundle(ctx context.Context, b *bundle.Bundl
 		}
 
 		log.G(ctx).WithFields(log.Fields{
-			"id":          entry.id,
+			"forward_id":  entry.id,
 			"source":      entry.hostPath,
 			"destination": entry.containerPath,
 			"vm_path":     entry.vmPath,

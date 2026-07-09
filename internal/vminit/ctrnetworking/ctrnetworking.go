@@ -92,10 +92,10 @@ func Connect(ctx context.Context, bundleDirname string, pid int) (func() error, 
 			}
 
 			log.G(ctx).WithFields(log.Fields{
-				"task":     pid,
-				"bridge":   nc.bridgeName,
-				"hostVeth": nc.hostVethName,
-				"ctrVeth":  nc.ctrVethName,
+				"task":      pid,
+				"bridge":    nc.bridgeName,
+				"host_veth": nc.hostVethName,
+				"ctr_veth":  nc.ctrVethName,
 			}).Debug("Added veth")
 			return nil
 		})

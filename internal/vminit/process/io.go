@@ -155,7 +155,7 @@ func createIO(ctx context.Context, id string, ioUID, ioGID int, stdio stdio.Stdi
 		if err != nil {
 			return nil, err
 		}
-		log.G(ctx).WithField("id", id).WithField("streams", streams).Debug("using stream IO")
+		log.G(ctx).WithField("container_id", id).WithField("streams", streams).Debug("using stream IO")
 		pio.streams = streams
 		pio.copy = true
 		pio.io, err = runc.NewPipeIO(ioUID, ioGID, withConditionalIO(stdio))
@@ -225,7 +225,7 @@ func copyPipes(ctx context.Context, rio runc.IO, stdin, stdout, stderr string, s
 				p := bufPool.Get().(*[]byte)
 				defer bufPool.Put(p)
 				if _, err := io.CopyBuffer(sc, src(), *p); err != nil {
-					log.G(ctx).WithError(err).Warnf("error copying %s", label)
+					log.G(ctx).WithError(err).WithField("label", label).Warn("error copying stream to vsock")
 				}
 				// CloseWrite sends OP_SHUTDOWN(SEND) ordered after all data,
 				// signalling the host to drain and deliver EOF to the FIFO.
@@ -233,7 +233,7 @@ func copyPipes(ctx context.Context, rio runc.IO, stdin, stdout, stderr string, s
 				// processIO.Close() at delete time, which runs after the host
 				// has confirmed receipt (the Wait-drain gate ensures this).
 				if err := sc.CloseWrite(); err != nil {
-					log.G(ctx).WithError(err).Warnf("error closing %s stream", label)
+					log.G(ctx).WithError(err).WithField("label", label).Warn("error closing vsock stream write side")
 				}
 				wg.Done()
 			}()
@@ -276,7 +276,7 @@ func copyPipes(ctx context.Context, rio runc.IO, stdin, stdout, stderr string, s
 				p := bufPool.Get().(*[]byte)
 				defer bufPool.Put(p)
 				if _, err := io.CopyBuffer(fw, src(), *p); err != nil {
-					log.G(ctx).WithError(err).Warnf("error copying %s", label)
+					log.G(ctx).WithError(err).WithField("label", label).Warn("error copying stream to fifo")
 				}
 				wg.Done()
 				fw.Close()

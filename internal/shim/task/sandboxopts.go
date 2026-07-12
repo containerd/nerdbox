@@ -45,7 +45,13 @@ func SandboxStartOptions(debug bool) sandbox.StartOptionsFunc {
 			resCfg.FromBundle,
 			dumpInfoCfg.FromBundle,
 			func(ctx context.Context, b *bundle.Bundle) error {
-				return addResolvConf(ctx, b, len(nwpr.nws) == 0)
+				// No pod-level DNSConfig available here: this call only
+				// exists to populate nwpr/resCfg/dumpInfoCfg from the
+				// sandbox's own bundle, ahead of it being sent to the
+				// guest at all; the resulting *bundle.Bundle itself
+				// (and therefore addResolvConf's mutations to it) is
+				// discarded below.
+				return addResolvConf(ctx, b, len(nwpr.nws) == 0, nil)
 			},
 		)
 		if err != nil {

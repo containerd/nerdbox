@@ -27,6 +27,7 @@ import (
 	"strings"
 
 	"github.com/opencontainers/runtime-spec/specs-go"
+	criapi "k8s.io/cri-api/pkg/apis/runtime/v1"
 
 	"github.com/containerd/nerdbox/internal/nwcfg"
 	"github.com/containerd/nerdbox/internal/shim/task/bundle"
@@ -161,7 +162,23 @@ func parseCtrNetwork(annotation string) (nwcfg.Network, error) {
 
 // addResolvConf adds a /etc/resolv.conf to the container, unless the
 // bundle already includes one.
-func addResolvConf(ctx context.Context, b *bundle.Bundle, fallbackToHostRC bool) error {
+//
+// podDNS, if non-nil and non-empty, is the pod's CRI DNSConfig (from
+// PodSandboxConfig.DnsConfig, threaded in from the sandbox's
+// CreateSandboxRequest.Options — see podSandboxConfig). CRI's podsandbox
+// controller writes a resolv.conf derived from this into a host file that
+// every member container bind-mounts (internal/cri/server's
+// linuxContainerMounts + podsandbox's setupSandboxFiles upstream); the
+// shim sandboxer path this package implements gets no such file from
+// containerd, so it must generate the same content itself.
+//
+// Priority, highest first: an existing bundle mount at /etc/resolv.conf
+// (do nothing — some caller already handled it); the nerdbox-specific
+// per-container annotation (pre-dates CRI support, kept for `ctr run`
+// compatibility); podDNS; and finally, only when fallbackToHostRC is set
+// (the container has no dedicated NIC, i.e. relies on TSI for
+// connectivity), a copy of the host's own resolv.conf.
+func addResolvConf(ctx context.Context, b *bundle.Bundle, fallbackToHostRC bool, podDNS *criapi.DNSConfig) error {
 	// If there's already a resolv.conf mount, don't do anything.
 	if slices.ContainsFunc(b.Spec.Mounts, func(m specs.Mount) bool {
 		return m.Destination == "/etc/resolv.conf"
@@ -187,6 +204,8 @@ func addResolvConf(ctx context.Context, b *bundle.Bundle, fallbackToHostRC bool)
 			_, _ = rcBuf.WriteRune('\n')
 		}
 		rcBytes = rcBuf.Bytes()
+	} else if podDNS != nil && (len(podDNS.GetServers()) > 0 || len(podDNS.GetSearches()) > 0 || len(podDNS.GetOptions()) > 0) {
+		rcBytes = []byte(formatPodDNSConfig(podDNS))
 	} else if fallbackToHostRC {
 		// Try giving the VM a copy of the host's resolv.conf.
 		if c, err := os.ReadFile(hostResolvConfPath()); err == nil {
@@ -208,6 +227,25 @@ func addResolvConf(ctx context.Context, b *bundle.Bundle, fallbackToHostRC bool)
 		Options:     []string{"rbind", "rprivate"},
 	})
 	return nil
+}
+
+// formatPodDNSConfig renders a CRI DNSConfig as resolv.conf(5) content,
+// matching the format used by containerd's own podsandbox controller
+// (internal/cri/server/podsandbox's parseDNSOptions upstream): one
+// "nameserver" line per server, a single "search" line listing every
+// search domain, and a single "options" line listing every option.
+func formatPodDNSConfig(dns *criapi.DNSConfig) string {
+	var buf bytes.Buffer
+	for _, s := range dns.GetServers() {
+		fmt.Fprintf(&buf, "nameserver %s\n", s)
+	}
+	if searches := dns.GetSearches(); len(searches) > 0 {
+		fmt.Fprintf(&buf, "search %s\n", strings.Join(searches, " "))
+	}
+	if opts := dns.GetOptions(); len(opts) > 0 {
+		fmt.Fprintf(&buf, "options %s\n", strings.Join(opts, " "))
+	}
+	return buf.String()
 }
 
 // systemdResolvedFullRC is the "full" resolv.conf systemd-resolved maintains

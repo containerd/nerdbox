@@ -410,6 +410,27 @@ the kernel (e.g. scoping the hijack or the vsock proxy per calling netns);
 that has not been implemented and is being deliberately deferred rather
 than treated as a bug to fix silently, since it changes TSI's contract.
 
+##### Known limitation: TSI does not mirror the host's socket table
+
+The flip side of the above: TSI provides *outbound connection* reachability
+by proxying individual `connect()`/`listen()` calls over vsock — it does
+not give the guest any *introspectable* view of the host's own network
+stack. A container cannot, for example, run `netstat`/`ss` and see the
+host's own listening sockets, the way a process would under a real Linux
+"host network" mode (`hostNetwork: true` in Kubernetes) where the
+container genuinely shares the host's network namespace and its socket
+table is the host's socket table.
+
+This means CRI's `HostNetwork: true` conformance check (`critest`'s
+"runtime should support HostNetwork is true", which starts a listener on
+the host and expects `netstat -ln` run inside the container to show it)
+cannot be satisfied by TSI, or by anything this shim does with guest
+network namespaces — see test/critest/README.md's "Known conformance
+gaps". Providing genuine host-socket-table visibility would require a
+fundamentally different networking mode from TSI (e.g. real host network
+namespace passthrough into the guest), which is not implemented and is a
+much larger change than a namespace-sharing fix.
+
 #### External NIC (explicit virtio-net)
 
 When the OCI spec annotations carry `io.containerd.nerdbox.network.*`, a

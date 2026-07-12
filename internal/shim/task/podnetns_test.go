@@ -18,6 +18,7 @@ package task
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -27,6 +28,14 @@ import (
 	"github.com/containerd/nerdbox/internal/shim/task/bundle"
 )
 
+// fakeSharedNS returns a sharedNamespacesFunc that always succeeds with
+// the given fixed paths.
+func fakeSharedNS(ipcPath, pidPath string) sharedNamespacesFunc {
+	return func(context.Context) (string, string, error) {
+		return ipcPath, pidPath, nil
+	}
+}
+
 func TestSanitizeNamespaces(t *testing.T) {
 	ctx := context.Background()
 
@@ -34,6 +43,7 @@ func TestSanitizeNamespaces(t *testing.T) {
 		name            string
 		linux           *specs.Linux
 		hasDedicatedNIC bool
+		getSharedNS     sharedNamespacesFunc // nil: use a poison func that fails the test if called
 		want            []specs.LinuxNamespace
 	}{
 		{
@@ -80,17 +90,15 @@ func TestSanitizeNamespaces(t *testing.T) {
 			},
 		},
 		{
-			name: "host paths on any other namespace type are stripped",
+			name: "host paths on UTS/User namespaces are stripped (no sharing mechanism for these)",
 			linux: &specs.Linux{
 				Namespaces: []specs.LinuxNamespace{
-					{Type: specs.PIDNamespace, Path: "/proc/12345/ns/pid"},
 					{Type: specs.UTSNamespace, Path: "/proc/12345/ns/uts"},
 					{Type: specs.UserNamespace, Path: "/proc/12345/ns/user"},
 				},
 			},
 			hasDedicatedNIC: true, // avoid also asserting the added network entry
 			want: []specs.LinuxNamespace{
-				{Type: specs.PIDNamespace, Path: ""},
 				{Type: specs.UTSNamespace, Path: ""},
 				{Type: specs.UserNamespace, Path: ""},
 			},
@@ -106,12 +114,61 @@ func TestSanitizeNamespaces(t *testing.T) {
 				{Type: specs.NetworkNamespace, Path: podnetns.Path},
 			},
 		},
+		{
+			name: "host IPC namespace path redirected to the shared pod IPC namespace",
+			linux: &specs.Linux{
+				Namespaces: []specs.LinuxNamespace{
+					{Type: specs.IPCNamespace, Path: "/proc/12345/ns/ipc"},
+				},
+			},
+			hasDedicatedNIC: true,
+			getSharedNS:     fakeSharedNS("/run/ipcns/pod", "/run/pidns/pod"),
+			want: []specs.LinuxNamespace{
+				{Type: specs.IPCNamespace, Path: "/run/ipcns/pod"},
+			},
+		},
+		{
+			name: "host PID namespace path redirected to the shared pod PID namespace (covers both PodPID and HostPID)",
+			linux: &specs.Linux{
+				Namespaces: []specs.LinuxNamespace{
+					{Type: specs.PIDNamespace, Path: "/proc/12345/ns/pid"},
+				},
+			},
+			hasDedicatedNIC: true,
+			getSharedNS:     fakeSharedNS("/run/ipcns/pod", "/run/pidns/pod"),
+			want: []specs.LinuxNamespace{
+				{Type: specs.PIDNamespace, Path: "/run/pidns/pod"},
+			},
+		},
+		{
+			name: "empty-Path IPC/PID namespaces (NamespaceMode_CONTAINER) are left alone, no shared-namespace call made",
+			linux: &specs.Linux{
+				Namespaces: []specs.LinuxNamespace{
+					{Type: specs.IPCNamespace},
+					{Type: specs.PIDNamespace},
+				},
+			},
+			hasDedicatedNIC: true,
+			want: []specs.LinuxNamespace{
+				{Type: specs.IPCNamespace},
+				{Type: specs.PIDNamespace},
+			},
+		},
 	}
 
 	for _, tc := range testcases {
 		t.Run(tc.name, func(t *testing.T) {
+			getSharedNS := tc.getSharedNS
+			if getSharedNS == nil {
+				getSharedNS = func(context.Context) (string, string, error) {
+					t.Helper()
+					t.Fatal("getSharedNS should not have been called")
+					return "", "", nil
+				}
+			}
+
 			b := &bundle.Bundle{Spec: specs.Spec{Linux: tc.linux}}
-			if err := sanitizeNamespaces(ctx, b, tc.hasDedicatedNIC); err != nil {
+			if err := sanitizeNamespaces(ctx, b, tc.hasDedicatedNIC, getSharedNS); err != nil {
 				t.Fatalf("sanitizeNamespaces: %v", err)
 			}
 			var got []specs.LinuxNamespace
@@ -122,5 +179,23 @@ func TestSanitizeNamespaces(t *testing.T) {
 				t.Errorf("namespaces = %+v, want %+v", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestSanitizeNamespacesPropagatesSharedNSError verifies that a failure to
+// obtain the shared namespaces (e.g. the guest RPC failing) is surfaced as
+// an error, not silently ignored.
+func TestSanitizeNamespacesPropagatesSharedNSError(t *testing.T) {
+	b := &bundle.Bundle{Spec: specs.Spec{Linux: &specs.Linux{
+		Namespaces: []specs.LinuxNamespace{
+			{Type: specs.IPCNamespace, Path: "/proc/12345/ns/ipc"},
+		},
+	}}}
+	wantErr := errors.New("guest unreachable")
+	err := sanitizeNamespaces(context.Background(), b, true, func(context.Context) (string, string, error) {
+		return "", "", wantErr
+	})
+	if err == nil || !errors.Is(err, wantErr) {
+		t.Errorf("sanitizeNamespaces error = %v, want wrapping %v", err, wantErr)
 	}
 }

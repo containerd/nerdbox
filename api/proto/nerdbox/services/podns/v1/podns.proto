@@ -1,0 +1,50 @@
+/*
+	Copyright The containerd Authors.
+
+	Licensed under the Apache License, Version 2.0 (the "License");
+	you may not use this file except in compliance with the License.
+	You may obtain a copy of the License at
+
+		http://www.apache.org/licenses/LICENSE-2.0
+
+	Unless required by applicable law or agreed to in writing, software
+	distributed under the License is distributed on an "AS IS" BASIS,
+	WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+	See the License for the specific language governing permissions and
+	limitations under the License.
+*/
+
+syntax = "proto3";
+
+package containerd.vminitd.services.podns.v1;
+
+option go_package = "github.com/containerd/nerdbox/api/services/podns/v1;podns";
+
+// PodNamespaces manages the guest-side namespaces that member containers
+// of one sandbox share by default: the IPC and PID namespaces (network
+// sharing is handled separately by internal/podnetns, created
+// unconditionally at vminitd startup since it needs no anchor process;
+// hostname sharing needs no namespace at all — see addHostname in
+// internal/shim/task/podconfig.go, which sets the same spec.Hostname on
+// every member container's own, independent UTS namespace, which is
+// enough to give them all the same observable hostname).
+//
+// Unlike the network namespace, the shared PID namespace requires a real,
+// persistent anchor process to exist as its PID 1 (a Linux PID namespace
+// has no content, and is torn down, once its PID 1 exits) — so, unlike
+// internal/podnetns, this is not something to create unconditionally at
+// vminitd startup for every VM regardless of whether it is ever needed.
+// EnsureNamespaces is called once per sandbox, on demand, the first time
+// the host needs shared namespaces for it.
+service PodNamespaces {
+	rpc EnsureNamespaces(EnsureNamespacesRequest) returns (EnsureNamespacesResponse);
+}
+
+message EnsureNamespacesRequest {}
+
+message EnsureNamespacesResponse {
+	// Guest paths (bind-mounted namespace files, suitable for an OCI
+	// LinuxNamespace.Path) for the shared IPC and PID namespaces.
+	string ipc_namespace_path = 1;
+	string pid_namespace_path = 2;
+}

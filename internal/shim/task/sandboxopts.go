@@ -16,6 +16,8 @@ package task
 
 import (
 	"context"
+	"fmt"
+	"os"
 
 	"github.com/containerd/log"
 
@@ -40,17 +42,39 @@ func SandboxStartOptions(debug bool) sandbox.StartOptionsFunc {
 			dumpInfoCfg dumpInfoConfig
 		)
 
-		_, err := bundle.Load(ctx, bundlePath,
+		_, err := bundle.LoadSandboxConfig(ctx, bundlePath,
 			nwpr.FromBundle,
 			resCfg.FromBundle,
 			dumpInfoCfg.FromBundle,
 			func(ctx context.Context, b *bundle.Bundle) error {
-				return addResolvConf(ctx, b, len(nwpr.nws) == 0)
+				// No pod-level DNSConfig available here: this call only
+				// exists to populate nwpr/resCfg/dumpInfoCfg from the
+				// sandbox's own bundle, ahead of it being sent to the
+				// guest at all; the resulting *bundle.Bundle itself
+				// (and therefore addResolvConf's mutations to it) is
+				// discarded below.
+				return addResolvConf(ctx, b, len(nwpr.nws) == 0, nil)
 			},
 		)
 		if err != nil {
-			// Sandbox bundle may be minimal (no config.json) — use defaults.
-			log.G(ctx).WithError(err).Debug("sandbox bundle load failed; using resource defaults")
+			// A minimal sandbox bundle with no config.json at all (e.g.
+			// shimtest's sandbox suite, `ctr` sandboxes) is the one
+			// legitimate reason to fall back to defaults: LoadSandboxConfig's
+			// first step is reading config.json, and that specific
+			// failure is returned unwrapped, so os.IsNotExist still
+			// matches it. A sandbox bundle legitimately has no Root at
+			// all (it has no rootfs of its own), which
+			// LoadSandboxConfig already accounts for, so anything else
+			// here — a config.json that exists but fails to parse, a bad
+			// network/resource annotation, or an addResolvConf failure —
+			// means the caller's requested sandbox configuration could
+			// not be honored, and silently booting with 2 vCPU/2048MiB
+			// defaults instead would discard it without any indication
+			// anything went wrong.
+			if !os.IsNotExist(err) {
+				return nil, fmt.Errorf("load sandbox bundle: %w", err)
+			}
+			log.G(ctx).WithError(err).Debug("sandbox bundle has no config.json; using resource defaults")
 			return []sandbox.Opt{
 				sandbox.WithResources(2, 2048),
 			}, nil

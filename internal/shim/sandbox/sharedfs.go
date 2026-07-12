@@ -172,6 +172,78 @@ func (s *SharedFS) ShareRootfs(ctx context.Context, containerID string, mounts [
 	return GuestRootfsPath(containerID), nil
 }
 
+// ShareVolume bind-mounts hostSource (a host path from an OCI "bind" mount
+// in a member container's spec) into the shared filesystem tree at
+// GuestVolumePath(containerID, n), and returns that guest path.
+//
+// This exists because a member container's volume mounts cannot use the
+// same mechanism as the legacy/plain-container path (internal/shim/task's
+// bindMounter, which shares each bind mount as its own new virtiofs tag):
+// by the time a member container is created the sandbox's VM is already
+// running, and virtio-fs shares cannot be hot-added after boot. Instead,
+// the host source is bind-mounted directly into the shared directory tree
+// that is already exposed to the guest via the single, persistent,
+// pre-boot "containers" virtiofs share (the same one ShareRootfs uses) —
+// so the guest sees the volume's content immediately, with no new virtiofs
+// device and no additional guest-side Mount.MountAll step required at all.
+//
+// isDir must reflect whether hostSource is a directory or a regular file:
+// unlike a virtiofs share (which must be a directory), a plain bind mount
+// can target either, but the mountpoint placeholder this function creates
+// must match (a directory for a directory bind mount, an empty regular
+// file for a file bind mount) or the mount(2) call fails.
+//
+// This mount is always read-write and recursive (rbind), regardless of
+// what the container's OCI spec requests for the volume: it exists purely
+// to expose hostSource's content (including any nested mounts under it) to
+// the guest. The caller (sandboxVolumeMounter) only rewrites the spec's
+// mount Source, leaving Options untouched, so the actual container-visible
+// read-only/recursion semantics are enforced exactly once, by the guest's
+// own OCI runtime (crun) performing its own bind mount from
+// GuestVolumePath into the container using those original options. Making
+// *this* mount read-only too would be actively wrong, not just redundant:
+// a recursive read-only bind mount sets Linux's MNT_LOCKED on every mount
+// in the hierarchy, and that lock cannot be undone by any later mount
+// (including crun's, or a fresh mount the container creates inside it) —
+// so a container-requested *non-recursive* read-only volume would become
+// unintentionally, unremovably read-only all the way down.
+func (s *SharedFS) ShareVolume(ctx context.Context, containerID string, n int, hostSource string, isDir bool) (guestPath string, err error) {
+	target := filepath.Join(s.root, containerID, "volumes", fmt.Sprintf("%d", n))
+
+	if isDir {
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			return "", fmt.Errorf("create volume dir %s: %w", target, err)
+		}
+	} else {
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return "", fmt.Errorf("create volume parent dir for %s: %w", target, err)
+		}
+		f, err := os.OpenFile(target, os.O_CREATE, 0o644)
+		if err != nil {
+			return "", fmt.Errorf("create volume file placeholder %s: %w", target, err)
+		}
+		f.Close()
+	}
+
+	m := mount.Mount{Type: "bind", Source: hostSource, Options: []string{"rbind", "rw"}}
+	if err := m.Mount(target); err != nil {
+		return "", fmt.Errorf("bind mount volume %s -> %s: %w", hostSource, target, err)
+	}
+
+	log.G(ctx).WithFields(log.Fields{
+		"container": containerID,
+		"n":         n,
+		"source":    hostSource,
+		"target":    target,
+	}).Debug("shared container volume mount")
+
+	s.mu.Lock()
+	s.mounts[containerID] = append(s.mounts[containerID], target)
+	s.mu.Unlock()
+
+	return GuestVolumePath(containerID, n), nil
+}
+
 // Unshare removes all host-side mounts created for containerID and deletes
 // its subtree under the shared directory. It is idempotent.
 func (s *SharedFS) Unshare(ctx context.Context, containerID string) error {

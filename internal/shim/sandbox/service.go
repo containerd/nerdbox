@@ -32,6 +32,7 @@ import (
 	"github.com/containerd/errdefs/pkg/errgrpc"
 	"github.com/containerd/log"
 	"github.com/containerd/ttrpc"
+	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -99,6 +100,16 @@ type SandboxService struct {
 	state      string // "" | sandboxStateReady | sandboxStateStopped
 	exitCh     chan struct{}
 	exitOnce   sync.Once
+
+	// options holds CreateSandboxRequest.Options verbatim: an opaque,
+	// caller-defined payload (in production CRI, a marshaled
+	// k8s.io/cri-api PodSandboxConfig — see internal/cri/server's
+	// sandbox_run.go, sandbox.WithOptions). The sandbox package
+	// deliberately does not interpret it: unmarshaling CRI-specific types
+	// is left to the task package (which already owns other CRI-shaped
+	// concerns like DNS annotations), keeping this package's API surface
+	// generic to the shim-v2 sandbox protocol rather than coupled to CRI.
+	options *anypb.Any
 }
 
 var _ sandboxAPI.TTRPCSandboxService = (*SandboxService)(nil)
@@ -203,9 +214,19 @@ func (s *SandboxService) CreateSandbox(ctx context.Context, req *sandboxAPI.Crea
 	s.stateDir = stateDir
 	s.sharedFS = sharedFS
 	s.networkSandbox = ns
+	s.options = req.Options
 	s.state = ""
 
 	return &sandboxAPI.CreateSandboxResponse{}, nil
+}
+
+// Options returns CreateSandboxRequest.Options verbatim (nil if none was
+// given, or CreateSandbox has not been called yet). See the field's doc
+// comment on SandboxService for why this package does not interpret it.
+func (s *SandboxService) Options() *anypb.Any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.options
 }
 
 // StartSandbox boots the VM. It calls the registered StartOptionsFunc (if

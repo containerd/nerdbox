@@ -1900,3 +1900,491 @@ file: {
     is_syntax_unspecified: false
   }
 }
+file: {
+  name: "proto/nerdbox/types/sandbox.proto"
+  package: "nerdbox.types"
+  message_type: {
+    name: "CRIPodConfig"
+    field: {
+      name: "hostname"
+      number: 2
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "hostname"
+    }
+    field: {
+      name: "dns_config"
+      number: 4
+      label: LABEL_OPTIONAL
+      type: TYPE_MESSAGE
+      type_name: ".nerdbox.types.CRIDNSConfig"
+      json_name: "dnsConfig"
+    }
+    field: {
+      name: "linux"
+      number: 8
+      label: LABEL_OPTIONAL
+      type: TYPE_MESSAGE
+      type_name: ".nerdbox.types.CRILinuxPodSandboxConfig"
+      json_name: "linux"
+    }
+  }
+  message_type: {
+    name: "CRIDNSConfig"
+    field: {
+      name: "servers"
+      number: 1
+      label: LABEL_REPEATED
+      type: TYPE_STRING
+      json_name: "servers"
+    }
+    field: {
+      name: "searches"
+      number: 2
+      label: LABEL_REPEATED
+      type: TYPE_STRING
+      json_name: "searches"
+    }
+    field: {
+      name: "options"
+      number: 3
+      label: LABEL_REPEATED
+      type: TYPE_STRING
+      json_name: "options"
+    }
+  }
+  message_type: {
+    name: "CRILinuxPodSandboxConfig"
+    field: {
+      name: "sysctls"
+      number: 3
+      label: LABEL_REPEATED
+      type: TYPE_MESSAGE
+      type_name: ".nerdbox.types.CRILinuxPodSandboxConfig.SysctlsEntry"
+      json_name: "sysctls"
+    }
+    nested_type: {
+      name: "SysctlsEntry"
+      field: {
+        name: "key"
+        number: 1
+        label: LABEL_OPTIONAL
+        type: TYPE_STRING
+        json_name: "key"
+      }
+      field: {
+        name: "value"
+        number: 2
+        label: LABEL_OPTIONAL
+        type: TYPE_STRING
+        json_name: "value"
+      }
+      options: {
+        map_entry: true
+      }
+    }
+  }
+  options: {
+    go_package: "github.com/containerd/nerdbox/api/types;types"
+  }
+  source_code_info: {
+    location: {
+      span: 16
+      span: 0
+      span: 86
+      span: 1
+    }
+    location: {
+      path: 12
+      span: 16
+      span: 0
+      span: 18
+      leading_detached_comments: "\nCopyright The containerd Authors.\n\nLicensed under the Apache License, Version 2.0 (the \"License\");\nyou may not use this file except in compliance with the License.\nYou may obtain a copy of the License at\n\nhttp://www.apache.org/licenses/LICENSE-2.0\n\nUnless required by applicable law or agreed to in writing, software\ndistributed under the License is distributed on an \"AS IS\" BASIS,\nWITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\nSee the License for the specific language governing permissions and\nlimitations under the License.\n"
+    }
+    location: {
+      path: 2
+      span: 18
+      span: 0
+      span: 22
+    }
+    location: {
+      path: 8
+      span: 20
+      span: 0
+      span: 68
+    }
+    location: {
+      path: 8
+      path: 11
+      span: 20
+      span: 0
+      span: 68
+    }
+    location: {
+      path: 4
+      path: 0
+      span: 55
+      span: 0
+      span: 62
+      span: 1
+      leading_comments: " CRIPodConfig is a hand-maintained, wire-compatible *subset* of\n k8s.io/cri-api's runtime.v1.PodSandboxConfig (the type containerd's CRI\n plugin marshals into CreateSandboxRequest.Options — see\n internal/shim/task/podconfig.go), covering only the fields the shim\n actually reads: pod hostname, DNS config, and Linux sysctls.\n\n This intentionally does NOT import k8s.io/cri-api: that package pulls in\n gRPC unconditionally (its generated *_grpc.pb.go carries no build tag),\n which defeats the shim's \"no_grpc\" build tag for the sake of decoding\n three scalar-ish fields out of an otherwise-unused message. Protobuf's\n wire format tolerates this: an unrecognized field number is simply\n skipped on decode, so a real CRI PodSandboxConfig — which carries many\n more fields than these — decodes cleanly into this subset, silently\n dropping everything this shim doesn't need.\n\n Field numbers below (and every message's nesting level) are copied\n verbatim from the upstream message (CRI v1, github.com/kubernetes/cri-api,\n pkg/apis/runtime/v1/api.proto) and MUST continue to match it exactly:\n this only decodes correctly because the wire bytes line up field-for-field\n with upstream at every level, not just the top one. CRI v1 is a frozen,\n GA, append-only-evolution API (see kubernetes/cri-api's own compatibility\n policy), so existing field numbers are not expected to ever be reused or\n renumbered. Field numbers NOT listed here (e.g. PodSandboxConfig's own\n 1, 3, 5, 6, 7, 9, 10) are other upstream fields this shim has no use for;\n they are simply omitted rather than declared, and are skipped like any\n other unrecognized field on decode.\n\n Deliberately named and packaged differently than upstream's\n runtime.v1.PodSandboxConfig, rather than reusing that exact\n fully-qualified proto name: registering a second, different message\n under upstream's own name would panic at process init if this binary\n ever also imported the real k8s.io/cri-api (protobuf-go's global type\n registry rejects duplicate registrations for the same full name).\n"
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 1
+      span: 55
+      span: 8
+      span: 20
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      path: 5
+      span: 57
+      span: 4
+      span: 10
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      span: 57
+      span: 4
+      span: 24
+      leading_comments: " Hostname of the sandbox (upstream field 2).\n"
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      path: 1
+      span: 57
+      span: 11
+      span: 19
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      path: 3
+      span: 57
+      span: 22
+      span: 23
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 1
+      path: 6
+      span: 59
+      span: 4
+      span: 16
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 1
+      span: 59
+      span: 4
+      span: 32
+      leading_comments: " DNS config for the sandbox (upstream field 4).\n"
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 1
+      path: 1
+      span: 59
+      span: 17
+      span: 27
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 1
+      path: 3
+      span: 59
+      span: 30
+      span: 31
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 2
+      path: 6
+      span: 61
+      span: 4
+      span: 28
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 2
+      span: 61
+      span: 4
+      span: 39
+      leading_comments: " Linux-specific pod sandbox config (upstream field 8).\n"
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 2
+      path: 1
+      span: 61
+      span: 29
+      span: 34
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 2
+      path: 3
+      span: 61
+      span: 37
+      span: 38
+    }
+    location: {
+      path: 4
+      path: 1
+      span: 68
+      span: 0
+      span: 75
+      span: 1
+      leading_comments: " CRIDNSConfig is a wire-compatible subset of runtime.v1.DNSConfig,\n covering every field it has today (unlike CRIPodConfig, this one just\n happens to be complete). See CRIPodConfig's doc comment for why this is\n a hand-maintained copy rather than an import.\n"
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 1
+      span: 68
+      span: 8
+      span: 20
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      path: 4
+      span: 70
+      span: 4
+      span: 12
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      span: 70
+      span: 4
+      span: 32
+      leading_comments: " List of DNS servers of the cluster (upstream field 1).\n"
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      path: 5
+      span: 70
+      span: 13
+      span: 19
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      path: 1
+      span: 70
+      span: 20
+      span: 27
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      path: 3
+      span: 70
+      span: 30
+      span: 31
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 1
+      path: 4
+      span: 72
+      span: 4
+      span: 12
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 1
+      span: 72
+      span: 4
+      span: 33
+      leading_comments: " List of DNS search domains of the cluster (upstream field 2).\n"
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 1
+      path: 5
+      span: 72
+      span: 13
+      span: 19
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 1
+      path: 1
+      span: 72
+      span: 20
+      span: 28
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 1
+      path: 3
+      span: 72
+      span: 31
+      span: 32
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 2
+      path: 4
+      span: 74
+      span: 4
+      span: 12
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 2
+      span: 74
+      span: 4
+      span: 32
+      leading_comments: " List of DNS options; see resolv.conf(5) (upstream field 3).\n"
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 2
+      path: 5
+      span: 74
+      span: 13
+      span: 19
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 2
+      path: 1
+      span: 74
+      span: 20
+      span: 27
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 2
+      path: 3
+      span: 74
+      span: 30
+      span: 31
+    }
+    location: {
+      path: 4
+      path: 2
+      span: 81
+      span: 0
+      span: 86
+      span: 1
+      leading_comments: " CRILinuxPodSandboxConfig is a wire-compatible subset of\n runtime.v1.LinuxPodSandboxConfig, covering only the field this shim\n reads (pod-level sysctls). See CRIPodConfig's doc comment for why this\n is a hand-maintained copy rather than an import.\n"
+    }
+    location: {
+      path: 4
+      path: 2
+      path: 1
+      span: 81
+      span: 8
+      span: 32
+    }
+    location: {
+      path: 4
+      path: 2
+      path: 2
+      path: 0
+      path: 6
+      span: 85
+      span: 4
+      span: 23
+    }
+    location: {
+      path: 4
+      path: 2
+      path: 2
+      path: 0
+      span: 85
+      span: 4
+      span: 36
+      leading_comments: " Sysctls to apply within the pod's containers (upstream field 3).\n Fields NOT listed here (upstream 1, 2, 4, 5) are omitted; see\n CRIPodConfig's doc comment.\n"
+    }
+    location: {
+      path: 4
+      path: 2
+      path: 2
+      path: 0
+      path: 1
+      span: 85
+      span: 24
+      span: 31
+    }
+    location: {
+      path: 4
+      path: 2
+      path: 2
+      path: 0
+      path: 3
+      span: 85
+      span: 34
+      span: 35
+    }
+  }
+  syntax: "proto3"
+  buf_extension: {
+    is_import: false
+    is_syntax_unspecified: false
+  }
+}

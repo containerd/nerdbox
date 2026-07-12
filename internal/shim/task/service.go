@@ -352,13 +352,23 @@ func (s *service) createSandboxedContainer(ctx context.Context, r *taskAPI.Creat
 		return nil, errgrpc.ToGRPC(fmt.Errorf("sandbox shared filesystem not initialised: %w", errdefs.ErrFailedPrecondition))
 	}
 
+	// Fetch the pod's CRI config (if any) once up front so the transformers
+	// below can use it. A nil/error result is never fatal here: pod config
+	// is a best-effort, CRI-specific enhancement (DNS, hostname), not
+	// something Task.Create can require — shimtest, `ctr` sandboxes, and
+	// any other non-CRI caller never provide one at all.
+	podCfg, err := decodePodSandboxConfig(s.svc.Options())
+	if err != nil {
+		log.G(ctx).WithError(err).Warn("failed to parse sandbox options as PodSandboxConfig; continuing without pod-level DNS/hostname config")
+	}
+
 	// Load the OCI bundle and apply per-container transformers.  This must
 	// happen before ShareRootfs so that UDS mount destinations can be
 	// pre-created in the source rootfs (which is still writable at this
 	// point) before the read-only bind mount is applied.
 	var (
 		ctrNetCfg ctrNetConfig
-		bm        bindMounter
+		svm       = sandboxVolumeMounter{fs: fs, containerID: r.ID}
 		blockM    blockMounter
 		sfpr      = socketForwardsProvider{containerID: r.ID}
 	)
@@ -369,11 +379,24 @@ func (s *service) createSandboxedContainer(ctx context.Context, r *taskAPI.Creat
 	da := newDiskAllocator(s.sb.ReservedDisks())
 
 	b, err := bundle.Load(ctx, r.Bundle,
-		bm.FromBundle,
+		svm.FromBundle,
 		ctrNetCfg.fromBundle,
 		sfpr.FromBundle,
 		func(ctx context.Context, b *bundle.Bundle) error {
-			return addResolvConf(ctx, b, true /* TSI / no per-container NIC */)
+			// fallbackToHostRC (copy the host's own resolv.conf) only makes
+			// sense when this container has no dedicated NIC and so relies
+			// on TSI for connectivity: with a NIC, the container has its
+			// own real guest-side network stack and should get a
+			// network-appropriate resolver, not the host's. ctrNetCfg is
+			// already populated here — ctrNetCfg.fromBundle runs earlier in
+			// this same transformer chain.
+			return addResolvConf(ctx, b, len(ctrNetCfg.Networks) == 0, podCfg.GetDnsConfig())
+		},
+		func(ctx context.Context, b *bundle.Bundle) error {
+			return addHostname(ctx, b, podCfg.GetHostname())
+		},
+		func(ctx context.Context, b *bundle.Bundle) error {
+			return addSysctls(ctx, b, podCfg.GetLinux().GetSysctls())
 		},
 		func(ctx context.Context, b *bundle.Bundle) error {
 			return sanitizeNamespaces(ctx, b, len(ctrNetCfg.Networks) > 0)
@@ -447,8 +470,10 @@ func (s *service) createSandboxedContainer(ctx context.Context, r *taskAPI.Creat
 	}
 
 	// Tell the guest to bind-mount the assembled rootfs from the shared
-	// virtiofs into the bundle rootfs location. The bind mounter also adds
-	// any virtiofs shares it created to this list.
+	// virtiofs into the bundle rootfs location. Bind-mount volumes need no
+	// entry here: sandboxVolumeMounter already exposed them inside the same
+	// "containers" virtiofs share that guestRootfs lives in, so the guest
+	// sees their content without any extra guest-side mount step.
 	var mountSpecs []*mountAPI.MountSpec
 	mountSpecs = append(mountSpecs, &mountAPI.MountSpec{
 		Type:    "bind",
@@ -456,14 +481,6 @@ func (s *service) createSandboxedContainer(ctx context.Context, r *taskAPI.Creat
 		Target:  br.Bundle + "/rootfs",
 		Options: []string{"rbind"},
 	})
-	for _, m := range bm.VmMounts() {
-		mountSpecs = append(mountSpecs, &mountAPI.MountSpec{
-			Type:    m.Type,
-			Source:  m.Source,
-			Target:  m.Target,
-			Options: m.Options,
-		})
-	}
 	for _, m := range blockM.VmMounts() {
 		mountSpecs = append(mountSpecs, &mountAPI.MountSpec{
 			Type:    m.Type,
@@ -582,7 +599,9 @@ func (s *service) createLegacyContainer(ctx context.Context, r *taskAPI.CreateTa
 		sfpr.FromBundle,
 		func(ctx context.Context, b *bundle.Bundle) error {
 			// If there are no VM networks, try falling back to host's resolv.conf (for TSI).
-			return addResolvConf(ctx, b, len(nwpr.nws) == 0)
+			// The legacy path has no sandbox/pod config concept, so there is
+			// no pod-level DNSConfig to consider.
+			return addResolvConf(ctx, b, len(nwpr.nws) == 0, nil)
 		},
 	)
 	if err != nil {

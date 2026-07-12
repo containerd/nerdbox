@@ -23,11 +23,25 @@
 # every path/env var this script uses.
 #
 # Usage:
-#   run-critest.sh up                 # generate config, start containerd, leave it running
-#   run-critest.sh down                # stop the containerd started by "up"
-#   run-critest.sh smoke               # up -> crictl lifecycle smoke test -> down (always)
-#   run-critest.sh critest [-- ARGS]   # up -> critest --runtime-handler=nerdbox ARGS -> down (always)
-#   run-critest.sh shell               # up, then drop into a shell with env set for manual crictl use
+#   run-critest.sh up               # generate config, start containerd, leave it running
+#   run-critest.sh down             # stop the containerd started by "up"
+#   run-critest.sh smoke            # up -> crictl lifecycle smoke test -> down (always)
+#   run-critest.sh critest [ARGS]   # up -> critest --runtime-handler=nerdbox [ARGS] -> down (always)
+#   run-critest.sh shell            # up, then drop into a shell with env set for manual crictl use
+#
+# ARGS are passed straight through to the critest binary's own (ginkgo/go
+# test) flag parser — do NOT prepend a literal "--" separator: a bare "--"
+# is itself consumed by that parser as "stop parsing flags", which silently
+# disables every flag after it (including --ginkgo.focus/--ginkgo.skip).
+# e.g.: run-critest.sh critest --ginkgo.focus="HostPID"
+#
+# By default, "critest" skips a small, fixed set of specs that are known,
+# permanent architectural limitations of running each sandbox in its own VM
+# (not implementation bugs) — see README.md's "Known conformance gaps" for
+# what they are and why. Pass --no-skip to run the full, unfiltered suite
+# and see them fail. Note --no-skip and --ginkgo.focus/--ginkgo.skip compose
+# via ginkgo's normal flag semantics: if ARGS also specifies --ginkgo.skip,
+# that value applies (skipping is not additionally layered in that case).
 #
 # Env vars (all optional, defaults shown):
 #   NERDBOX_OUTPUT_DIR   repo _output/ dir (shim, kernel, rootfs, libkrun.so)   [<repo>/_output]
@@ -276,14 +290,51 @@ EOF
 	log "SMOKE TEST PASSED"
 }
 
+# DEFAULT_SKIP_SPECS are critest specs that are known, permanent
+# architectural limitations of running each sandbox in its own VM kernel —
+# not implementation bugs — so they are skipped by default. Each one's
+# setup mutates state on the literal machine `critest` runs on (the real
+# host) and then expects a container running inside a *different* kernel
+# (the guest) to observe that mutation, which a VM-isolated runtime cannot
+# ever do without abandoning that isolation. See README.md's "Known
+# conformance gaps" for the detailed root-cause analysis of each one.
+DEFAULT_SKIP_SPECS=(
+	"runtime should support HostIpc is true"
+	"runtime should support HostNetwork is true"
+	"mount with 'rshared' should support propagation from host to container and vice versa"
+	"should support non-recursive readonly mounts"
+)
+
+join_regex() {
+	local IFS='|'
+	echo "(${*})"
+}
+
 cmd_critest() {
+	local no_skip=0
+	local args=()
+	for a in "$@"; do
+		if [[ "${a}" == "--no-skip" ]]; then
+			no_skip=1
+		else
+			args+=("${a}")
+		fi
+	done
+
+	local skip_flag=()
+	if [[ "${no_skip}" != "1" ]]; then
+		skip_flag=(--ginkgo.skip="$(join_regex "${DEFAULT_SKIP_SPECS[@]}")")
+		log "skipping ${#DEFAULT_SKIP_SPECS[@]} known architectural-limitation specs (see README.md; pass --no-skip to run them anyway)"
+	fi
+
 	log "running critest --runtime-handler=${RUNTIME_HANDLER}"
 	"${CRITEST_BIN}" \
 		--runtime-endpoint "unix://${SOCK}" \
 		--image-endpoint "unix://${SOCK}" \
 		--runtime-handler "${RUNTIME_HANDLER}" \
 		--report-dir "${WORK_DIR}/critest-report" \
-		"$@"
+		"${skip_flag[@]}" \
+		"${args[@]}"
 }
 
 main() {
@@ -314,7 +365,7 @@ main() {
 		CRICTL_SOCK="${SOCK}" bash -i
 		;;
 	*)
-		die "usage: $0 {up|down|smoke|critest [-- ARGS]|shell}"
+		die "usage: $0 {up|down|smoke|critest [ARGS]|shell}"
 		;;
 	esac
 }

@@ -73,8 +73,8 @@ namespace setup, cgroup accounting, syscall filtering — is managed
 | Mount namespaces | VM kernel | Each container gets its own mount namespace; rootfs is bind-mounted from the virtiofs share |
 | cgroups (v2 unified) | VM kernel | One cgroup per container, under vminitd's cgroup tree |
 | Network namespaces | VM kernel | All containers share the VM init namespace by default; per-container network isolation is supported via OCI spec |
-| IPC / /dev/shm | VM kernel | All containers share the VM's IPC namespace by default |
-| PID namespace | VM kernel | Each container gets its own PID namespace by default |
+| IPC / /dev/shm | VM kernel | Shared IPC namespace, created on demand, when CRI's pod-level IPC sharing is requested (see [Pod PID and IPC namespace sharing](#pod-pid-and-ipc-namespace-sharing)); otherwise each container gets its own |
+| PID namespace | VM kernel | Own PID namespace by default; joins a shared, on-demand pod PID namespace when CRI's pod-level PID sharing is requested (see [Pod PID and IPC namespace sharing](#pod-pid-and-ipc-namespace-sharing)) |
 | Hostname / UTS | VM kernel | Inherited from the VM init namespace unless overridden by the container OCI spec |
 
 ## Container filesystem
@@ -491,6 +491,76 @@ networking is handled exclusively by TSI (default) or the virtio-net NIC
 | Kubernetes CRI pod | Created by containerd CRI (`unshare` + bind-mount); CNI ADD before sandbox | Either of the above, with full pod netns integration |
 | `ctr run` (no sandbox) | No netns (legacy single-container path) | TSI or virtio in shim's own netns |
 | Host-network pod (`NamespaceMode_NODE`) | Not created; `netns_path` is empty | TSI or virtio in shim's own netns |
+
+## Pod PID and IPC namespace sharing
+
+Kubernetes pods share an IPC namespace by default, and can opt into sharing
+a PID namespace (`shareProcessNamespace: true`) or the node's PID/IPC
+namespaces (`hostPID`/`hostIPC: true`). containerd's `WithPodNamespaces`
+oci-spec opt expresses all of these the same way: it sets a host path (e.g.
+`/proc/<sandboxPid>/ns/ipc`) on the relevant namespace entry of a member
+container's OCI spec. That host path is meaningless in the guest — the
+guest is a different kernel with its own, unrelated PID/IPC namespaces —
+so, exactly as with the network namespace (see
+[TSI ignores guest-internal network namespaces](#known-limitation-tsi-ignores-guest-internal-network-namespaces)
+above), the shim must recognize the request and substitute a guest-side
+equivalent rather than copying the host path verbatim.
+
+### Mechanism
+
+Unlike the network namespace (created unconditionally at vminitd startup —
+see `internal/podnetns`), the shared PID and IPC namespaces are created
+**on demand**, the first time any member container's spec actually asks
+for one of them, via a small guest-side TTRPC service
+(`internal/vminit/podns`, registered as plugin `podns`):
+
+- **IPC**: created the same way as the shared network namespace — a
+  dedicated goroutine locks itself to an OS thread, calls
+  `unshare(CLONE_NEWIPC)` (which, unlike `CLONE_NEWPID`, takes effect on
+  the calling thread immediately), and bind-mounts
+  `/proc/self/task/<tid>/ns/ipc` to a well-known path
+  (`/run/ipcns/pod`). The bind mount alone keeps the namespace alive.
+- **PID**: a PID namespace has no content of its own and is torn down
+  (every process in it killed) the instant its PID 1 exits, so it cannot
+  be anchored by a bind-mount alone the way IPC and network namespaces
+  can. `unshare(CLONE_NEWPID)` also does not move the calling
+  thread/process into the new namespace — it only causes the *next
+  forked child* to become PID 1 of a new namespace. So the guest instead
+  execs a real, persistent anchor process (vminitd re-execs itself with a
+  hidden `pod-pause` argument — see `internal/vminit/podpause`) with
+  `SysProcAttr.Cloneflags: CLONE_NEWPID`, then bind-mounts
+  `/proc/<anchor-pid>/ns/pid` to `/run/pidns/pod`. The anchor ignores
+  every signal except SIGKILL and reaps any process reparented to it (a
+  PID-1-of-namespace duty), and is only ever killed by the host at
+  sandbox teardown.
+
+On the host side, `internal/shim/task/podnetns.go`'s `sanitizeNamespaces`
+bundle transformer (which already rewrites the network namespace path)
+also handles IPC and PID: any IPC or PID namespace entry with a non-empty
+incoming `Path` is treated as "share within this pod" and rewritten to
+point at the guest's shared namespace, fetched lazily (and memoized per
+`Task.Create` call) via `internal/shim/task/podns.go`'s `sharedNamespaces`
+— a TTRPC client wrapper around the guest's `PodNamespaces.EnsureNamespaces`
+call. A container whose spec has no such entry at all (the common case: no
+pod-level sharing requested) never triggers the guest RPC, and therefore
+never causes the guest to spawn the pod-pause anchor process, at all.
+
+### HostPID / HostIPC vs. PodPID: an unavoidable simplification
+
+containerd sets the *same* host path (derived from the sandbox's own PID)
+for both `NamespaceMode_POD` (pod-level sharing) and `NamespaceMode_NODE`
+(`hostPID`/`hostIPC: true`) — there is no data in the request that lets the
+shim tell them apart. This shim deliberately does not try: any non-empty
+incoming `Path` is treated identically, redirected to the pod's shared
+guest namespace. In practice this is sufficient for real CRI conformance
+(see test/critest/README.md) for everything except a `hostIPC: true` test
+that plants a SysV shared memory segment directly on the **real host
+machine** before creating the sandbox — no VM-internal namespace can make
+guest processes see an object that only exists in a different kernel
+entirely. `HostPID`, `HostIpc is false`, and `PodPID` all pass, because
+they only depend on cross-container visibility *within the same pod*,
+which the shared guest namespace genuinely provides regardless of which
+CRI namespace mode nominally asked for it.
 
 ## Sandbox lifecycle
 

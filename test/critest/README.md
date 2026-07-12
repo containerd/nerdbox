@@ -87,6 +87,29 @@ sudo -E env PATH="$PATH" \
 ./run-critest.sh down         # stop whatever "up" started
 ```
 
+`critest` accepts extra args, passed straight through to the critest
+binary's own (ginkgo/go test) flag parser — do not prepend a literal `--`
+separator; ginkgo's flag parser itself treats a bare `--` as "stop parsing
+flags", which silently disables everything after it, including
+`--ginkgo.focus`/`--ginkgo.skip`:
+
+```sh
+./run-critest.sh critest --ginkgo.focus="HostPID"   # correct
+./run-critest.sh critest -- --ginkgo.focus="HostPID"  # wrong: focus silently ignored
+```
+
+By default, `critest` skips the 4 specs described in "Known conformance
+gaps" below (permanent architectural limitations, not bugs). Pass
+`--no-skip` to run the full, unfiltered suite and see them fail:
+
+```sh
+./run-critest.sh critest --no-skip
+```
+
+Note: if you also pass your own `--ginkgo.focus` and it happens to match
+one of the 4 default-skipped specs, you need `--no-skip` too, or it will
+match zero specs.
+
 `sudo` is required: containerd's default root/state dirs and the CNI
 bridge setup need it, matching how `crictl`/CRI integration tests are
 normally run (see containerd's own `script/critest.sh` /
@@ -133,30 +156,53 @@ PID and IPC namespace sharing between member containers (see git history
 for `internal/podns`, `internal/vminit/podns`, `internal/vminit/podpause`,
 and `internal/shim/task/podnetns.go`'s rewritten `sanitizeNamespaces`).
 
-**Current status: 85 passed / 4 failed / 24 skipped.** All 4 remaining
-failures are **genuine architectural limitations** of the current design,
-not bugs, and are not expected to be fixed without a fundamentally
-different sharing mechanism:
+**Current status (`--no-skip`, the full unfiltered suite): 85 passed / 4
+failed / 24 skipped.** (With the default skip list applied: 85 passed / 0
+failed / 28 skipped.) All 4 remaining failures are **genuine architectural
+limitations** of the current design, not bugs, and are not expected to be
+fixed without a fundamentally different sharing mechanism:
 
 - **`mount with 'rshared' should support propagation from host to
-  container and vice versa`**: this test creates a *new* mount on the host
-  (or in the container) *after* the container has started, and expects it
-  to appear on the other side live. Virtio-fs is a FUSE-based *content*
-  sharing protocol between the host and guest kernels, not a live kernel
-  mount-table sync mechanism — there is no channel for a host-side mount
-  event to propagate into the guest's mount namespace (or vice versa) once
-  the initial share is established.
+  container and vice versa`**: this test checks *two* directions, and only
+  one of them actually fails. **Host→container works**: the test's own
+  setup (`createHostPathForMountPropagation`) explicitly bind-mounts the
+  volume's host source onto itself and marks it `MS_SHARED`, and per
+  `mount_namespaces(7)`, a later bind mount taken *from* an already-shared
+  mount joins the same peer group — which is exactly what
+  `SharedFS.ShareVolume`'s own (plain, non-private) bind mount does. So a
+  mount created on the host under the volume's source dir *after* the
+  container starts lands in the same host-kernel peer group as our
+  virtiofs-shared copy, and virtiofs (a live FUSE content server, not a
+  point-in-time snapshot) simply serves the now-updated content — this is
+  confirmed by the sibling test `mount with 'rslave' should support
+  propagation from host to container`, which tests only this direction
+  and **passes**. **Container→host is what actually fails**: a mount the
+  *container* creates (`mount --bind /etc containerMntPoint`, run inside
+  the guest) is a guest-kernel-internal operation. Virtio-fs's protocol
+  has no message for "a mount happened" — it only relays file/directory
+  *content* operations (open/read/readdir/etc.) — so there is no path by
+  which a guest-side `mount(2)` syscall could ever be observed by the host
+  kernel, regardless of any peer-group configuration on the host side.
+  This is a one-way, permanent limitation of the container→host direction
+  specifically, not of virtiofs-based propagation as a whole.
 - **`should support non-recursive readonly mounts`**: this test mounts a
   *separate, real* tmpfs on the host, nested inside a volume's source
-  directory, *before* the container bind-mounts that directory
-  non-recursively, and expects the OCI runtime to recognize the nested
-  mount as a distinct kernel object and leave its own read-write flag
-  alone. Virtiofs flattens nested host mounts into plain directory content
-  when sharing a tree — from the guest kernel's point of view there is no
-  mount boundary there at all, so crun's own (correctly non-recursive)
-  bind mount has no way to exclude it. Same root cause as the `rshared`
-  case above: virtiofs cannot represent the host's live kernel mount
-  graph, only file/directory content.
+  directory, *before* the container starts (not a live-propagation
+  scenario — the nested mount already exists when `ShareVolume`'s
+  recursive (`rbind`) host-side bind mount runs), and expects the OCI
+  runtime to recognize the nested mount as a distinct kernel object and
+  leave its own read-write flag alone when the container's own bind mount
+  is non-recursive. `rbind` does duplicate the nested tmpfs as its own
+  mount object in our host-side copy — but virtiofs (like most tree-share
+  protocols) does not cross mount points while serving a shared directory
+  to the guest, so the guest simply sees `/mnt/tmpfs` as an ordinary
+  (flattened) subdirectory of `/mnt`, with no mount boundary at all. From
+  crun's point of view inside the guest there is only one mount to apply
+  non-recursive-readonly to, so `/mnt/tmpfs` inherits it along with
+  everything else. Related to, but distinct from, the `rshared` case
+  above: that one is about a guest-created mount never reaching the host;
+  this one is about a host-side nested mount boundary never reaching the
+  guest as a distinct mount object in the first place.
 - **`runtime should support HostNetwork is true`**: this test runs
   `netstat -ln` inside the container and expects the *host's own listening
   socket* to literally appear in the output — true, introspectable network
@@ -181,5 +227,20 @@ different sharing mechanism:
   common Kubernetes use case (pods share IPC by default) — works
   correctly and is covered by shimtest's `MemberContainersShareIPC`.
 
-None of the remaining failures are wired into a `--ginkgo.skip` list yet — see the git log
-or ask before assuming any of them are out of scope for follow-up work.
+These 4 are wired into `run-critest.sh`'s `DEFAULT_SKIP_SPECS`, which
+`critest` applies by default (pass `--no-skip` to see them fail) — see
+"Usage" above. Keep that list and this section in sync if either changes;
+ask before assuming any *other* failure is out of scope for follow-up
+work.
+
+For comparison: Kata Containers, the most mature production VM-isolated
+CRI runtime, does not run the upstream `critest` `[k8s.io]` validation
+suite in CI at all. Its containerd `cri-integration` job uses an explicit
+*allowlist* of the handful of Go tests it knows pass
+(`FOCUS="^(TestContainerStats|TestImageLoad|...)$"`), each exclusion
+documented inline with its own rationale (e.g. its `TestContainerRestart`
+exclusion notes that starting a new container in an already-torn-down
+sandbox VM "has never been supported by kata-containers"). That is the
+same category of reasoning as the 4 specs here: tests that assume
+shared-kernel/host-visibility semantics no VM-isolated runtime can
+provide, excluded and documented rather than chased as bugs.

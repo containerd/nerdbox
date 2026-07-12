@@ -23,6 +23,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/containerd/log"
@@ -126,6 +128,34 @@ func parseUDSMount(containerID string, m specs.Mount) (socketForwardEntry, error
 		vmPath:        fmt.Sprintf("/run/socketfwd/%x.sock", hash),
 		containerPath: m.Destination,
 	}, nil
+}
+
+// CreateRootfsPlaceholders creates empty regular files for each UDS mount
+// destination inside sourceRootfs.  The OCI runtime requires the bind mount
+// destination to already exist as a file; since the container's rootfs is
+// mounted read-only, the placeholders must be present in the source before
+// the mount is applied.
+//
+// Errors are logged but not returned: a missing placeholder will cause the
+// OCI runtime to fail at container creation, which is reported there.
+func (p *socketForwardsProvider) CreateRootfsPlaceholders(ctx context.Context, sourceRootfs string) {
+	for _, entry := range p.entries {
+		destInRootfs := filepath.Join(sourceRootfs, entry.containerPath)
+		if err := os.MkdirAll(filepath.Dir(destInRootfs), 0o755); err != nil {
+			log.G(ctx).WithError(err).WithField("path", destInRootfs).
+				Warn("socketforward: failed to create parent dirs for UDS mount placeholder")
+			continue
+		}
+		f, err := os.OpenFile(destInRootfs, os.O_CREATE|os.O_EXCL, 0o666)
+		if err != nil && !os.IsExist(err) {
+			log.G(ctx).WithError(err).WithField("path", destInRootfs).
+				Warn("socketforward: failed to create UDS mount placeholder")
+			continue
+		}
+		if err == nil {
+			f.Close()
+		}
+	}
 }
 
 // bindSockets calls the Bind RPC on the VM to set up socket forward

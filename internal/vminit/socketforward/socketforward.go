@@ -166,6 +166,14 @@ func (s *Service) bind(ctx context.Context, forwardID, socketPath string) error 
 	if err != nil {
 		return fmt.Errorf("listening on %s: %w", socketPath, err)
 	}
+	// Allow all processes (including those in user namespaces) to connect to
+	// this forwarded socket.  Containers in user namespaces run as a mapped
+	// UID that is "other" from the VM init namespace's perspective, so they
+	// need write permission on the socket file to call connect(2).
+	if err := os.Chmod(socketPath, 0o777); err != nil {
+		l.Close()
+		return fmt.Errorf("chmod socket %s: %w", socketPath, err)
+	}
 
 	s.listeners = append(s.listeners, l)
 

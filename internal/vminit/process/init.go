@@ -297,6 +297,16 @@ func (p *Init) delete(ctx context.Context) error {
 			err = fmt.Errorf("failed rootfs umount: %w", err2)
 		}
 	}
+	// Remove the bundle directory from the guest's /run/bundles/ tree.
+	// Once crun has deleted its container state and the rootfs mount has
+	// been unmounted, the bundle directory is no longer needed.  Keeping
+	// it would cause /run (a size-limited tmpfs) to fill up over many
+	// container lifecycles.
+	if p.Bundle != "" {
+		if err2 := os.RemoveAll(p.Bundle); err2 != nil {
+			log.G(ctx).WithError(err2).WithField("bundle", p.Bundle).Warn("failed to remove guest bundle dir")
+		}
+	}
 	return err
 }
 

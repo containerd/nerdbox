@@ -362,6 +362,9 @@ func (s *service) createSandboxedContainer(ctx context.Context, r *taskAPI.Creat
 		func(ctx context.Context, b *bundle.Bundle) error {
 			return addResolvConf(ctx, b, true /* TSI / no per-container NIC */)
 		},
+		func(ctx context.Context, b *bundle.Bundle) error {
+			return sanitizeNamespaces(ctx, b, len(ctrNetCfg.Networks) > 0)
+		},
 	)
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)

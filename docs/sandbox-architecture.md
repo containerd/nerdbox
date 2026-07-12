@@ -265,19 +265,9 @@ Control-plane goroutines (the shim TTRPC listener, vsock accept, vminitd
 connection) operate over FD-based UDS/vsock connections established before
 `setns` and are unaffected by the namespace change.
 
-**Validated end-to-end:** `ContainerTrafficScopedToNetworkSandbox`
-(shimtest, root-gated) passes, confirming the executor's in-process
-`setns` is sufficient — a member container's outbound traffic actually
-originates from the pinned pod netns, not the shim's own. (Getting this
-test to run as real root required two unrelated fixes: `cloneMntNs`
-was unconditionally demoting the shim into a *new* user namespace even
-when already real root, which broke real block-device mounts; and
-`SharedFS.ShareRootfs` was calling the generic containerd `mount.All`
-instead of nerdbox's own `mountutil.All`, which is what understands the
-`X-containerd.mkdir.*` options used to build overlay upper/work dirs. Both
-fixed in `pkg/shim/manager/mount_linux.go` and
-`internal/shim/sandbox/sharedfs.go`.) No re-exec/trampoline pivot was
-needed.
+The executor's in-process `setns` is sufficient on its own: a member
+container's outbound traffic originates from the pinned pod netns, with
+no re-exec or trampoline process required.
 
 #### TSI (Transparent Socket Impersonation)
 
@@ -302,134 +292,40 @@ Container (guest)                    Host (pod netns)
                                      └──────────────────────┘
 ```
 
-TSI limitations: IPv4 TCP/UDP only. ICMP, raw sockets, and IPv6 are not
-supported.
+TSI covers IPv4 TCP/UDP traffic; it does not proxy ICMP, raw sockets, or
+IPv6.
 
-##### Fixed: TSIv2/TSIv3 wire-protocol mismatch
+#### DNS configuration
 
-Conformance testing (`NetworkSuite` and `ContainerOutboundTCP` in shimtest)
-initially found that TSI did not establish outbound connections at all — a
-container's `connect()` never completed, and `strace` on the host process
-showed the host-side `connect()`/`socket()` syscall was never even reached.
+Container resolv.conf content is resolved with the following priority: an
+existing bundle mount, a per-container DNS annotation
+(`io.containerd.nerdbox.ctr.dns`), the pod's CRI `DNSConfig`, and finally a
+copy of the host's own resolv.conf. When falling back to the host's
+resolv.conf, `addResolvConf` (`internal/shim/task/ctrnetworking.go`)
+prefers systemd-resolved's "full" resolv.conf
+(`/run/systemd/resolve/resolv.conf`, listing the real upstream
+nameservers) over the stub file systemd-resolved normally publishes at
+`/etc/resolv.conf` (a loopback address, unreachable from inside the guest
+in the default no-NIC/TSI configuration).
 
-Root cause: the kernel patches in `kernel/patches/` implemented an **older
-TSI wire protocol (TSIv2)** — `tsi_connect_req { u32 svm_port; u32 addr;
-u16 port; }`, a bare IPv4 address — while the bundled libkrun (v1.19.0)
-implements **TSIv3**, which uses a length-prefixed, family-tagged address
-(`{ u32 svm_port; u32 addr_len; char addr[128]; }`) to support IPv6/AF_UNIX.
-libkrun's TSIv3 parser silently misinterpreted the guest's TSIv2 payload
-(reading the raw IPv4 address as a bogus `addr_len`), so every connect
-request was dropped before any host socket call was made. This was never
-caught previously because no test in this repository (or CI) exercised TSI
-end-to-end before this pass.
+#### TSI and guest network namespaces
 
-**Fix:** the kernel patches were replaced with upstream libkrunfw's current
-TSIv3 patches (`0011`/`0012`, plus two previously-missing vsock prerequisites,
-`0009`/`0010`), matching the wire protocol libkrun v1.19.0 expects. Verified:
-all patches apply cleanly (`patch -p1 --fuzz=0`) against a real 6.12.46
-kernel tree; `ContainerOutboundTCP` and `NetworkSuite/{OutboundTCP,
-OutboundUDP,DNSResolve}` all pass against the rebuilt kernel. The Dockerfile
-patch-apply loop was also hardened with `set -e` (previously a failed hunk
-would silently continue, producing an unpatched kernel with no build error).
+TSI's socket hijack operates on address family alone, before any
+namespace-aware routing decision, and the resulting vsock channel to
+`VMADDR_CID_HOST` is not real IP routing — so it is not scoped by, and
+cannot be filtered via, guest-internal network namespaces. Guest-internal
+network namespaces (per-container or otherwise) provide
+container-to-container isolation, via the veth/bridge mechanisms in
+`internal/vminit/ctrnetworking`, while the host-reachability boundary is
+established entirely on the host side: the pod netns the shim pins and
+the executor thread enters via `setns` (see
+[Layer 1](#layer-1--host-network-sandbox-linux-netns) above), which
+determines which host network TSI's proxied connections land in.
 
-##### Known limitation: connected UDP sockets to loopback destinations
-
-TSI's `tsi_connect()` tries the guest's own local `AF_INET` socket first;
-only if that local `connect()` fails does it fall back to proxying via
-vsock to the host. For **UDP**, a local `connect()` is a purely local
-kernel operation — it succeeds immediately whenever the routing table has
-*any* route to the destination, with no live handshake. In the default
-no-NIC guest (only `lo` configured), that is true for **loopback**
-destinations (`127.0.0.0/8`, always locally routable) but false for real
-external IPs (no default route without a NIC, so `connect()` fails with
-`ENETUNREACH` and correctly falls through to the vsock/host proxy).
-
-Net effect: an application using a "dial once, then read/write" UDP pattern
-(a *connected* UDP socket, e.g. `net.Dial("udp", ...)` in Go) against a
-**loopback** destination gets silently locked to the guest's own isolated
-network stack and never reaches the host — even though the exact same
-pattern against a real external IP works correctly. Per-datagram
-"unconnected" UDP (`sendto`/`recvfrom`, e.g. `net.ListenPacket` +
-`WriteTo`/`ReadFrom` in Go) is unaffected: TSI checks for a local listener
-on every message and proxies to the host when there isn't one.
-
-This surfaced in practice as a DNS resolution failure: Go's standard
-resolver uses connected UDP internally, and many Linux distributions
-(anything using systemd-resolved) point `/etc/resolv.conf` at a loopback
-stub resolver (`127.0.0.53`). Copying that file verbatim into the guest (the
-`addResolvConf` fallback path) produced a `resolv.conf` whose nameserver is
-unreachable from inside the VM.
-
-This is not a nerdbox- or TSI-specific bug so much as a general
-consequence of copying host DNS configuration into an isolated network
-environment — Docker and containerd's CRI implementation handle the exact
-same systemd-resolved case by preferring systemd-resolved's "full"
-resolv.conf (`/run/systemd/resolve/resolv.conf`, which lists the real,
-non-loopback upstream nameservers) over the stub file. `addResolvConf`
-(`internal/shim/task/ctrnetworking.go`) now does the same: it detects an
-all-loopback nameserver list and substitutes the full file when present.
-No kernel change was needed or attempted for this — the underlying
-connected-UDP-to-loopback behavior in TSI is left as-is (fixing it would
-mean patching `tsi_connect()` to add dgram-aware, loopback-aware fallback
-logic in `af_tsi.c`, diverging further from upstream; there is no known
-open upstream issue for this specific case, likely because most libkrun
-consumers do not blindly copy the host's raw `resolv.conf`).
-
-##### Known limitation: TSI ignores guest-internal network namespaces
-
-TSI provides no network-namespace isolation *inside the guest*. The kernel
-patch's socket hijack (`__sock_create` rewriting `AF_INET`/`AF_INET6` to
-`AF_TSI`/`AF_TSI6`) triggers purely on address family, before any
-namespace-aware routing decision would occur, and the resulting vsock
-channel to `VMADDR_CID_HOST` is not real IP routing — it is not subject to
-netns scoping, and (since no real `AF_INET` socket ever exists) it cannot
-be filtered by guest-side `iptables`/`nftables` either.
-
-Concretely: placing a container in its own, brand-new guest network
-namespace (an explicit, empty-`Path` `NetworkNamespace` entry in the OCI
-spec — real `crun`-level netns isolation, not the host-side sandbox netns
-pinning described above) does **not** stop it from reaching a host TCP
-listener via TSI. Verified empirically: a container so configured
-successfully completed a full TCP round trip to a host listener bound to
-`127.0.0.1`.
-
-**The practical model:** when TSI is enabled (the default), treat the
-*entire guest kernel* as a single network namespace with respect to host
-reachability — guest-internal network namespaces (per-container or
-otherwise) provide **container-to-container** isolation (via the normal
-veth/bridge mechanisms in `internal/vminit/ctrnetworking`) but provide
-**no host-isolation boundary**. The only real host-isolation boundary is
-the host-side one described in [Layer 1](#layer-1--host-network-sandbox-linux-netns)
-above: the pod netns the shim pins and the executor thread `setns`s into,
-which determines *which host network* TSI's proxied connections land in.
-A container cannot escape that host-side scoping by manipulating its own
-guest netns — but by the same token, no guest-side netns configuration
-narrows it either. If per-container host-isolation stronger than the pod's
-own netns is ever required, TSI would need to become namespace-aware in
-the kernel (e.g. scoping the hijack or the vsock proxy per calling netns);
-that has not been implemented and is being deliberately deferred rather
-than treated as a bug to fix silently, since it changes TSI's contract.
-
-##### Known limitation: TSI does not mirror the host's socket table
-
-The flip side of the above: TSI provides *outbound connection* reachability
-by proxying individual `connect()`/`listen()` calls over vsock — it does
-not give the guest any *introspectable* view of the host's own network
-stack. A container cannot, for example, run `netstat`/`ss` and see the
-host's own listening sockets, the way a process would under a real Linux
-"host network" mode (`hostNetwork: true` in Kubernetes) where the
-container genuinely shares the host's network namespace and its socket
-table is the host's socket table.
-
-This means CRI's `HostNetwork: true` conformance check (`critest`'s
-"runtime should support HostNetwork is true", which starts a listener on
-the host and expects `netstat -ln` run inside the container to show it)
-cannot be satisfied by TSI, or by anything this shim does with guest
-network namespaces — see test/critest/README.md's "Known conformance
-gaps". Providing genuine host-socket-table visibility would require a
-fundamentally different networking mode from TSI (e.g. real host network
-namespace passthrough into the guest), which is not implemented and is a
-much larger change than a namespace-sharing fix.
+TSI proxies individual outbound `connect()`/`listen()` calls; it does not
+mirror the host's own socket table into the guest, so introspection tools
+like `netstat`/`ss` run inside a container only see the container's own
+guest-side connections, not the host's.
 
 #### External NIC (explicit virtio-net)
 
@@ -502,8 +398,8 @@ oci-spec opt expresses all of these the same way: it sets a host path (e.g.
 container's OCI spec. That host path is meaningless in the guest — the
 guest is a different kernel with its own, unrelated PID/IPC namespaces —
 so, exactly as with the network namespace (see
-[TSI ignores guest-internal network namespaces](#known-limitation-tsi-ignores-guest-internal-network-namespaces)
-above), the shim must recognize the request and substitute a guest-side
+[TSI and guest network namespaces](#tsi-and-guest-network-namespaces)
+above), the shim recognizes the request and substitutes a guest-side
 equivalent rather than copying the host path verbatim.
 
 ### Mechanism
@@ -545,22 +441,15 @@ call. A container whose spec has no such entry at all (the common case: no
 pod-level sharing requested) never triggers the guest RPC, and therefore
 never causes the guest to spawn the pod-pause anchor process, at all.
 
-### HostPID / HostIPC vs. PodPID: an unavoidable simplification
+### HostPID / HostIPC vs. PodPID
 
 containerd sets the *same* host path (derived from the sandbox's own PID)
 for both `NamespaceMode_POD` (pod-level sharing) and `NamespaceMode_NODE`
 (`hostPID`/`hostIPC: true`) — there is no data in the request that lets the
-shim tell them apart. This shim deliberately does not try: any non-empty
-incoming `Path` is treated identically, redirected to the pod's shared
-guest namespace. In practice this is sufficient for real CRI conformance
-(see test/critest/README.md) for everything except a `hostIPC: true` test
-that plants a SysV shared memory segment directly on the **real host
-machine** before creating the sandbox — no VM-internal namespace can make
-guest processes see an object that only exists in a different kernel
-entirely. `HostPID`, `HostIpc is false`, and `PodPID` all pass, because
-they only depend on cross-container visibility *within the same pod*,
-which the shared guest namespace genuinely provides regardless of which
-CRI namespace mode nominally asked for it.
+shim tell them apart, so both are treated identically: any non-empty
+incoming `Path` is redirected to the pod's shared guest namespace. This
+gives every member container of a pod a consistent, shared PID/IPC view
+regardless of which CRI namespace mode requested it.
 
 ## Sandbox lifecycle
 

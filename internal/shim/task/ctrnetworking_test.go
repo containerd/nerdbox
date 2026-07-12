@@ -28,6 +28,7 @@ import (
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	criapi "k8s.io/cri-api/pkg/apis/runtime/v1"
 
 	"github.com/containerd/nerdbox/internal/nwcfg"
 	"github.com/containerd/nerdbox/internal/shim/task/bundle"
@@ -240,7 +241,7 @@ func TestAddResolvConf(t *testing.T) {
 		b := &bundle.Bundle{Spec: specs.Spec{Mounts: []specs.Mount{
 			{Destination: "/etc/resolv.conf", Type: "bind", Source: "/custom/resolv.conf"},
 		}}}
-		require.NoError(t, addResolvConf(context.Background(), b, true))
+		require.NoError(t, addResolvConf(context.Background(), b, true, nil))
 		require.Len(t, b.Spec.Mounts, 1)
 		assert.Equal(t, "/custom/resolv.conf", b.Spec.Mounts[0].Source)
 	})
@@ -249,7 +250,7 @@ func TestAddResolvConf(t *testing.T) {
 		b := loadTestBundle(t, specs.Spec{Annotations: map[string]string{
 			"io.containerd.nerdbox.ctr.dns": "nameserver=8.8.8.8,search=example.com",
 		}})
-		require.NoError(t, addResolvConf(context.Background(), b, false))
+		require.NoError(t, addResolvConf(context.Background(), b, false, nil))
 
 		// Annotation is stripped after being consumed.
 		_, hasAnnot := b.Spec.Annotations["io.containerd.nerdbox.ctr.dns"]
@@ -273,7 +274,7 @@ func TestAddResolvConf(t *testing.T) {
 		// /etc/resolv.conf; the source is "resolv.conf" (extra file) when the host
 		// file was read, or the VM's own /etc/resolv.conf when it was not.
 		b := loadTestBundle(t, specs.Spec{})
-		require.NoError(t, addResolvConf(context.Background(), b, true))
+		require.NoError(t, addResolvConf(context.Background(), b, true, nil))
 		require.Len(t, b.Spec.Mounts, 1)
 		assert.Equal(t, "/etc/resolv.conf", b.Spec.Mounts[0].Destination)
 		assert.Contains(t, []string{"resolv.conf", "/etc/resolv.conf"}, b.Spec.Mounts[0].Source)
@@ -281,9 +282,52 @@ func TestAddResolvConf(t *testing.T) {
 
 	t.Run("no annotation and fallback disabled defaults to VM resolv.conf", func(t *testing.T) {
 		b := &bundle.Bundle{Spec: specs.Spec{}}
-		require.NoError(t, addResolvConf(context.Background(), b, false))
+		require.NoError(t, addResolvConf(context.Background(), b, false, nil))
 		require.Len(t, b.Spec.Mounts, 1)
 		assert.Equal(t, "/etc/resolv.conf", b.Spec.Mounts[0].Destination)
+		assert.Equal(t, "/etc/resolv.conf", b.Spec.Mounts[0].Source)
+	})
+
+	t.Run("pod DNSConfig generates resolv.conf content", func(t *testing.T) {
+		b := loadTestBundle(t, specs.Spec{})
+		podDNS := &criapi.DNSConfig{
+			Servers:  []string{"1.1.1.1", "8.8.8.8"},
+			Searches: []string{"svc.cluster.local", "cluster.local"},
+			Options:  []string{"ndots:5"},
+		}
+		require.NoError(t, addResolvConf(context.Background(), b, false, podDNS))
+
+		require.Len(t, b.Spec.Mounts, 1)
+		assert.Equal(t, "/etc/resolv.conf", b.Spec.Mounts[0].Destination)
+		assert.Equal(t, "resolv.conf", b.Spec.Mounts[0].Source)
+
+		files, err := b.Files()
+		require.NoError(t, err)
+		content := string(files["resolv.conf"])
+		assert.Contains(t, content, "nameserver 1.1.1.1\n")
+		assert.Contains(t, content, "nameserver 8.8.8.8\n")
+		assert.Contains(t, content, "search svc.cluster.local cluster.local\n")
+		assert.Contains(t, content, "options ndots:5\n")
+	})
+
+	t.Run("dns annotation takes priority over pod DNSConfig", func(t *testing.T) {
+		b := loadTestBundle(t, specs.Spec{Annotations: map[string]string{
+			"io.containerd.nerdbox.ctr.dns": "nameserver=8.8.8.8",
+		}})
+		podDNS := &criapi.DNSConfig{Servers: []string{"1.1.1.1"}}
+		require.NoError(t, addResolvConf(context.Background(), b, false, podDNS))
+
+		files, err := b.Files()
+		require.NoError(t, err)
+		content := string(files["resolv.conf"])
+		assert.Contains(t, content, "nameserver 8.8.8.8\n")
+		assert.NotContains(t, content, "1.1.1.1")
+	})
+
+	t.Run("empty pod DNSConfig falls through to fallback", func(t *testing.T) {
+		b := loadTestBundle(t, specs.Spec{})
+		require.NoError(t, addResolvConf(context.Background(), b, false, &criapi.DNSConfig{}))
+		require.Len(t, b.Spec.Mounts, 1)
 		assert.Equal(t, "/etc/resolv.conf", b.Spec.Mounts[0].Source)
 	})
 }

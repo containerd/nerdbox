@@ -119,7 +119,7 @@ func guestRuncOptions(ctx context.Context, opts *ptypes.Any) (*ptypes.Any, error
 }
 
 // NewTaskService creates a new instance of a task service
-func NewTaskService(ctx context.Context, sb sandbox.Sandbox, publisher shim.Publisher, sd shutdown.Service) (taskAPI.TTRPCTaskService, error) {
+func NewTaskService(ctx context.Context, svc *sandbox.SandboxService, publisher shim.Publisher, sd shutdown.Service) (taskAPI.TTRPCTaskService, error) {
 	var debug bool
 	if opts, ok := ctx.Value(shim.OptsKey{}).(shim.Opts); ok {
 		debug = opts.Debug
@@ -127,7 +127,8 @@ func NewTaskService(ctx context.Context, sb sandbox.Sandbox, publisher shim.Publ
 
 	s := &service{
 		context:          ctx,
-		sb:               sb,
+		sb:               svc,
+		svc:              svc,
 		events:           make(chan any, 128),
 		containers:       make(map[string]*container),
 		debug:            debug,
@@ -169,6 +170,10 @@ type container struct {
 	execIODone map[string]<-chan struct{}
 	// execStdinEOF holds the in-band stdin EOF sender per exec ID.
 	execStdinEOF map[string]func() error
+
+	// sharedFSID, when non-empty, is the container ID to unshare from the
+	// sandbox SharedFS on Delete. Set only on the sandboxed path.
+	sharedFSID string
 }
 
 // shutdown shuts down the container's IO streams, socket forwarding, and all
@@ -197,13 +202,23 @@ func (c *container) shutdown(ctx context.Context) error {
 type service struct {
 	mu sync.Mutex
 
-	// sb is the sandbox instance used to run the container
+	// sb is the sandbox instance used to run the container (VM lifecycle +
+	// TTRPC client). For the sandbox API path this is the SandboxService;
+	// for the legacy single-container path it is a plain vm sandbox.
 	sb sandbox.Sandbox
+
+	// svc is the full SandboxService. It is non-nil when using the containerd
+	// sandbox API path, and nil on the legacy single-container path.
+	svc *sandbox.SandboxService
 
 	context context.Context
 	events  chan any
 
 	containers map[string]*container
+
+	// eventStreamOnce ensures the VM event stream is started exactly once,
+	// regardless of how many containers are created in a sandboxed VM.
+	eventStreamOnce sync.Once
 
 	debug                bool
 	initiateShutdown     func()
@@ -227,7 +242,14 @@ func (s *service) shutdown(ctx context.Context) error {
 		}
 	}
 
-	if s.sb != nil {
+	// When using the containerd sandbox API (svc != nil and sandboxed), the
+	// SandboxService owns VM lifetime. ShutdownSandbox will be called by the
+	// sandbox controller, which triggers VM stop and SharedFS cleanup there.
+	// We only stop the VM ourselves on the legacy single-container path
+	// (svc == nil or not yet sandboxed via the API).
+	sandboxOwned := s.svc != nil && s.svc.IsSandboxed()
+
+	if s.sb != nil && !sandboxOwned {
 		// Unmount all block volumes inside the guest before stopping the VM,
 		// to flush ext4 journals and dirty pages to the virtio-blk devices.
 		// Best-effort with a short retry for transient EBUSY.
@@ -295,6 +317,234 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		return nil, errgrpc.ToGRPC(fmt.Errorf("checkpoints not supported: %w", errdefs.ErrNotImplemented))
 	}
 
+	// When the containerd sandbox API is in use (svc.IsSandboxed()), the VM
+	// is already running (StartSandbox booted it). We skip VM boot and use
+	// the shared filesystem to serve the container rootfs. On the legacy
+	// single-container path, we boot the VM here as before.
+	if s.svc != nil && s.svc.IsSandboxed() {
+		return s.createSandboxedContainer(ctx, r)
+	}
+	return s.createLegacyContainer(ctx, r)
+}
+
+// createSandboxedContainer handles Task.Create for a member container of an
+// already-running sandbox VM. It resolves the rootfs on the host via the
+// SharedFS (which exposes it into the VM over virtiofs), then drives the
+// guest bundle/mount/task RPCs.
+func (s *service) createSandboxedContainer(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *taskAPI.CreateTaskResponse, err error) {
+	presetup := time.Now()
+
+	fs := s.svc.FS()
+	if fs == nil {
+		return nil, errgrpc.ToGRPC(fmt.Errorf("sandbox shared filesystem not initialised: %w", errdefs.ErrFailedPrecondition))
+	}
+
+	// Load the OCI bundle and apply per-container transformers.  This must
+	// happen before ShareRootfs so that UDS mount destinations can be
+	// pre-created in the source rootfs (which is still writable at this
+	// point) before the read-only bind mount is applied.
+	var (
+		ctrNetCfg ctrNetConfig
+		bm        bindMounter
+		blockM    blockMounter
+		sfpr      = socketForwardsProvider{containerID: r.ID}
+	)
+
+	// For the sandboxed path we use a dummy disk allocator since block
+	// devices cannot be hotplugged. ext4 volumes are still supported via
+	// the legacy path only.
+	da := newDiskAllocator(s.sb.ReservedDisks())
+
+	b, err := bundle.Load(ctx, r.Bundle,
+		bm.FromBundle,
+		ctrNetCfg.fromBundle,
+		sfpr.FromBundle,
+		func(ctx context.Context, b *bundle.Bundle) error {
+			return addResolvConf(ctx, b, true /* TSI / no per-container NIC */)
+		},
+	)
+	if err != nil {
+		return nil, errgrpc.ToGRPC(err)
+	}
+
+	// UDS mounts are rewritten to bind mounts whose source is a socket
+	// file inside the VM and whose destination is a path in the container
+	// rootfs (e.g. /run/shared.sock).  The OCI runtime requires the
+	// destination to already exist as a regular file.  Since the rootfs
+	// will be bind-mounted read-only, we create empty placeholder files in
+	// the SOURCE rootfs directory now, while it is still writable.
+	for _, m := range r.Rootfs {
+		if m.Type == "bind" && m.Source != "" {
+			sfpr.CreateRootfsPlaceholders(ctx, m.Source)
+			break // placeholders are the same regardless of layer; one source suffices
+		}
+	}
+
+	// Assemble the container rootfs on the host inside the shared dir.
+	// Done after bundle loading so UDS placeholders are in place before the
+	// read-only bind mount is applied.
+	guestRootfs, err := fs.ShareRootfs(ctx, r.ID, r.Rootfs)
+	if err != nil {
+		fs.Unshare(ctx, r.ID) //nolint:errcheck
+		return nil, errgrpc.ToGRPC(fmt.Errorf("share rootfs for %s: %w", r.ID, err))
+	}
+
+	nwJSON, err := json.Marshal(ctrNetCfg)
+	if err != nil {
+		fs.Unshare(ctx, r.ID) //nolint:errcheck
+		return nil, errgrpc.ToGRPC(fmt.Errorf("marshal container network config: %w", err))
+	}
+	b.AddExtraFile(nwcfg.Filename, nwJSON)
+
+	// Process ext4 volume mounts in the OCI spec. Note: hotplug is not
+	// supported so ext4 volumes are not usable in sandboxed mode; FromBundle
+	// will return no-op if there are no ext4 mounts.
+	if err := blockM.FromBundle(ctx, b, r.ID, &da); err != nil {
+		fs.Unshare(ctx, r.ID) //nolint:errcheck
+		return nil, errgrpc.ToGRPC(err)
+	}
+
+	vmc, err := s.sb.Client()
+	if err != nil {
+		fs.Unshare(ctx, r.ID) //nolint:errcheck
+		return nil, errgrpc.ToGRPC(err)
+	}
+
+	// Start the VM event stream exactly once for this sandbox (subsequent
+	// containers in the same VM reuse the same stream).
+	s.startVMEventStream(vmc)
+
+	bundleFiles, err := b.Files()
+	if err != nil {
+		fs.Unshare(ctx, r.ID) //nolint:errcheck
+		return nil, errgrpc.ToGRPC(err)
+	}
+
+	bundleService := bundleAPI.NewTTRPCBundleClient(vmc)
+	br, err := bundleService.Create(ctx, &bundleAPI.CreateRequest{
+		ID:    r.ID,
+		Files: bundleFiles,
+	})
+	if err != nil {
+		fs.Unshare(ctx, r.ID) //nolint:errcheck
+		return nil, errgrpc.ToGRPC(err)
+	}
+
+	// Tell the guest to bind-mount the assembled rootfs from the shared
+	// virtiofs into the bundle rootfs location. The bind mounter also adds
+	// any virtiofs shares it created to this list.
+	var mountSpecs []*mountAPI.MountSpec
+	mountSpecs = append(mountSpecs, &mountAPI.MountSpec{
+		Type:    "bind",
+		Source:  guestRootfs,
+		Target:  br.Bundle + "/rootfs",
+		Options: []string{"rbind"},
+	})
+	for _, m := range bm.VmMounts() {
+		mountSpecs = append(mountSpecs, &mountAPI.MountSpec{
+			Type:    m.Type,
+			Source:  m.Source,
+			Target:  m.Target,
+			Options: m.Options,
+		})
+	}
+	for _, m := range blockM.VmMounts() {
+		mountSpecs = append(mountSpecs, &mountAPI.MountSpec{
+			Type:    m.Type,
+			Source:  m.Source,
+			Target:  m.Target,
+			Options: m.Options,
+		})
+	}
+
+	mc := mountAPI.NewTTRPCMountClient(vmc)
+	if _, err := mc.MountAll(ctx, &mountAPI.MountAllRequest{Mounts: mountSpecs}); err != nil {
+		fs.Unshare(ctx, r.ID) //nolint:errcheck
+		return nil, errgrpc.ToGRPC(fmt.Errorf("guest MountAll: %w", err))
+	}
+
+	rio := stdio.Stdio{
+		Stdin:    r.Stdin,
+		Stdout:   r.Stdout,
+		Stderr:   r.Stderr,
+		Terminal: r.Terminal,
+	}
+
+	cio, ioShutdown, initIODone, initStdinEOF, err := s.forwardIO(ctx, s.sb, r.ID, rio)
+	if err != nil {
+		fs.Unshare(ctx, r.ID) //nolint:errcheck
+		return nil, errgrpc.ToGRPC(err)
+	}
+
+	if err := bindSockets(ctx, s.sb, sfpr.entries); err != nil {
+		ioShutdown(ctx)       //nolint:errcheck
+		fs.Unshare(ctx, r.ID) //nolint:errcheck
+		return nil, errgrpc.ToGRPC(err)
+	}
+
+	setupTime := time.Since(presetup)
+	preCreate := time.Now()
+
+	c := &container{
+		ioShutdown:    ioShutdown,
+		ioDone:        initIODone,
+		stdinEOF:      initStdinEOF,
+		execShutdowns: make(map[string]func(context.Context) error),
+		execIODone:    make(map[string]<-chan struct{}),
+		execStdinEOF:  make(map[string]func() error),
+		sharedFSID:    r.ID, // record for cleanup in Delete
+	}
+
+	// For the sandboxed path the rootfs mount specs presented to the guest
+	// Task service are just a bind from the already-mounted shared path.
+	guestRootfsMounts := []*types.Mount{{
+		Type:    "bind",
+		Source:  guestRootfs,
+		Options: []string{"rbind"},
+	}}
+
+	tc := taskAPI.NewTTRPCTaskClient(vmc)
+	resp, err := tc.Create(ctx, &taskAPI.CreateTaskRequest{
+		ID:       r.ID,
+		Bundle:   br.Bundle,
+		Rootfs:   guestRootfsMounts,
+		Terminal: cio.Terminal,
+		Stdin:    cio.Stdin,
+		Stdout:   cio.Stdout,
+		Stderr:   cio.Stderr,
+		Options:  r.Options,
+	})
+	if err != nil {
+		log.G(ctx).WithError(err).Error("failed to create sandboxed task")
+		c.shutdown(ctx)       //nolint:errcheck
+		fs.Unshare(ctx, r.ID) //nolint:errcheck
+		return nil, errgrpc.ToGRPC(err)
+	}
+
+	fwder, err := startSocketForwarding(context.Background(), s.sb, r.ID, sfpr.entries)
+	if err != nil {
+		log.G(ctx).WithError(err).Error("failed to start socket forwarding")
+		c.shutdown(ctx)       //nolint:errcheck
+		fs.Unshare(ctx, r.ID) //nolint:errcheck
+		return nil, errgrpc.ToGRPC(err)
+	}
+	c.forwarder = fwder
+
+	log.G(ctx).WithFields(log.Fields{
+		"t_setup":  setupTime,
+		"t_create": time.Since(preCreate),
+	}).Info("sandboxed task successfully created")
+
+	s.mu.Lock()
+	s.containers[r.ID] = c
+	s.mu.Unlock()
+
+	return &taskAPI.CreateTaskResponse{Pid: resp.Pid}, nil
+}
+
+// createLegacyContainer is the original single-container path: boot a new VM
+// per container. Preserved unchanged for non-sandboxed usage.
+func (s *service) createLegacyContainer(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *taskAPI.CreateTaskResponse, err error) {
 	presetup := time.Now()
 
 	var (
@@ -397,34 +647,10 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		return nil, errgrpc.ToGRPC(err)
 	}
 
-	// Start forwarding events.
-	// Use the shim's long-lived context (not the RPC ctx) for the event
-	// stream. If the connection closes, ctx gets canceled, which causes
-	// RecvMsg to return without deleting the underlying ttrpc stream. The VM
-	// keeps sending events to that orphaned stream, which fills the stream's
-	// recv buffer and blocks the ttrpc receive loop — deadlocking all
-	// subsequent calls on the same ttrpc client. This needs a fix in ttrpc
-	// to avoid deadlock, but the stream should be consumed until the stream
-	// is done or the ttrpc connection closes.
-	sc, err := vmevents.NewTTRPCEventsClient(vmc).Stream(s.context, empty)
-	if err != nil {
-		return nil, errgrpc.ToGRPC(err)
-	}
-	ns, _ := namespaces.Namespace(ctx)
-	go func(ns string) {
-		for {
-			ev, err := sc.Recv()
-			if err != nil {
-				if errors.Is(err, io.EOF) || errors.Is(err, shutdown.ErrShutdown) {
-					log.G(ctx).Info("vm event stream closed")
-				} else {
-					log.G(ctx).WithError(err).Error("vm event stream error")
-				}
-				return
-			}
-			s.send(ev)
-		}
-	}(ns)
+	// Start forwarding events. Use the idempotent helper so the stream is
+	// started exactly once. On the legacy path there is always exactly one
+	// call, but using the same helper keeps the logic consistent.
+	s.startVMEventStream(vmc)
 
 	bundleFiles, err := b.Files()
 	if err != nil {
@@ -542,26 +768,6 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	s.containers[r.ID] = c
 	s.mu.Unlock()
 
-	// TODO: Forward events rather than generate here?
-	//s.send(&eventstypes.TaskCreate{
-	//	ContainerID: r.ID,
-	//	Bundle:      r.Bundle,
-	//	Rootfs:      r.Rootfs,
-	//	IO: &eventstypes.TaskIO{
-	//		Stdin:    r.Stdin,
-	//		Stdout:   r.Stdout,
-	//		Stderr:   r.Stderr,
-	//		Terminal: r.Terminal,
-	//	},
-	//	Pid: resp.Pid,
-	//})
-
-	// The following line cannot return an error as the only state in which that
-	// could happen would also cause the container.Pid() call above to
-	// nil-deference panic.
-	// proc, _ := container.Process("")
-	// handleStarted(container, proc)
-
 	return &taskAPI.CreateTaskResponse{
 		Pid: resp.Pid,
 	}, nil
@@ -604,11 +810,20 @@ func (s *service) Delete(ctx context.Context, r *taskAPI.DeleteRequest) (*taskAP
 				if err := c.shutdown(ctx); err != nil {
 					log.G(ctx).WithError(err).Error("failed to shutdown container after delete")
 				}
+				// Unshare the container's rootfs from the shared filesystem.
+				// This unmounts the host-side overlay/bind and removes the
+				// container subtree from <sandbox-state>/containers/<id>.
+				if c.sharedFSID != "" && s.svc != nil {
+					if fs := s.svc.FS(); fs != nil {
+						if err := fs.Unshare(ctx, c.sharedFSID); err != nil {
+							log.G(ctx).WithError(err).WithField("id", c.sharedFSID).Warn("failed to unshare container rootfs on delete")
+						}
+					}
+				}
 				delete(s.containers, r.ID)
 			}
 		}
 		s.mu.Unlock()
-
 	}
 	return resp, err
 }
@@ -922,6 +1137,36 @@ func (s *service) Stats(ctx context.Context, r *taskAPI.StatsRequest) (*taskAPI.
 	}
 	tc := taskAPI.NewTTRPCTaskClient(vmc)
 	return tc.Stats(ctx, r)
+}
+
+// startVMEventStream starts forwarding guest VM events to the host event
+// publisher. It is idempotent — the stream is started at most once per
+// sandbox regardless of how many containers are created. On the legacy path
+// this is called from createLegacyContainer; on the sandboxed path it is
+// called from createSandboxedContainer via eventStreamOnce.
+func (s *service) startVMEventStream(vmc *ttrpc.Client) {
+	s.eventStreamOnce.Do(func() {
+		ctx := s.context
+		sc, err := vmevents.NewTTRPCEventsClient(vmc).Stream(ctx, empty)
+		if err != nil {
+			log.G(ctx).WithError(err).Error("failed to start VM event stream")
+			return
+		}
+		go func() {
+			for {
+				ev, err := sc.Recv()
+				if err != nil {
+					if errors.Is(err, io.EOF) || errors.Is(err, shutdown.ErrShutdown) {
+						log.G(ctx).Info("vm event stream closed")
+					} else {
+						log.G(ctx).WithError(err).Error("vm event stream error")
+					}
+					return
+				}
+				s.send(ev)
+			}
+		}()
+	})
 }
 
 func (s *service) send(evt interface{}) {

@@ -265,6 +265,20 @@ Control-plane goroutines (the shim TTRPC listener, vsock accept, vminitd
 connection) operate over FD-based UDS/vsock connections established before
 `setns` and are unaffected by the namespace change.
 
+**Validated end-to-end:** `ContainerTrafficScopedToNetworkSandbox`
+(shimtest, root-gated) passes, confirming the executor's in-process
+`setns` is sufficient — a member container's outbound traffic actually
+originates from the pinned pod netns, not the shim's own. (Getting this
+test to run as real root required two unrelated fixes: `cloneMntNs`
+was unconditionally demoting the shim into a *new* user namespace even
+when already real root, which broke real block-device mounts; and
+`SharedFS.ShareRootfs` was calling the generic containerd `mount.All`
+instead of nerdbox's own `mountutil.All`, which is what understands the
+`X-containerd.mkdir.*` options used to build overlay upper/work dirs. Both
+fixed in `pkg/shim/manager/mount_linux.go` and
+`internal/shim/sandbox/sharedfs.go`.) No re-exec/trampoline pivot was
+needed.
+
 #### TSI (Transparent Socket Impersonation)
 
 TSI is **not configured by the shim** — it is a compiled-in feature of the
@@ -360,6 +374,41 @@ mean patching `tsi_connect()` to add dgram-aware, loopback-aware fallback
 logic in `af_tsi.c`, diverging further from upstream; there is no known
 open upstream issue for this specific case, likely because most libkrun
 consumers do not blindly copy the host's raw `resolv.conf`).
+
+##### Known limitation: TSI ignores guest-internal network namespaces
+
+TSI provides no network-namespace isolation *inside the guest*. The kernel
+patch's socket hijack (`__sock_create` rewriting `AF_INET`/`AF_INET6` to
+`AF_TSI`/`AF_TSI6`) triggers purely on address family, before any
+namespace-aware routing decision would occur, and the resulting vsock
+channel to `VMADDR_CID_HOST` is not real IP routing — it is not subject to
+netns scoping, and (since no real `AF_INET` socket ever exists) it cannot
+be filtered by guest-side `iptables`/`nftables` either.
+
+Concretely: placing a container in its own, brand-new guest network
+namespace (an explicit, empty-`Path` `NetworkNamespace` entry in the OCI
+spec — real `crun`-level netns isolation, not the host-side sandbox netns
+pinning described above) does **not** stop it from reaching a host TCP
+listener via TSI. Verified empirically: a container so configured
+successfully completed a full TCP round trip to a host listener bound to
+`127.0.0.1`.
+
+**The practical model:** when TSI is enabled (the default), treat the
+*entire guest kernel* as a single network namespace with respect to host
+reachability — guest-internal network namespaces (per-container or
+otherwise) provide **container-to-container** isolation (via the normal
+veth/bridge mechanisms in `internal/vminit/ctrnetworking`) but provide
+**no host-isolation boundary**. The only real host-isolation boundary is
+the host-side one described in [Layer 1](#layer-1--host-network-sandbox-linux-netns)
+above: the pod netns the shim pins and the executor thread `setns`s into,
+which determines *which host network* TSI's proxied connections land in.
+A container cannot escape that host-side scoping by manipulating its own
+guest netns — but by the same token, no guest-side netns configuration
+narrows it either. If per-container host-isolation stronger than the pod's
+own netns is ever required, TSI would need to become namespace-aware in
+the kernel (e.g. scoping the hijack or the vsock proxy per calling netns);
+that has not been implemented and is being deliberately deferred rather
+than treated as a bug to fix silently, since it changes TSI's contract.
 
 #### External NIC (explicit virtio-net)
 
@@ -490,8 +539,16 @@ guest CID in advance.
 
 ## Security properties
 
-- The shim process runs in its own **user + mount namespace** (`CLONE_NEWUSER
-  | CLONE_NEWNS`). Mounts created for container rootfs assembly are isolated
+- The shim process runs in its own **mount namespace** (`CLONE_NEWNS`), plus a
+  **new user namespace** (`CLONE_NEWUSER`) when it is not already real root —
+  unprivileged callers gain CAP_SYS_ADMIN within that namespace to perform
+  rootfs mounts. When the shim is already real root (e.g. under `sudo`),
+  `CLONE_NEWUSER` is deliberately skipped: entering a *new* user namespace,
+  even one mapping root to root, demotes the process to a non-initial user
+  namespace, and the kernel restricts mounting real block-device-backed
+  filesystems (ext4, used for the sandbox scratch/overlay mounts) to the
+  initial user namespace regardless of capabilities held within a descendant
+  one. Either way, mounts created for container rootfs assembly are isolated
   from the host and cleaned up automatically when the shim exits.
 - Container processes run inside the VM guest kernel. The guest kernel is a
   different kernel instance from the host, providing strong isolation.
@@ -507,19 +564,6 @@ guest CID in advance.
 
 The following capabilities are planned but not yet implemented:
 
-- **Validate netns-scoping end-to-end now that TSI works** — the TSIv2/TSIv3
-  protocol mismatch that previously blocked all outbound connectivity is
-  fixed (see the TSI section above), so `ContainerTrafficScopedToNetworkSandbox`
-  (shimtest, root-gated) is no longer blocked by TSI itself. It still needs a
-  clean root run: the sandbox conformance suite's `format_mounts` path (used
-  automatically when the test process has real root, e.g. under `sudo`)
-  currently fails with an unrelated ext4-loop-mount permission error in that
-  configuration, which needs to be fixed in the test harness before the
-  netns-scoping test can actually execute as root. Once it runs, if it reveals
-  the executor's in-process `setns` is insufficient (e.g. libkrun uses a
-  process-global thread pool), pivot to a re-exec approach
-  (nsenter/cgo-constructor trampoline) so the entire VMM process tree is in
-  the pod netns.
 - **Turnkey virtio networking** — have the shim spawn and manage a passt or
   gvproxy process (inside the pod netns) rather than requiring a user-supplied
   socket path via annotation.

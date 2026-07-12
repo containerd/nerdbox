@@ -46,6 +46,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/containerd/nerdbox/internal/systools"
+	"github.com/containerd/nerdbox/internal/vminit/podnetns"
 	"github.com/containerd/nerdbox/internal/vminit/vmnetworking"
 	"github.com/containerd/nerdbox/plugins"
 )
@@ -238,6 +239,14 @@ func systemInit(ctx context.Context, config Config, shutdownSvc shutdown.Service
 
 	dhcpRenewer, dhcpReleaser, err := vmnetworking.SetupVM(ctx, config.Networks, config.Debug)
 	if err != nil {
+		return err
+	}
+
+	// Create the persistent, shared network namespace that sandbox member
+	// containers join by default (see internal/podnetns for why). This is
+	// independent of the VM's own root network namespace set up above by
+	// vmnetworking.SetupVM.
+	if err := podnetns.Create(ctx); err != nil {
 		return err
 	}
 

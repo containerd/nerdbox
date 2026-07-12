@@ -181,6 +181,12 @@ type vmInstance struct {
 	conn   net.Conn // underlying TTRPC connection; closed in Shutdown
 }
 
+func (v *vmInstance) SetNetnsPath(ctx context.Context, path string) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.vmc.SetNetnsPath(path)
+}
+
 func (v *vmInstance) AddFS(ctx context.Context, tag, mountPath string, opts ...vm.MountOpt) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()

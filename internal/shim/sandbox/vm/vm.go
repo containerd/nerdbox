@@ -76,6 +76,14 @@ func (s *localsandbox) Start(ctx context.Context, opts ...sandbox.Opt) error {
 		return err
 	}
 
+	// Enter the pod network namespace on the libkrun FFI thread before any
+	// other configuration call.  This ensures all host resources libkrun
+	// opens (NIC AF_UNIX sockets, TSI host sockets) and all worker threads
+	// it spawns originate inside the pod netns.  Empty path = no-op.
+	if err := vmi.SetNetnsPath(ctx, o.NetnsPath); err != nil {
+		return fmt.Errorf("set VM netns: %w", err)
+	}
+
 	for _, d := range o.Disks {
 		var mountOpts []vm.MountOpt
 		if d.Flags&sandbox.DiskFlagReadonly != 0 {

@@ -1,0 +1,532 @@
+# Sandbox Architecture
+
+This document describes how the nerdbox sandbox works — what lives on the
+host, what lives in the VM, and how networking flows between them.
+
+## Overview
+
+A nerdbox **sandbox** is a single microVM that hosts one or more containers.
+It maps directly to the Kubernetes pod model: one VM per pod, with all
+containers in the pod sharing the VM's kernel, network stack, and IPC
+facilities.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  Host (Linux)                                                       │
+│                                                                     │
+│  ┌────────────────────────────────────┐                            │
+│  │  containerd                        │                            │
+│  │  ┌──────────────────────────────┐  │                            │
+│  │  │  Sandbox Controller (shim)   │  │                            │
+│  │  │  • CreateSandbox             │  │                            │
+│  │  │  • StartSandbox              │  │                            │
+│  │  │  • Task.Create (per ctr)     │  │                            │
+│  │  └──────────────┬───────────────┘  │                            │
+│  └─────────────────┼──────────────────┘                            │
+│                    │ TTRPC (vsock 1025)                             │
+│                    │                                                │
+│  ┌─────────────────▼──────────────────────────────────────────┐    │
+│  │  VMM (libkrun)                                             │    │
+│  │                                                            │    │
+│  │  ┌─────────────────────────────────────────────────────┐  │    │
+│  │  │  vminitd (PID 1)                                    │  │    │
+│  │  │                                                     │  │    │
+│  │  │  ctr-A (runc)   ctr-B (runc)   ctr-C (runc)        │  │    │
+│  │  │  ┌──────┐       ┌──────┐       ┌──────┐            │  │    │
+│  │  │  │  /   │       │  /   │       │  /   │            │  │    │
+│  │  │  └──────┘       └──────┘       └──────┘            │  │    │
+│  │  │  shared: network, IPC, /dev/shm (kernel)            │  │    │
+│  │  └─────────────────────────────────────────────────────┘  │    │
+│  └────────────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+The runtime referenced above as "runc" is the OCI runtime interface. nerdbox
+uses crun as its implementation, but the interface and container model follow
+the runc specification.
+
+## Host / VM responsibility split
+
+Everything that needs to interact with the host OS — CNI plugins, image
+snapshotters, volume mounts — is managed on the **host side** of the shim.
+Everything that needs to interact with a running container process —
+namespace setup, cgroup accounting, syscall filtering — is managed
+**inside the VM** by vminitd.
+
+### What the host shim owns
+
+| Resource | Where it lives | Notes |
+|---|---|---|
+| VM lifecycle | Host shim process | libkrun starts/stops the VM; the shim holds the only reference |
+| Container rootfs assembly | Host filesystem | Overlay / erofs layers mounted on host, exposed to VM via virtiofs |
+| Bind mounts and volumes | Host filesystem | Resolved and mounted on the host inside the shim's mount namespace, exposed via the same virtiofs share |
+| Network sandbox (netns path) | Host shim process | FD held open for the CNI lifetime — see [Networking](#networking) |
+| Virtual NICs | Host VMM config | Configured before VM boot via libkrun; cannot be added after boot |
+| Socket forwarding | Host shim | UNIX sockets forwarded host↔VM via the SocketForward TTRPC service |
+| OCI bundle (config.json) | Host shim, pushed to guest | Assembled on host from snapshotter metadata, pushed to guest over the Bundle TTRPC service |
+
+### What the guest (vminitd) owns
+
+| Resource | Where it lives | Notes |
+|---|---|---|
+| Container process lifecycle | VM | runc creates/starts/stops containers |
+| Mount namespaces | VM kernel | Each container gets its own mount namespace; rootfs is bind-mounted from the virtiofs share |
+| cgroups (v2 unified) | VM kernel | One cgroup per container, under vminitd's cgroup tree |
+| Network namespaces | VM kernel | All containers share the VM init namespace by default; per-container network isolation is supported via OCI spec |
+| IPC / /dev/shm | VM kernel | All containers share the VM's IPC namespace by default |
+| PID namespace | VM kernel | Each container gets its own PID namespace by default |
+| Hostname / UTS | VM kernel | Inherited from the VM init namespace unless overridden by the container OCI spec |
+
+## Container filesystem
+
+Each container's rootfs is assembled **on the host** inside the shim's
+private mount namespace, then shared into the VM via a single persistent
+virtiofs mount.
+
+```
+Host state directory:  <shim-bundle>/vm/
+Virtiofs share root:   <shim-bundle>/vm/containers/   ← tag "containers"
+Guest mount point:     /run/containers/
+
+Per-container tree:
+  /run/containers/<container-id>/rootfs    ← assembled from snapshotter mounts
+  /run/containers/<container-id>/volumes/0 ← first extra volume (if any)
+```
+
+The host-side assembly **mounts the rootfs at the correct path or fails**.
+The mount type is determined by the snapshotter and containerd:
+
+- **Overlay mount** — overlayfs over multiple layer directories (the common
+  case with the native overlayfs snapshotter).
+- **Bind mount** — a single pre-extracted directory bind-mounted read-only
+  (used by native snapshotter with a fully-extracted layer, or nydus).
+- **FUSE mount** — a FUSE-based filesystem exposed by an external snapshotter
+  (e.g. stargz-snapshotter, nydus).
+
+If none of these mounts can be established, the container run fails. There is
+no fallback to hard links or file copies — both would produce silent failures:
+hard links can fail across filesystems, and copies accumulate dirty pages and
+destroy filesystem metadata.
+
+After `Task.Delete`, `SharedFS.Unshare` removes the container's subtree from
+the shared directory, unmounting any mounts and calling `os.RemoveAll` on the
+directory entry.
+
+```
+┌── Host shim → vmm ────────────────────────────────────────────────┐
+│                                                                    │
+│  snapshotter mounts                                                │
+│  ┌──────────────────┐                                             │
+│  │ erofs layer A    │                                             │
+│  │ erofs layer B    │ ──── mount (overlay/bind/fuse) ───►         │
+│  │ ext4 upper       │                                  │          │
+│  └──────────────────┘                                  ▼          │
+│                                     vm/containers/<id>/rootfs     │
+│                                             │                     │
+└─────────────────────────────────────────────┼─────────────────────┘
+                                              │ virtiofs (tag "containers")
+                                              ▼
+                                 vminitd: /run/containers/<id>/rootfs
+                                              │
+                                              │ bind mount (by runc)
+                                              ▼
+                                 Container rootfs in its mount namespace
+```
+
+## Networking
+
+Networking involves two independent layers that are often confused:
+
+1. **The host-side network sandbox** — a Linux network namespace on the host,
+   created and owned by the CRI layer (containerd), passed to the shim.
+2. **The VM-side network stack** — the actual network interfaces the containers
+   use, configured inside the microVM.
+
+### Layer 1 — Host network sandbox (Linux netns)
+
+#### How the netns is created
+
+The CRI layer (containerd's CRI plugin, running in the containerd process)
+creates the network namespace entirely by itself — no pause container is
+involved. The mechanism is the long-standing CNI "persistent netns" technique:
+
+1. A dedicated goroutine calls `runtime.LockOSThread()` and never unlocks,
+   so Go retires the underlying OS thread when the goroutine exits (Go 1.10+).
+2. On that locked thread, `unshare(CLONE_NEWNET)` creates a new, empty
+   network namespace for that thread only
+   (`pkg/netns/netns_linux.go:116` in containerd).
+3. The thread's netns is bind-mounted to a file under `/var/run/netns/`
+   (or the configured state dir) via `mount("/proc/<containerd-pid>/task/<tid>/ns/net",
+   "/var/run/netns/cni-<random>", MS_BIND)`.
+   Here `<containerd-pid>` is the containerd process PID and `<tid>` is the
+   TID of the dedicated throwaway thread — `/proc/self/ns/net` cannot be used
+   because it always returns the thread-group-leader's namespace.
+4. The bind-mount anchors the netns to the filesystem. The throwaway thread
+   exits but the namespace persists because the bind-mount still holds a
+   reference. **A netns persists with zero processes in it as long as the
+   bind-mount file exists.**
+
+#### Ordering: CNI runs before the sandbox
+
+```
+containerd CRI plugin (RunPodSandbox)
+
+  1. Create netns bind-mount at /var/run/netns/cni-<id>    ← unshare + bind
+  2. Run CNI ADD against that empty netns                   ← configures IP/routes/etc
+  3. CreateSandbox(netns_path=/var/run/netns/cni-<id>)     ← shim receives path
+  4. StartSandbox                                           ← shim boots VM
+```
+
+CNI **always runs before the sandbox is created**. CNI configures an empty,
+process-less netns (which it can do because the bind-mount keeps it alive),
+and the sandbox is later started knowing the fully-configured path.
+
+With the **shim sandboxer there is no pause container** — the shim receives
+`netns_path` directly in `CreateSandboxRequest`. (The legacy `podsandbox`
+controller creates a pause container which *joins* the pre-existing netns via
+an OCI `LinuxNamespace{Type: network, Path: nsPath}`; the shim sandboxer skips
+this entirely.)
+
+For host-network pods (`NamespaceMode_NODE`), no netns is created and
+`netns_path` is empty.
+
+#### What the shim does with netns_path
+
+**At `CreateSandbox` time** the shim opens the path `O_RDONLY|O_CLOEXEC` and
+holds the FD open. This second reference to the netns (alongside the
+bind-mount) keeps it alive even if the bind-mount were removed prematurely,
+and satisfies the CRI contract. The shim releases this FD after `StopSandbox`.
+
+```
+CRI layer                        nerdbox shim
+    │                                │
+    │── CreateSandbox(netns_path) ──►│  opens FD to netns_path
+    │                                │  (secondary pin on the bind-mount)
+    │── StartSandbox ───────────────►│  libkrun FFI thread enters netns
+    │                                │  VM boots
+    │                                │  FD remains open
+    │   [ pod running ]              │
+    │                                │
+    │── StopSandbox ────────────────►│  VM stops
+    │                                │  FD closed
+    │   [ CNI DEL runs against netns_path ]
+    │── ShutdownSandbox ────────────►│  final cleanup
+```
+
+**At `StartSandbox` time** the netns path is passed to the libkrun FFI
+executor thread (see [Layer 2](#layer-2--vm-network-stack) below), which
+enters the pod netns before any libkrun calls open host resources.
+
+### Layer 2 — VM network stack
+
+#### The libkrun FFI executor
+
+All libkrun FFI calls for a VM context (`krun_create_ctx` through
+`krun_start_enter`) run on a **single dedicated OS thread** (the "executor
+thread") that holds `runtime.LockOSThread()` for its entire lifetime. This is
+necessary because:
+
+- libkrun opens host-side resources (NIC AF_UNIX sockets, TSI host sockets)
+  on the calling thread.
+- libkrun's internal worker threads (vCPU, virtio backends, TSI net workers)
+  are spawned as children of the thread that calls `krun_start_enter` and
+  inherit its network namespace.
+- Go's scheduler may migrate goroutines across OS threads; without pinning,
+  each `krun_*` call could run in a different namespace.
+
+When `netns_path` is non-empty, the executor thread calls `setns(2)` into the
+pod netns **before** `krun_create_ctx`. Every subsequent libkrun call and
+every thread libkrun spawns thereafter is automatically inside the pod netns.
+
+```
+localsandbox.Start()
+    │
+    ├── vmm.NewInstance()
+    │       └── [executor goroutine: LockOSThread, stays alive]
+    │
+    ├── vmi.SetNetnsPath(netns_path)        ← setns on executor thread
+    │
+    ├── vmi.AddDisk(...)                    ← all on executor thread
+    ├── vmi.AddFS(...)                      ← all on executor thread
+    ├── vmi.AddNIC(...)                     ← NIC AF_UNIX socket opened in pod netns
+    ├── vmi.SetCPUAndMemory(...)
+    │
+    └── vmi.Start()
+            └── krun_start_enter            ← blocks on executor thread
+                    │
+                    ├── vCPU thread         ← inherits pod netns
+                    ├── virtio workers      ← inherits pod netns
+                    └── TSI net workers     ← inherits pod netns
+                            │
+                            └── host connect(AF_INET, ...) ← in pod netns
+```
+
+Control-plane goroutines (the shim TTRPC listener, vsock accept, vminitd
+connection) operate over FD-based UDS/vsock connections established before
+`setns` and are unaffected by the namespace change.
+
+#### TSI (Transparent Socket Impersonation)
+
+TSI is **not configured by the shim** — it is a compiled-in feature of the
+guest kernel (`CONFIG_TSI=y`, patches `0009`–`0012` in `kernel/patches/`).
+
+Inside the VM, the patched kernel intercepts `AF_INET` socket calls
+(TCP/UDP). When a container opens a TCP connection, the kernel transparently
+rewrites it to `AF_TSI` and proxies it over vsock to libkrun, which performs
+the real `connect()` on the host — now inside the pod netns (after the
+executor thread's `setns`).
+
+```
+Container (guest)                    Host (pod netns)
+                                     ┌──────────────────────┐
+ connect(AF_INET, 1.2.3.4:80)        │  libkrun TSI worker  │
+       │                             │  (executor thread     │
+  TSI kernel intercept               │   lineage, pod netns) │
+       │                             │                       │
+       │ ── vsock ──────────────────►│  connect(1.2.3.4:80)  │
+                                     │  source: pod IP        │
+                                     └──────────────────────┘
+```
+
+TSI limitations: IPv4 TCP/UDP only. ICMP, raw sockets, and IPv6 are not
+supported.
+
+##### Fixed: TSIv2/TSIv3 wire-protocol mismatch
+
+Conformance testing (`NetworkSuite` and `ContainerOutboundTCP` in shimtest)
+initially found that TSI did not establish outbound connections at all — a
+container's `connect()` never completed, and `strace` on the host process
+showed the host-side `connect()`/`socket()` syscall was never even reached.
+
+Root cause: the kernel patches in `kernel/patches/` implemented an **older
+TSI wire protocol (TSIv2)** — `tsi_connect_req { u32 svm_port; u32 addr;
+u16 port; }`, a bare IPv4 address — while the bundled libkrun (v1.19.0)
+implements **TSIv3**, which uses a length-prefixed, family-tagged address
+(`{ u32 svm_port; u32 addr_len; char addr[128]; }`) to support IPv6/AF_UNIX.
+libkrun's TSIv3 parser silently misinterpreted the guest's TSIv2 payload
+(reading the raw IPv4 address as a bogus `addr_len`), so every connect
+request was dropped before any host socket call was made. This was never
+caught previously because no test in this repository (or CI) exercised TSI
+end-to-end before this pass.
+
+**Fix:** the kernel patches were replaced with upstream libkrunfw's current
+TSIv3 patches (`0011`/`0012`, plus two previously-missing vsock prerequisites,
+`0009`/`0010`), matching the wire protocol libkrun v1.19.0 expects. Verified:
+all patches apply cleanly (`patch -p1 --fuzz=0`) against a real 6.12.46
+kernel tree; `ContainerOutboundTCP` and `NetworkSuite/{OutboundTCP,
+OutboundUDP,DNSResolve}` all pass against the rebuilt kernel. The Dockerfile
+patch-apply loop was also hardened with `set -e` (previously a failed hunk
+would silently continue, producing an unpatched kernel with no build error).
+
+##### Known limitation: connected UDP sockets to loopback destinations
+
+TSI's `tsi_connect()` tries the guest's own local `AF_INET` socket first;
+only if that local `connect()` fails does it fall back to proxying via
+vsock to the host. For **UDP**, a local `connect()` is a purely local
+kernel operation — it succeeds immediately whenever the routing table has
+*any* route to the destination, with no live handshake. In the default
+no-NIC guest (only `lo` configured), that is true for **loopback**
+destinations (`127.0.0.0/8`, always locally routable) but false for real
+external IPs (no default route without a NIC, so `connect()` fails with
+`ENETUNREACH` and correctly falls through to the vsock/host proxy).
+
+Net effect: an application using a "dial once, then read/write" UDP pattern
+(a *connected* UDP socket, e.g. `net.Dial("udp", ...)` in Go) against a
+**loopback** destination gets silently locked to the guest's own isolated
+network stack and never reaches the host — even though the exact same
+pattern against a real external IP works correctly. Per-datagram
+"unconnected" UDP (`sendto`/`recvfrom`, e.g. `net.ListenPacket` +
+`WriteTo`/`ReadFrom` in Go) is unaffected: TSI checks for a local listener
+on every message and proxies to the host when there isn't one.
+
+This surfaced in practice as a DNS resolution failure: Go's standard
+resolver uses connected UDP internally, and many Linux distributions
+(anything using systemd-resolved) point `/etc/resolv.conf` at a loopback
+stub resolver (`127.0.0.53`). Copying that file verbatim into the guest (the
+`addResolvConf` fallback path) produced a `resolv.conf` whose nameserver is
+unreachable from inside the VM.
+
+This is not a nerdbox- or TSI-specific bug so much as a general
+consequence of copying host DNS configuration into an isolated network
+environment — Docker and containerd's CRI implementation handle the exact
+same systemd-resolved case by preferring systemd-resolved's "full"
+resolv.conf (`/run/systemd/resolve/resolv.conf`, which lists the real,
+non-loopback upstream nameservers) over the stub file. `addResolvConf`
+(`internal/shim/task/ctrnetworking.go`) now does the same: it detects an
+all-loopback nameserver list and substitutes the full file when present.
+No kernel change was needed or attempted for this — the underlying
+connected-UDP-to-loopback behavior in TSI is left as-is (fixing it would
+mean patching `tsi_connect()` to add dgram-aware, loopback-aware fallback
+logic in `af_tsi.c`, diverging further from upstream; there is no known
+open upstream issue for this specific case, likely because most libkrun
+consumers do not blindly copy the host's raw `resolv.conf`).
+
+#### External NIC (explicit virtio-net)
+
+When the OCI spec annotations carry `io.containerd.nerdbox.network.*`, a
+virtio-net NIC is attached to the VM. The NIC is backed by an AF_UNIX socket
+(`krun_add_net_unixgram` or `krun_add_net_unixstream`) that connects libkrun
+to an **externally-run** L2 network provider.
+
+This AF_UNIX socket is opened on the executor thread (already in the pod
+netns), so the connection to the external provider originates from the pod
+netns.
+
+Supported external providers:
+- **passt** (unixgram mode) — passt-style helpers that exchange complete L2
+  Ethernet frames as datagrams.
+- **gvproxy / vfkit** (unixstream mode) — helpers that frame L2 packets over
+  a stream connection.
+
+The shim does **not** spawn the external provider. The user (or a future
+shim enhancement) must run it out-of-band and pass its socket path via
+annotation. Note: `krun_set_gvproxy_path` and `krun_set_net_mac` are declared
+in the libkrun bindings but are currently unused.
+
+```
+External network provider          nerdbox shim (pod netns)
+(passt / gvproxy)                      │
+         │                             │
+         │ AF_UNIX socket (L2 frames)  │
+         └────────────────────────────►│ libkrun: AddNIC(socket)
+                                       │
+                                       ▼
+                            VM: virtio-net interface (eth0)
+                            vminitd brings up eth0 with IP/routes
+                                       │
+                              ┌────────┴──────────┐
+                              │                   │
+                         Container A          Container B
+                         (veth in its         (shared eth0 or
+                          own netns)           own veth pair)
+```
+
+The NIC is configured before VM boot and cannot be changed while the VM runs
+(libkrun does not support device hotplug).
+
+### What socketforward is not
+
+The socketforward service (vsock port 1026) forwards **AF_UNIX domain sockets**
+host↔guest over vsock streams. It is not IP networking: both ends are
+`net.Listen("unix", ...)` / `net.Dial("unix", ...)`. AF_INET/TCP
+networking is handled exclusively by TSI (default) or the virtio-net NIC
+(opt-in). These three mechanisms are independent and must not be conflated.
+
+### Sandbox networking summary
+
+| Scenario | Host netns | VM network |
+|---|---|---|
+| No annotation (default) | Pinned (FD + entered by executor thread) | TSI — AF_INET TCP/UDP through pod netns |
+| `io.containerd.nerdbox.network.*` | Pinned (FD + entered by executor thread) | virtio-net NIC; AF_UNIX to external provider from pod netns |
+| Kubernetes CRI pod | Created by containerd CRI (`unshare` + bind-mount); CNI ADD before sandbox | Either of the above, with full pod netns integration |
+| `ctr run` (no sandbox) | No netns (legacy single-container path) | TSI or virtio in shim's own netns |
+| Host-network pod (`NamespaceMode_NODE`) | Not created; `netns_path` is empty | TSI or virtio in shim's own netns |
+
+## Sandbox lifecycle
+
+```
+containerd                      nerdbox shim                  VM
+    │                                │
+    │── CreateSandbox ──────────────►│  alloc state dir
+    │   (netns_path)                 │  create shared fs root
+    │                                │  open netns FD (pin)
+    │
+    │── StartSandbox ───────────────►│  parse bundle for resources/NICs
+    │                                │  start executor thread (LockOSThread)
+    │                                │  setns into pod netns (if set)
+    │                                │  add virtiofs "containers" share
+    │                                │  start VM ────────────────────►│ boot
+    │                                │                                 │ vminitd starts
+    │                                │◄── TTRPC connect (vsock 1025) ──│
+    │
+    │── Task.Create (ctr-A) ────────►│  ShareRootfs: mount rootfs
+    │                                │    on host in shared dir
+    │                                │  Bundle.Create ───────────────►│
+    │                                │  Mount.MountAll ──────────────►│ bind rootfs
+    │                                │  Task.Create ─────────────────►│ runc create
+    │
+    │── Task.Start (ctr-A) ─────────►│  Task.Start ──────────────────►│ runc start
+    │                                │                                 │ container runs
+    │
+    │── Task.Create (ctr-B) ────────►│  (same flow, same VM)
+    │── Task.Start (ctr-B) ─────────►│
+    │
+    │   [ pod running ]
+    │
+    │── Task.Delete (ctr-A) ────────►│  Task.Delete ─────────────────►│ runc delete
+    │                                │  SharedFS.Unshare(ctr-A)        │
+    │                                │    unmount rootfs on host        │
+    │                                │    remove shared dir entry       │
+    │
+    │── StopSandbox ───────────────►│  SharedFS.UnshareAll
+    │                               │  VM.Stop ──────────────────────►│ shutdown
+    │                               │  netns FD closed (unpin)
+    │
+    │   [ CNI DEL runs on host ]
+    │
+    │── ShutdownSandbox ───────────►│  (idempotent stop if needed)
+```
+
+## TTRPC communication
+
+The host shim and vminitd communicate over two vsock channels:
+
+```
+Host shim                           vminitd (guest)
+    │                                   │
+    │◄── vsock port 1025 (TTRPC) ──────►│
+    │    Task, Bundle, Mount,            │
+    │    System, SocketForward,          │
+    │    Events services                 │
+    │                                   │
+    │◄── vsock port 1026 (streams) ────►│
+    │    stdio (stdout/stderr/stdin)     │
+    │    transfer service data           │
+```
+
+vminitd **dials back** to the host on port 1025 (not the other way around),
+which allows the host to accept the connection without needing to know the
+guest CID in advance.
+
+## Security properties
+
+- The shim process runs in its own **user + mount namespace** (`CLONE_NEWUSER
+  | CLONE_NEWNS`). Mounts created for container rootfs assembly are isolated
+  from the host and cleaned up automatically when the shim exits.
+- Container processes run inside the VM guest kernel. The guest kernel is a
+  different kernel instance from the host, providing strong isolation.
+- The virtiofs share is writable (host-to-guest) but each container's subtree
+  is isolated: one container cannot see or modify another container's files
+  within the shared tree.
+- The network sandbox FD is opened `O_RDONLY | O_CLOEXEC`. The FD is used
+  only to pin the bind-mount and (via `SetNetnsPath`) to enter the pod netns
+  on the executor thread. The shim's control-plane goroutines remain in the
+  shim's original network namespace.
+
+## Future work
+
+The following capabilities are planned but not yet implemented:
+
+- **Validate netns-scoping end-to-end now that TSI works** — the TSIv2/TSIv3
+  protocol mismatch that previously blocked all outbound connectivity is
+  fixed (see the TSI section above), so `ContainerTrafficScopedToNetworkSandbox`
+  (shimtest, root-gated) is no longer blocked by TSI itself. It still needs a
+  clean root run: the sandbox conformance suite's `format_mounts` path (used
+  automatically when the test process has real root, e.g. under `sudo`)
+  currently fails with an unrelated ext4-loop-mount permission error in that
+  configuration, which needs to be fixed in the test harness before the
+  netns-scoping test can actually execute as root. Once it runs, if it reveals
+  the executor's in-process `setns` is insufficient (e.g. libkrun uses a
+  process-global thread pool), pivot to a re-exec approach
+  (nsenter/cgo-constructor trampoline) so the entire VMM process tree is in
+  the pod netns.
+- **Turnkey virtio networking** — have the shim spawn and manage a passt or
+  gvproxy process (inside the pod netns) rather than requiring a user-supplied
+  socket path via annotation.
+- **Shared `/dev/shm`** — a per-sandbox tmpfs shared across all containers in
+  the VM, matching the Kubernetes pod `shm` mount contract.
+- **Shared volumes (emptyDir)** — a cross-container shared directory exposed
+  to multiple member containers.
+- **Single ext4 upper layer** — a forthcoming containerd change will support
+  placing multiple container upper filesystems in one ext4 image, which can be
+  mounted upfront and eliminate per-container mount overhead on non-root hosts.

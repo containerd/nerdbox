@@ -20,6 +20,13 @@ import (
 	"testing"
 )
 
+// newTestVMContext creates a vmcontext with a live executor for use in unit
+// tests.  The caller must call vmc.exec.shutdown() when done to release the
+// background goroutine.
+func newTestVMContext(lib *libkrun) *vmcontext {
+	return &vmcontext{lib: lib, exec: newVMExecutor()}
+}
+
 // TestAddVirtiofs verifies that AddVirtiofs forwards the readonly flag to
 // krun_add_virtiofs3.
 func TestAddVirtiofs(t *testing.T) {
@@ -36,7 +43,8 @@ func TestAddVirtiofs(t *testing.T) {
 			return 0
 		},
 	}
-	vmc := &vmcontext{lib: lib}
+	vmc := newTestVMContext(lib)
+	defer vmc.exec.shutdown()
 
 	if err := vmc.AddVirtiofs("tag-ro", "/src/ro", true); err != nil {
 		t.Fatalf("readonly call: unexpected error: %v", err)
@@ -64,7 +72,8 @@ func TestAddVirtiofs_FailurePropagates(t *testing.T) {
 			return -22
 		},
 	}
-	vmc := &vmcontext{lib: lib}
+	vmc := newTestVMContext(lib)
+	defer vmc.exec.shutdown()
 
 	if err := vmc.AddVirtiofs("tag", "/p", true); err == nil {
 		t.Fatalf("expected error when krun_add_virtiofs3 returns non-zero")
@@ -74,7 +83,8 @@ func TestAddVirtiofs_FailurePropagates(t *testing.T) {
 // TestAddVirtiofs_LibraryNotLoaded verifies the early error when the
 // virtiofs3 entry point is not bound (i.e. the library failed to load).
 func TestAddVirtiofs_LibraryNotLoaded(t *testing.T) {
-	vmc := &vmcontext{lib: &libkrun{}}
+	vmc := newTestVMContext(&libkrun{})
+	defer vmc.exec.shutdown()
 	if err := vmc.AddVirtiofs("tag", "/p", false); err == nil {
 		t.Fatalf("expected error when AddVirtiofs3 is not bound")
 	}

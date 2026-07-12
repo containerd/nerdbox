@@ -76,61 +76,86 @@ func TestMain(m *testing.M) {
 }
 
 // TestShimStress runs the shimtest stress suites against the nerdbox shim.
-// Each subtest (Lifecycle, Exec, Transfer) runs until one minute before the
-// -test.timeout deadline. Select individual subtests with -run:
+// Each subtest (Lifecycle, Exec, Transfer, Sandbox) runs until one minute
+// before the -test.timeout deadline. Select individual subtests with -run:
 //
 //	-run TestShimStress/Lifecycle
 //	-run TestShimStress/Exec
 //	-run TestShimStress/Transfer
+//	-run TestShimStress/Sandbox
 func TestShimStress(t *testing.T) {
 	shimtest.NewStressSuite(shimConfig(), shimtest.StressOptions{
 		Transfer: true,
+		Sandbox:  true,
+		// The sandbox stress test creates thousands of container lifecycles
+		// inside a single VM (default 2 GiB guest RAM).  The host shim's RSS
+		// grows as the VM progressively faults in guest pages and the Go
+		// runtime's heap settles at a high watermark.  This one-time step
+		// saturates well below 2 GiB (the full guest RAM) and is not a leak.
+		//
+		// Observed nerdbox data over a 21-minute / 45K-container run:
+		//   RSS before:  ~112 MiB (just sandbox booted)
+		//   RSS after:  ~1270 MiB (~20 min)
+		// Growth from guest RAM faults saturates; the rate drops after the
+		// first few minutes.  3 GiB accommodates this one-time step with
+		// headroom; a true per-container leak at the observed ~3 KiB/iter
+		// rate would cross 3 GiB only after ~1 million containers.
+		SandboxRSSGrowthOverride: 3 * 1024 * 1024 * 1024, // 3 GiB
 	}).Run(t)
 }
 
 // shimPath returns a PATH value that prepends candidate _output directories
-// to the current PATH. The local module _output/ is highest priority, followed
-// by sibling worktree _output/ directories (to find kernel/initrd/libkrun built
-// in another branch worktree).
+// to the current PATH. The local module _output/ is always first. Sibling
+// worktree _output/ directories are included for kernel/rootfs/vminitd
+// fallback, but any sibling that contains its own libkrun.so is skipped:
+// using a stale libkrun from another worktree can cause symbol-not-found
+// crashes (e.g. missing krun_add_virtiofs3).
 func shimPath() string {
 	root := moduleRoot()
 	current := os.Getenv("PATH")
+	localOutput := filepath.Join(root, "_output")
 
-	var candidates []string
-	candidates = append(candidates, filepath.Join(root, "_output"))
-
-	// Walk sibling worktrees: the parent of root is the common worktree parent.
 	parent := filepath.Dir(root)
+	var siblingOutputs []string
 	if entries, err := os.ReadDir(parent); err == nil {
 		for _, e := range entries {
 			if !e.IsDir() || e.Name() == filepath.Base(root) {
 				continue
 			}
-			candidates = append(candidates, filepath.Join(parent, e.Name(), "_output"))
+			dir := filepath.Join(parent, e.Name(), "_output")
+			// Skip sibling _output dirs that carry their own libkrun.so.
+			if _, err := os.Stat(filepath.Join(dir, "libkrun.so")); err == nil {
+				continue
+			}
+			siblingOutputs = append(siblingOutputs, dir)
 		}
 	}
 
-	// Build a set of existing PATH elements for exact membership tests.
-	existing := make(map[string]bool)
-	for _, e := range filepath.SplitList(current) {
-		existing[e] = true
+	seen := make(map[string]bool)
+	var result []string
+	add := func(dir string) {
+		if !seen[dir] {
+			seen[dir] = true
+			result = append(result, dir)
+		}
 	}
 
-	var prepend []string
-	for _, dir := range candidates {
-		if _, err := os.Stat(dir); err != nil {
-			continue
-		}
-		if existing[dir] {
-			continue
-		}
-		prepend = append(prepend, dir)
+	// 1. Local _output first.
+	if _, err := os.Stat(localOutput); err == nil {
+		add(localOutput)
 	}
-	if len(prepend) == 0 {
-		return current
+	// 2. Sibling _output dirs without libkrun.so (kernel/rootfs fallback).
+	for _, dir := range siblingOutputs {
+		if _, err := os.Stat(dir); err == nil {
+			add(dir)
+		}
 	}
-	return strings.Join(prepend, string(os.PathListSeparator)) +
-		string(os.PathListSeparator) + current
+	// 3. Retain existing PATH entries.
+	for _, dir := range filepath.SplitList(current) {
+		add(dir)
+	}
+
+	return strings.Join(result, string(os.PathListSeparator))
 }
 
 // moduleRoot returns the absolute path to the module root directory.

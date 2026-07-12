@@ -1,18 +1,16 @@
-/*
-   Copyright The containerd Authors.
-
-   Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
-   You may obtain a copy of the License at
-
-       http://www.apache.org/licenses/LICENSE-2.0
-
-   Unless required by applicable law or agreed to in writing, software
-   distributed under the License is distributed on an "AS IS" BASIS,
-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-   See the License for the specific language governing permissions and
-   limitations under the License.
-*/
+// Copyright The containerd Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package task
 
@@ -23,7 +21,7 @@ import (
 	"github.com/containerd/plugin"
 	"github.com/containerd/plugin/registry"
 
-	"github.com/containerd/nerdbox/internal/shim/sandbox"
+	intsandbox "github.com/containerd/nerdbox/internal/shim/sandbox"
 	"github.com/containerd/nerdbox/internal/shim/task"
 	"github.com/containerd/nerdbox/plugins"
 )
@@ -46,12 +44,29 @@ func init() {
 			if err != nil {
 				return nil, err
 			}
-			sb, err := ic.GetSingle(plugins.SandboxPlugin)
+			sbRaw, err := ic.GetSingle(plugins.SandboxPlugin)
 			if err != nil {
 				return nil, err
 			}
-			return task.NewTaskService(ic.Context, sb.(sandbox.Sandbox), pp.(shim.Publisher), ss.(shutdown.Service))
+
+			// Unwrap the sandboxManager to get the underlying SandboxService.
+			type sandboxManagerUnwrapper interface {
+				Service() *intsandbox.SandboxService
+			}
+			svc := sbRaw.(sandboxManagerUnwrapper).Service()
+
+			// Determine debug flag from shim opts stored in context.
+			debug := false
+			if opts, ok := ic.Context.Value(shim.OptsKey{}).(shim.Opts); ok {
+				debug = opts.Debug
+			}
+
+			// Wire the bundle-derived VM start options callback into the
+			// SandboxService so that StartSandbox can boot the VM with the
+			// correct resources and networking without importing the task package.
+			svc.RegisterStartOptions(task.SandboxStartOptions(debug))
+
+			return task.NewTaskService(ic.Context, svc, pp.(shim.Publisher), ss.(shutdown.Service))
 		},
 	})
-
 }

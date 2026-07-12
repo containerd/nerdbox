@@ -349,6 +349,16 @@ func (s *service) createSandboxedContainer(ctx context.Context, r *taskAPI.Creat
 		log.G(ctx).WithError(err).Warn("failed to parse sandbox options as PodSandboxConfig; continuing without pod-level DNS/hostname config")
 	}
 
+	// Fetched here (rather than where the VM client is otherwise obtained
+	// further below) because sanitizeNamespaces, run as part of bundle.Load
+	// next, may need it to call the guest's PodNamespaces service if this
+	// container's spec asks for PID/IPC namespace sharing.
+	vmc, err := s.sb.Client()
+	if err != nil {
+		return nil, errgrpc.ToGRPC(err)
+	}
+	sharedNS := &sharedNamespaces{client: vmc}
+
 	// Load the OCI bundle and apply per-container transformers.  This must
 	// happen before ShareRootfs so that UDS mount destinations can be
 	// pre-created in the source rootfs (which is still writable at this
@@ -379,7 +389,7 @@ func (s *service) createSandboxedContainer(ctx context.Context, r *taskAPI.Creat
 			return addSysctls(ctx, b, podCfg.GetLinux().GetSysctls())
 		},
 		func(ctx context.Context, b *bundle.Bundle) error {
-			return sanitizeNamespaces(ctx, b, len(ctrNetCfg.Networks) > 0)
+			return sanitizeNamespaces(ctx, b, len(ctrNetCfg.Networks) > 0, sharedNS.get)
 		},
 	)
 	if err != nil {
@@ -423,11 +433,8 @@ func (s *service) createSandboxedContainer(ctx context.Context, r *taskAPI.Creat
 		return nil, errgrpc.ToGRPC(err)
 	}
 
-	vmc, err := s.sb.Client()
-	if err != nil {
-		fs.Unshare(ctx, r.ID) //nolint:errcheck
-		return nil, errgrpc.ToGRPC(err)
-	}
+	// vmc was already fetched above (sharedNS needs it before bundle.Load
+	// runs).
 
 	// Start the VM event stream exactly once for this sandbox (subsequent
 	// containers in the same VM reuse the same stream).

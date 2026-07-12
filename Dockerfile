@@ -236,6 +236,9 @@ RUN --mount=type=cache,sharing=locked,id=erofs-aptlib,target=/var/lib/apt \
 # making it writable even though the erofs image itself is read-only.
 # /var/run is a symlink to /run so that crun state writes land on the
 # writable /run tmpfs rather than failing against the read-only rootfs.
+# Note: /run/containers (the sandbox shared filesystem mount point) is
+# created at runtime under the /run tmpfs, so it does not need to be
+# pre-created here.
 RUN mkdir -p dev etc proc run sbin sys tmp var && ln -s /run var/run
 
 COPY --from=vminit-build /build/vminitd ./sbin/vminitd

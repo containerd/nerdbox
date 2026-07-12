@@ -152,6 +152,16 @@ type StreamOpt func(*StreamOpts)
 //   - [Instance.Shutdown] tears down the VM and releases resources; the
 //     instance is not reusable after Shutdown.
 type Instance interface {
+	// SetNetnsPath enters the network namespace identified by path on the
+	// dedicated libkrun FFI thread.  It must be called before any other
+	// configuration method so that all host resources libkrun opens (NIC
+	// sockets, TSI host sockets) and all worker threads libkrun spawns
+	// originate inside the given network namespace.
+	//
+	// An empty path is a no-op (host-network pod or plain ctr run without
+	// a pod netns).  On non-Linux platforms this is always a no-op.
+	SetNetnsPath(ctx context.Context, path string) error
+
 	// SetCPUAndMemory configures the number of vCPUs and RAM (in MiB)
 	// that will be exposed to the guest when the VM starts. It must be
 	// called before [Instance.Start].

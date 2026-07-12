@@ -931,6 +931,246 @@ file: {
   }
 }
 file: {
+  name: "proto/nerdbox/services/podns/v1/podns.proto"
+  package: "containerd.vminitd.services.podns.v1"
+  message_type: {
+    name: "EnsureNamespacesRequest"
+  }
+  message_type: {
+    name: "EnsureNamespacesResponse"
+    field: {
+      name: "ipc_namespace_path"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "ipcNamespacePath"
+    }
+    field: {
+      name: "pid_namespace_path"
+      number: 2
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "pidNamespacePath"
+    }
+  }
+  service: {
+    name: "PodNamespaces"
+    method: {
+      name: "EnsureNamespaces"
+      input_type: ".containerd.vminitd.services.podns.v1.EnsureNamespacesRequest"
+      output_type: ".containerd.vminitd.services.podns.v1.EnsureNamespacesResponse"
+    }
+  }
+  options: {
+    go_package: "github.com/containerd/nerdbox/api/services/podns/v1;podns"
+  }
+  source_code_info: {
+    location: {
+      span: 16
+      span: 0
+      span: 49
+      span: 1
+    }
+    location: {
+      path: 12
+      span: 16
+      span: 0
+      span: 18
+      leading_detached_comments: "\nCopyright The containerd Authors.\n\nLicensed under the Apache License, Version 2.0 (the \"License\");\nyou may not use this file except in compliance with the License.\nYou may obtain a copy of the License at\n\nhttp://www.apache.org/licenses/LICENSE-2.0\n\nUnless required by applicable law or agreed to in writing, software\ndistributed under the License is distributed on an \"AS IS\" BASIS,\nWITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\nSee the License for the specific language governing permissions and\nlimitations under the License.\n"
+    }
+    location: {
+      path: 2
+      span: 18
+      span: 0
+      span: 45
+    }
+    location: {
+      path: 8
+      span: 20
+      span: 0
+      span: 80
+    }
+    location: {
+      path: 8
+      path: 11
+      span: 20
+      span: 0
+      span: 80
+    }
+    location: {
+      path: 6
+      path: 0
+      span: 38
+      span: 0
+      span: 40
+      span: 1
+      leading_comments: " PodNamespaces manages the guest-side namespaces that member containers\n of one sandbox share by default: the IPC and PID namespaces (network\n sharing is handled separately by internal/podnetns, created\n unconditionally at vminitd startup since it needs no anchor process;\n hostname sharing needs no namespace at all — see addHostname in\n internal/shim/task/podconfig.go, which sets the same spec.Hostname on\n every member container's own, independent UTS namespace, which is\n enough to give them all the same observable hostname).\n\n Unlike the network namespace, the shared PID namespace requires a real,\n persistent anchor process to exist as its PID 1 (a Linux PID namespace\n has no content, and is torn down, once its PID 1 exits) — so, unlike\n internal/podnetns, this is not something to create unconditionally at\n vminitd startup for every VM regardless of whether it is ever needed.\n EnsureNamespaces is called once per sandbox, on demand, the first time\n the host needs shared namespaces for it.\n"
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 1
+      span: 38
+      span: 8
+      span: 21
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      span: 39
+      span: 4
+      span: 85
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      path: 1
+      span: 39
+      span: 8
+      span: 24
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      path: 2
+      span: 39
+      span: 25
+      span: 48
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      path: 3
+      span: 39
+      span: 59
+      span: 83
+    }
+    location: {
+      path: 4
+      path: 0
+      span: 42
+      span: 0
+      span: 34
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 1
+      span: 42
+      span: 8
+      span: 31
+    }
+    location: {
+      path: 4
+      path: 1
+      span: 44
+      span: 0
+      span: 49
+      span: 1
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 1
+      span: 44
+      span: 8
+      span: 32
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      path: 5
+      span: 47
+      span: 4
+      span: 10
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      span: 47
+      span: 4
+      span: 34
+      leading_comments: " Guest paths (bind-mounted namespace files, suitable for an OCI\n LinuxNamespace.Path) for the shared IPC and PID namespaces.\n"
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      path: 1
+      span: 47
+      span: 11
+      span: 29
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      path: 3
+      span: 47
+      span: 32
+      span: 33
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 1
+      path: 5
+      span: 48
+      span: 4
+      span: 10
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 1
+      span: 48
+      span: 4
+      span: 34
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 1
+      path: 1
+      span: 48
+      span: 11
+      span: 29
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 1
+      path: 3
+      span: 48
+      span: 32
+      span: 33
+    }
+  }
+  syntax: "proto3"
+  buf_extension: {
+    is_import: false
+    is_syntax_unspecified: false
+  }
+}
+file: {
   name: "proto/nerdbox/services/socketforward/v1/socketforward.proto"
   package: "nerdbox.services.socketforward.v1"
   dependency: "google/protobuf/empty.proto"

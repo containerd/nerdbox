@@ -138,19 +138,22 @@ func (*vmManager) NewInstance(ctx context.Context, state string) (vm.Instance, e
 		ret = lib.InitLog(os.Stderr.Fd(), uint32(warnLevel), 0, 0)
 	})
 	if ret != 0 {
+		_ = dlClose(handler)
 		return nil, fmt.Errorf("krun_init_log failed: %d", ret)
 	}
 
 	vmc, err := newvmcontext(lib)
 	if err != nil {
+		_ = dlClose(handler)
 		return nil, err
 	}
 
 	// Add the erofs rootfs as the first virtio-blk device so that it is
-	// always exposed as /dev/vda inside the guest.  Container image disks
-	// are added later via AddDisk, which appends to the device list, so
-	// they receive /dev/vdb, /dev/vdc, … in order of addition.
+	// always exposed as /dev/vda inside the guest. Container-supplied
+	// disks are added later via AddDisk, which appends to the device
+	// list, so they receive /dev/vdb, /dev/vdc, … in order of addition.
 	if err := vmc.AddDisk2("vmrootfs", rootfsPath, 0, true); err != nil {
+		_ = dlClose(handler)
 		return nil, fmt.Errorf("failed to add VM rootfs disk %q: %w", rootfsPath, err)
 	}
 
@@ -177,14 +180,36 @@ type vmInstance struct {
 	lib     *libkrun
 	handler uintptr
 
+	// netnsSet/netns record the pod network namespace requested by the
+	// first call to Start (successful or not), so that a subsequent Start
+	// attempt (e.g. a retry after a failed one) can be validated against
+	// it: a repeated request for the same (or no) namespace is a no-op,
+	// but a request for a different namespace is rejected outright rather
+	// than silently ignored, since that would hide a real caller bug.
+	netnsSet bool
+	netns    string
+
 	client *ttrpc.Client
 	conn   net.Conn // underlying TTRPC connection; closed in Shutdown
 }
 
-func (v *vmInstance) SetNetnsPath(ctx context.Context, path string) error {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	return v.vmc.SetNetnsPath(path)
+// resolveNetNS validates a Start-requested network namespace against the
+// namespace recorded by an earlier Start attempt on this instance, if any
+// (for example, a retry after a Start call that failed before reaching the
+// network-namespace switch). The same namespace, or none at all, is a
+// no-op; a genuinely different, non-empty namespace after one was already
+// recorded is rejected rather than silently overriding the first request,
+// since that would hide a caller bug. The caller must hold v.mu.
+func (v *vmInstance) resolveNetNS(requested string) error {
+	if v.netnsSet {
+		if requested != "" && requested != v.netns {
+			return fmt.Errorf("cannot change VM netns after it was already set to %q: got %q", v.netns, requested)
+		}
+		return nil
+	}
+	v.netns = requested
+	v.netnsSet = true
+	return nil
 }
 
 func (v *vmInstance) AddFS(ctx context.Context, tag, mountPath string, opts ...vm.MountOpt) error {
@@ -285,6 +310,10 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 		o(&startOpts)
 	}
 
+	if err := v.resolveNetNS(startOpts.NetNS); err != nil {
+		return err
+	}
+
 	if err := v.vmc.SetExec("/sbin/vminitd", startOpts.InitArgs, env); err != nil {
 		return fmt.Errorf("failed to set exec: %w", err)
 	}
@@ -339,10 +368,44 @@ func (v *vmInstance) Start(ctx context.Context, opts ...vm.StartOpt) (err error)
 
 	preVMStart := time.Now()
 
-	// Start it
+	// Start it.
+	//
+	// runtime.LockOSThread pins this goroutine to one OS thread for the
+	// VM's entire lifetime (krun_start_enter blocks until the VM shuts
+	// down). This is necessary for two reasons:
+	//   1. setns(2) affects only the calling OS thread; without
+	//      LockOSThread the goroutine could migrate to a different
+	//      thread and the setns would be lost before krun_start_enter is
+	//      reached.
+	//   2. libkrun's worker threads (vCPU, virtio backends, vsock/TSI
+	//      workers), which krun_start_enter spawns as descendants of the
+	//      calling thread, inherit the netns of that thread. They must be
+	//      created in the pod netns so that VM traffic (including TSI
+	//      proxy sockets) lands there.
+	//
+	// We deliberately do NOT call runtime.UnlockOSThread. When a
+	// goroutine that holds a thread lock exits, the Go runtime retires
+	// the underlying OS thread (Go 1.10+), so there is no thread-pool
+	// "poisoning" concern, and the pod-netns thread is never returned to
+	// the pool where it could pollute the default netns.
 	errC := make(chan error, 1)
 	go func() {
 		defer close(errC)
+		runtime.LockOSThread()
+		if v.netns != "" {
+			if err := vmcontextSetNetns(v.netns); err != nil {
+				errC <- fmt.Errorf("entering pod netns: %w", err)
+				return
+			}
+			// Log the resulting thread netns inode so it can be
+			// cross-checked against the pod netns inode when debugging
+			// connectivity issues.
+			inode, _ := os.Readlink("/proc/thread-self/ns/net")
+			log.G(ctx).WithFields(log.Fields{
+				"netns_path":  v.netns,
+				"netns_inode": inode,
+			}).Debug("VM start thread entered pod netns")
+		}
 		if err := v.vmc.Start(); err != nil {
 			errC <- err
 		}
@@ -475,8 +538,8 @@ func (v *vmInstance) Shutdown(ctx context.Context) error {
 		}
 	}
 
-	// On Unix, dlClose unloads the library after krun_free_ctx has joined all
-	// VM threads. On Windows it is a no-op (see dlfcn_windows.go).
+	// On Unix, dlClose unloads the library after krun_free_ctx has joined
+	// all VM threads. On Windows it is a no-op (see dlfcn_windows.go).
 	if err := dlClose(v.handler); err != nil {
 		return err
 	}

@@ -28,9 +28,10 @@ import (
 const nsfsMagic = 0x6e736673
 
 // vmcontextSetNetns enters the network namespace at path on the calling OS
-// thread using setns(2).  It must be called from within the vmExecutor's
-// dedicated, locked OS thread so that all subsequent libkrun FFI calls and all
-// threads libkrun spawns inherit the namespace.
+// thread using setns(2).  It must be called from the locked OS thread that
+// is about to call krun_start_enter (see vmInstance.Start in instance.go)
+// so that all worker threads libkrun spawns from that thread (vCPU, virtio
+// backends, vsock/TSI workers) inherit the namespace.
 //
 // The file descriptor is opened O_RDONLY|O_CLOEXEC, used for setns, and then
 // closed — the netns is pinned by the bind-mount at path (managed by the CRI

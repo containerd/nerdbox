@@ -7,7 +7,7 @@ require (
 	github.com/containerd/cgroups/v3 v3.1.3
 	github.com/containerd/console v1.0.5
 	github.com/containerd/containerd/api v1.11.1
-	github.com/containerd/containerd/v2 v2.3.2
+	github.com/containerd/containerd/v2 v2.3.3
 	github.com/containerd/errdefs v1.0.0
 	github.com/containerd/errdefs/pkg v0.3.0
 	github.com/containerd/fifo v1.1.0
@@ -16,7 +16,7 @@ require (
 	github.com/containerd/otelttrpc v0.1.0
 	github.com/containerd/plugin v1.1.0
 	github.com/containerd/shimtest v0.2.1
-	github.com/containerd/ttrpc v1.2.9-0.20260501231634-6c2eed2b612e
+	github.com/containerd/ttrpc v1.2.9
 	github.com/containerd/typeurl/v2 v2.3.0
 	github.com/docker/go-events v0.0.0-20190806004212-e31b211e4f1c
 	github.com/ebitengine/purego v0.10.1

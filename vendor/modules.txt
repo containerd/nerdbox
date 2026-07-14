@@ -75,7 +75,7 @@ github.com/containerd/containerd/api/types
 github.com/containerd/containerd/api/types/runc/options
 github.com/containerd/containerd/api/types/task
 github.com/containerd/containerd/api/types/transfer
-# github.com/containerd/containerd/v2 v2.3.2
+# github.com/containerd/containerd/v2 v2.3.3
 ## explicit; go 1.26.3
 github.com/containerd/containerd/v2/core/content
 github.com/containerd/containerd/v2/core/events
@@ -150,8 +150,8 @@ github.com/containerd/plugin/registry
 github.com/containerd/shimtest
 github.com/containerd/shimtest/internal/transfer
 github.com/containerd/shimtest/testbin
-# github.com/containerd/ttrpc v1.2.9-0.20260501231634-6c2eed2b612e
-## explicit; go 1.23
+# github.com/containerd/ttrpc v1.2.9
+## explicit; go 1.25.0
 github.com/containerd/ttrpc
 # github.com/containerd/typeurl/v2 v2.3.0
 ## explicit; go 1.21

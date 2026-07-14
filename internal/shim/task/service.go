@@ -575,7 +575,41 @@ func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.
 		return nil, errgrpc.ToGRPC(err)
 	}
 	tc := taskAPI.NewTTRPCTaskClient(vmc)
-	return tc.Start(ctx, r)
+	resp, err := tc.Start(ctx, r)
+	if err != nil && r.ExecID != "" {
+		// On exec start failure the VM side did not launch the process, so it
+		// will not close the exec's vsock streams on its own. The host-side
+		// copy goroutines (stdout/stderr) are therefore blocked indefinitely,
+		// which means the ioShutdown triggered by a subsequent Delete call
+		// would block for its full 30 s timeout before closing the streams.
+		//
+		// To prevent that, remove the exec's IO shutdown from the container's
+		// tracking and initiate it asynchronously here with a short timeout.
+		// After the timeout ioShutdown closes the vsock connections, the copy
+		// goroutines see a read error and exit, and the subsequent Delete call
+		// finds no pending ioShutdown and returns promptly.
+		s.mu.Lock()
+		var execShutdown func(context.Context) error
+		if c, ok := s.containers[r.ID]; ok {
+			if f, ok := c.execShutdowns[r.ExecID]; ok {
+				execShutdown = f
+				delete(c.execShutdowns, r.ExecID)
+				delete(c.execIODone, r.ExecID)
+				delete(c.execStdinEOF, r.ExecID)
+			}
+		}
+		s.mu.Unlock()
+		if execShutdown != nil {
+			go func() {
+				shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if serr := execShutdown(shutCtx); serr != nil && !errors.Is(serr, context.DeadlineExceeded) {
+					log.G(ctx).WithError(serr).WithField("exec", r.ExecID).Error("failed to shutdown exec io after start failure")
+				}
+			}()
+		}
+	}
+	return resp, err
 }
 
 // Delete the initial process and container

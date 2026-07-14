@@ -152,7 +152,7 @@ func doFullLifecycle(t *testing.T, baseCtx context.Context, cfg Config, ttrpcClo
 	client := ttrpc.NewClient(conn)
 	defer client.Close()
 
-	tc := taskAPI.NewTTRPCTaskClient(client)
+	tc := newTaskClient(client, params.Version)
 
 	var stdoutBuf bytes.Buffer
 	var stdoutMu sync.Mutex
@@ -753,7 +753,7 @@ func runExecRoundTrip(parentCtx context.Context, env *shimEnv, execID string, si
 	}
 
 	// Stream the tiled payload to stdin without allocating the full
-	// buffer; closing stdin signals EOF to /bin/cat, causing it to exit.
+	// buffer, then close the local write end.
 	writeDone := make(chan error, 1)
 	go func() {
 		_, err := io.Copy(stdin, io.LimitReader(&infiniteTileReader{}, int64(size)))
@@ -768,6 +768,14 @@ func runExecRoundTrip(parentCtx context.Context, env *shimEnv, execID string, si
 		}
 	case <-subCtx.Done():
 		return fmt.Errorf("stdin write timed out: %w", subCtx.Err())
+	}
+
+	// Signal EOF to /bin/cat via the CloseIO RPC. Closing the local FIFO
+	// write end alone is not sufficient: the shim holds its own write-end
+	// reference on the stdin FIFO and only releases it upon CloseIO (see
+	// exec_suite.go's testLargeStdioRoundTrip for the full contract).
+	if _, err := env.tc.CloseIO(subCtx, &taskAPI.CloseIORequest{ID: env.containerID, ExecID: execID, Stdin: true}); err != nil {
+		return fmt.Errorf("close stdin: %w", err)
 	}
 
 	if _, err := env.tc.Wait(subCtx, &taskAPI.WaitRequest{ID: env.containerID, ExecID: execID}); err != nil {

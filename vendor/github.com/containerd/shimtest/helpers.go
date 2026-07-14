@@ -36,6 +36,7 @@ import (
 	runcopt "github.com/containerd/containerd/api/types/runc/options"
 	"github.com/containerd/containerd/v2/core/mount"
 	"github.com/containerd/ttrpc"
+
 	"github.com/containerd/typeurl/v2"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"google.golang.org/protobuf/encoding/protowire"
@@ -478,6 +479,14 @@ func startShim(tb testing.TB, shimBin, bundleDir, id, ns string, cfg Config) boo
 	if params.Address == "" {
 		tb.Fatal("shim returned empty address")
 	}
+	if params.Version == 0 {
+		// A params payload without a version is treated as a version 2
+		// shim, matching containerd.
+		params.Version = 2
+	}
+	if params.Version != 2 && params.Version != 3 {
+		tb.Fatalf("unsupported shim task API version %d", params.Version)
+	}
 
 	tb.Cleanup(func() {
 		// Match containerd's cleanup behavior: invoke the shim binary's
@@ -516,12 +525,21 @@ func deleteShim(tb testing.TB, shimBin, bundleDir, id, ns string, cfg Config) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, shimBin, args...)
 	cmd.Dir = bundleDir
+	cmd.Env = append(os.Environ(), "TTRPC_ADDRESS="+containerdAddr)
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		tb.Logf("shim delete failed: %v: %s", err, strings.TrimSpace(stderr.String()))
 	}
+}
+
+// newTaskClient returns the task client for the API version the shim
+// declared in its bootstrap params, exactly as containerd selects it
+// (core/runtime/v2 NewTaskClient): a version 3 shim is dialed on
+// containerd.task.v3.Task, a version 2 shim through the v2 bridge.
+func newTaskClient(client *ttrpc.Client, version int) taskAPI.TTRPCTaskService {
+	return taskClientForVersion(client, version)
 }
 
 // shimPidViaConnect dials the shim's TTRPC address and asks for its
@@ -534,7 +552,7 @@ func deleteShim(tb testing.TB, shimBin, bundleDir, id, ns string, cfg Config) {
 // it after tc.Create when every conformant shim responds.
 //
 // dialShimConn is platform-specific (connect_unix.go / connect_windows.go).
-func shimPidViaConnect(address, id string, retryFor time.Duration) (int, error) {
+func shimPidViaConnect(address, id string, version int, retryFor time.Duration) (int, error) {
 	deadline := time.Now().Add(retryFor)
 	var lastErr error
 	for {
@@ -543,7 +561,7 @@ func shimPidViaConnect(address, id string, retryFor time.Duration) (int, error) 
 			lastErr = fmt.Errorf("dial: %w", err)
 		} else {
 			client := ttrpc.NewClient(conn)
-			tc := taskAPI.NewTTRPCTaskClient(client)
+			tc := newTaskClient(client, version)
 			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 			resp, callErr := tc.Connect(ctx, &taskAPI.ConnectRequest{ID: id})
 			cancel()

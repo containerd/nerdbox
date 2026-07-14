@@ -59,7 +59,7 @@ func (s *ExecSuite) benchExec(b *testing.B) {
 	client := ttrpc.NewClient(conn)
 	defer client.Close()
 
-	tc := taskAPI.NewTTRPCTaskClient(client)
+	tc := newTaskClient(client, params.Version)
 
 	drainFifo(b, ctx, stdoutPath)
 	drainFifo(b, ctx, stderrPath)
@@ -134,7 +134,7 @@ func (s *ExecSuite) benchStdioRoundTrip(b *testing.B) {
 	client := ttrpc.NewClient(conn)
 	defer client.Close()
 
-	tc := taskAPI.NewTTRPCTaskClient(client)
+	tc := newTaskClient(client, params.Version)
 
 	drainFifo(b, ctx, stdoutPath)
 	drainFifo(b, ctx, stderrPath)
@@ -294,7 +294,7 @@ func (s *ExecSuite) benchHashverify(b *testing.B, path, hashHex string, extraMou
 	client := ttrpc.NewClient(conn)
 	defer client.Close()
 
-	tc := taskAPI.NewTTRPCTaskClient(client)
+	tc := newTaskClient(client, params.Version)
 	drainFifo(b, ctx, stdoutPath)
 	drainFifo(b, ctx, stderrPath)
 

@@ -79,7 +79,7 @@ func (s *UDSSuite) benchUDSRoundTrip(b *testing.B) {
 	client := ttrpc.NewClient(conn)
 	defer client.Close()
 
-	tc := taskAPI.NewTTRPCTaskClient(client)
+	tc := newTaskClient(client, params.Version)
 
 	drainFifo(b, ctx, stdoutPath)
 	drainFifo(b, ctx, stderrPath)

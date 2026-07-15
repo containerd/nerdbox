@@ -391,6 +391,7 @@ func (s *service) createSandboxedContainer(ctx context.Context, r *taskAPI.Creat
 		func(ctx context.Context, b *bundle.Bundle) error {
 			return sanitizeNamespaces(ctx, b, len(ctrNetCfg.Networks) > 0, sharedNS.get)
 		},
+		clearApparmorProfile,
 	)
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
@@ -590,6 +591,7 @@ func (s *service) createLegacyContainer(ctx context.Context, r *taskAPI.CreateTa
 			// no pod-level DNSConfig to consider.
 			return addResolvConf(ctx, b, len(nwpr.nws) == 0, nil)
 		},
+		clearApparmorProfile,
 	)
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)

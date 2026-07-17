@@ -17,14 +17,14 @@
 package sandbox
 
 import (
-	"context"
-	"net"
+	"fmt"
 
+	sandboxAPI "github.com/containerd/containerd/api/runtime/sandbox/v1"
 	"github.com/containerd/plugin"
 	"github.com/containerd/plugin/registry"
 	"github.com/containerd/ttrpc"
 
-	intsandbox "github.com/containerd/nerdbox/internal/shim/sandbox"
+	"github.com/containerd/nerdbox/internal/shim/sandbox"
 	vmsbox "github.com/containerd/nerdbox/internal/shim/sandbox/vm"
 	"github.com/containerd/nerdbox/pkg/vm"
 	"github.com/containerd/nerdbox/plugins"
@@ -44,59 +44,46 @@ func init() {
 				return nil, err
 			}
 			sb := vmsbox.NewVMSandbox(vmm.(vm.Manager))
-			// Wrap the raw Sandbox in a SandboxService that implements
-			// both the Sandbox interface and the containerd
-			// TTRPCSandboxService. The SandboxPlugin does NOT implement
-			// shim.TTRPCService — TTRPC registration is handled by the
-			// dedicated TTRPCPlugin "sandbox" in service_plugin.go. This
-			// prevents a double-registration panic when the shim framework
-			// iterates all plugins looking for TTRPCService implementors.
-			return &sandboxManager{svc: intsandbox.NewSandboxService(sb)}, nil
+			return sandbox.NewSandboxService(sb), nil
+		},
+	})
+
+	registry.Register(&plugin.Registration{
+		Type: plugins.TTRPCPlugin,
+		ID:   "sandbox",
+		Requires: []plugin.Type{
+			plugins.SandboxPlugin,
+		},
+		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
+			sbPlugin, err := ic.GetSingle(plugins.SandboxPlugin)
+			if err != nil {
+				return nil, err
+			}
+
+			sm, ok := sbPlugin.(sandboxAPI.TTRPCSandboxService)
+			if !ok {
+				return nil, fmt.Errorf("unexpected sandbox plugin implementation %T", sbPlugin)
+			}
+			return &sbService{srv: sm}, nil
 		},
 	})
 }
 
-// sandboxManager wraps *intsandbox.SandboxService and exposes the
-// intsandbox.Sandbox interface to the plugin system while intentionally NOT
-// implementing shim.TTRPCService. This prevents the shim framework from
-// calling RegisterTTRPC on the SandboxPlugin instance, which would cause a
-// duplicate registration panic (the TTRPCPlugin "sandbox" handles that).
-type sandboxManager struct {
-	svc *intsandbox.SandboxService
+// sbService adapts a sandboxAPI.TTRPCSandboxService to shim.TTRPCService,
+// so that the "sandbox" TTRPCPlugin registration above (rather than the
+// SandboxPlugin "manager" registration, which other plugins such as
+// streaming/transfer depend on as a plain sandbox.Sandbox) is the one the
+// shim framework calls RegisterTTRPC on. Without this indirection, the
+// framework would either not find a RegisterTTRPC method at all, or (if
+// SandboxService implemented it directly) call it a second time when it
+// scans the "manager" plugin's own instance, double-registering the
+// service.
+type sbService struct {
+	srv sandboxAPI.TTRPCSandboxService
 }
 
-// Verify that sandboxManager satisfies the Sandbox interface.
-var _ intsandbox.Sandbox = (*sandboxManager)(nil)
-
-// Service returns the underlying *intsandbox.SandboxService. The task and
-// TTRPC-sandbox plugins use this to access sandbox-specific operations.
-func (m *sandboxManager) Service() *intsandbox.SandboxService {
-	return m.svc
-}
-
-// Export NetNS
-// Export Options
-
-// The following methods delegate to the underlying SandboxService so that
-// sandboxManager satisfies intsandbox.Sandbox (required by the streaming
-// plugin and any other consumer of the SandboxPlugin value).
-
-func (m *sandboxManager) Start(ctx context.Context, opts ...intsandbox.Opt) error {
-	return m.svc.Start(ctx, opts...)
-}
-
-func (m *sandboxManager) Stop(ctx context.Context) error {
-	return m.svc.Stop(ctx)
-}
-
-func (m *sandboxManager) Client() (*ttrpc.Client, error) {
-	return m.svc.Client()
-}
-
-func (m *sandboxManager) StartStream(ctx context.Context, id string) (net.Conn, error) {
-	return m.svc.StartStream(ctx, id)
-}
-
-func (m *sandboxManager) ReservedDisks() int {
-	return m.svc.ReservedDisks()
+// RegisterTTRPC registers the sandbox service on the TTRPC server.
+func (s *sbService) RegisterTTRPC(server *ttrpc.Server) error {
+	sandboxAPI.RegisterTTRPCSandboxService(server, s.srv)
+	return nil
 }

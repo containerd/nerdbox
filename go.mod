@@ -15,7 +15,7 @@ require (
 	github.com/containerd/log v0.1.1-0.20260403072107-cb1839ebf76b
 	github.com/containerd/otelttrpc v0.1.0
 	github.com/containerd/plugin v1.1.0
-	github.com/containerd/shimtest v0.2.1
+	github.com/containerd/shimtest v0.3.0
 	github.com/containerd/ttrpc v1.2.9
 	github.com/containerd/typeurl/v2 v2.3.0
 	github.com/docker/go-events v0.0.0-20190806004212-e31b211e4f1c

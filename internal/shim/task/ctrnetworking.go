@@ -189,7 +189,7 @@ func addResolvConf(ctx context.Context, b *bundle.Bundle, fallbackToHostRC bool)
 		rcBytes = rcBuf.Bytes()
 	} else if fallbackToHostRC {
 		// Try giving the VM a copy of the host's resolv.conf.
-		if c, err := os.ReadFile("/etc/resolv.conf"); err == nil {
+		if c, err := os.ReadFile(hostResolvConfPath()); err == nil {
 			rcBytes = c
 		}
 	}
@@ -208,4 +208,58 @@ func addResolvConf(ctx context.Context, b *bundle.Bundle, fallbackToHostRC bool)
 		Options:     []string{"rbind", "rprivate"},
 	})
 	return nil
+}
+
+// systemdResolvedFullRC is the "full" resolv.conf systemd-resolved maintains
+// alongside its stub file, listing the actual upstream DNS servers rather
+// than the stub's loopback listener. See resolv.conf(5) /
+// systemd-resolved.service(8).
+const systemdResolvedFullRC = "/run/systemd/resolve/resolv.conf"
+
+// hostResolvConfPath returns the host-side resolv.conf path to copy into a
+// container's guest environment.
+//
+// Many Linux distributions symlink /etc/resolv.conf to systemd-resolved's
+// stub file, whose sole nameserver is a loopback address (127.0.0.53) that
+// only systemd-resolved's own stub listener answers on the host. Copying
+// that verbatim into an isolated environment (a container network
+// namespace, or — as here — a VM) is not useful: nothing answers on that
+// loopback address there, so DNS queries fail even though the host itself
+// resolves names correctly. Docker and containerd's CRI implementation
+// handle this exact case the same way: prefer the "full" resolv.conf
+// systemd-resolved also maintains, which lists the real upstream
+// nameservers, over the stub file. This is not specific to nerdbox or to
+// any particular guest network mechanism — it is a general consequence of
+// copying host DNS configuration into an isolated environment.
+func hostResolvConfPath() string {
+	const hostRC = "/etc/resolv.conf"
+	data, err := os.ReadFile(hostRC)
+	if err != nil || !onlyLoopbackNameservers(data) {
+		return hostRC
+	}
+	if _, err := os.Stat(systemdResolvedFullRC); err == nil {
+		return systemdResolvedFullRC
+	}
+	return hostRC
+}
+
+// onlyLoopbackNameservers reports whether every "nameserver" line in a
+// resolv.conf file's contents resolves to a loopback address. Returns false
+// if there are no nameserver lines at all (nothing to prefer an alternative
+// over).
+func onlyLoopbackNameservers(resolvConf []byte) bool {
+	found := false
+	for _, line := range strings.Split(string(resolvConf), "\n") {
+		line = strings.TrimSpace(line)
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] != "nameserver" {
+			continue
+		}
+		ip := net.ParseIP(fields[1])
+		if ip == nil || !ip.IsLoopback() {
+			return false
+		}
+		found = true
+	}
+	return found
 }

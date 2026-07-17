@@ -1,1 +1,2 @@
 Dockerfile text eol=lf
+kernel/patches/*.patch -whitespace

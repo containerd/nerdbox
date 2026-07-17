@@ -40,7 +40,7 @@ Tests are driven by one or more JSON configuration files. See
 | `uid` | int | UID to run as; defaults to the current user's UID. If set to a value different from the current UID and the effective UID is 0, the harness re-execs itself as that user via `sudo` |
 | `gid` | int | GID to run as |
 | `format_mounts` | bool | Provide the rootfs as formatted erofs/ext4 images with a `format/mkdir/overlay` descriptor for the shim to mount. Default (`false`) extracts the rootfs and provides a pre-mounted overlay (or plain directory when rootless) |
-| `skip` | []string | Feature names to skip (`exec`, `layers`, `oom`, `transfer`, `uds`) |
+| `skip` | []string | Feature names to skip (`exec`, `layers`, `net`, `oom`, `transfer`, `uds`) |
 | `env` | map | Additional environment variables for the test run |
 | `debug` | bool | Enable debug logging on the shim |
 
@@ -110,6 +110,9 @@ config, the tree is `TestShim/<config-name>/<test-name>`.
 | `TransferCopyToAndFrom` | transfer | Copy a file in and back out |
 | `TransferExecVerify` | transfer | Copy a file in, verify via exec |
 | `UDSRoundTrip` | uds | UDS socket forwarding round-trip |
+| `OutboundTCP` | net | A container's init process opens an outbound TCP connection to a host-reachable endpoint and completes a round trip. Implementation-neutral: does not assume any particular networking mechanism, only that a container has working default outbound TCP connectivity, as "host networking" would provide. |
+| `OutboundUDP` | net | A container's init process exchanges a UDP datagram with a host-reachable endpoint. Same neutrality as `OutboundTCP`, for the datagram path. |
+| `DNSResolve` | net | A container's init process resolves a real external hostname (`example.com`, forcing an actual DNS query — not answered from `/etc/hosts`) and gets back valid IP addresses. Requires outbound internet access from the test host. |
 | `Stress` | (per feature) | Long-running concurrent stress run. Composes subtests from the enabled features (currently transfer: stat/write/read). Each subtest runs as a goroutine until the test deadline approaches or any one fails (which cancels the rest). Skipped under `-test.short`. |
 
 A separate top-level fuzz target exists alongside `TestShim`:
@@ -230,8 +233,8 @@ unbounded `Stress` run, and run active fuzzing as its own step:
 - **`uid`**: omit to run as the runner user. Set explicitly when you
   want the harness to `sudo` re-exec itself or rewrite the profile.
 - **`skip`**: list of feature names to disable. Currently meaningful
-  values are `exec`, `layers`, `oom`, `transfer`, and `uds` — useful
-  when your shim doesn't implement transfer/UDS forwarding,
+  values are `exec`, `layers`, `net`, `oom`, `transfer`, and `uds` —
+  useful when your shim doesn't implement transfer/UDS forwarding,
   multi-layer rootfs descriptors, or when running rootless without
   cgroup delegation.
 

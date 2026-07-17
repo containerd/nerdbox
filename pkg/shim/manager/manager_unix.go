@@ -142,12 +142,25 @@ func (manager) Start(ctx context.Context, bparams *bootapi.BootstrapParams) (_ *
 		return nil, err
 	}
 	grouping := id
-	spec, err := readSpec()
+	sp, err := readSpec()
 	if err != nil {
-		return nil, err
+		// The sandbox bundle has no config.json when containerd's shim
+		// sandboxer creates a sandbox via CRI: core/runtime/v2.NewBundle
+		// only writes config.json when the sandbox.Sandbox passed to
+		// CreateSandbox carries a non-nil Spec, which CRI's RunPodSandbox
+		// never sets before this Start hook runs (the real OCI spec only
+		// arrives later, over the Bundle TTRPC service). Grouping by
+		// annotation is an optional convenience (falls back to the
+		// instance ID, already the default above), not something Start
+		// should fail over — only a genuine read error (not "missing
+		// file") is fatal.
+		if !os.IsNotExist(err) {
+			return nil, err
+		}
+		sp = &spec{}
 	}
 	for _, group := range groupLabels {
-		if groupID, ok := spec.Annotations[group]; ok {
+		if groupID, ok := sp.Annotations[group]; ok {
 			grouping = groupID
 			break
 		}

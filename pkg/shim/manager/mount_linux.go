@@ -25,12 +25,14 @@ import (
 	"syscall"
 )
 
-// cloneMntNs configures the child command to start in a new user + mount
-// namespace. The user namespace provides mount isolation and grants the
-// child capabilities within it, without requiring or granting real host
-// capabilities. User namespaces are available unprivileged on many
-// distros (since Linux 3.8), but some may gate them via sysctl (e.g.
-// kernel.apparmor_restrict_unprivileged_userns on Ubuntu).
+// cloneMntNs configures the child command to start in a new mount
+// namespace, and — only when the calling process is not already real
+// root — a new user namespace as well. The user namespace provides mount
+// isolation and grants the child capabilities within it, without
+// requiring or granting real host capabilities. User namespaces are
+// available unprivileged on many distros (since Linux 3.8), but some may
+// gate them via sysctl (e.g. kernel.apparmor_restrict_unprivileged_userns
+// on Ubuntu).
 //
 // For a VM-based runtime like nerdbox, the shim does not need real host
 // root — it needs /dev/kvm access (checked against mapped host UID) and
@@ -51,11 +53,29 @@ import (
 // container delete, and the VM itself performs all container-visible
 // filesystem setup.
 //
+// When the calling process already has real root (euid 0), we deliberately
+// skip CLONE_NEWUSER: entering a *new* user namespace — even one that maps
+// a UID to itself — demotes the process to a non-initial user namespace,
+// and the kernel restricts mounting real block-device-backed filesystems
+// (e.g. ext4) to the initial user namespace regardless of the effective
+// capabilities held within a descendant namespace. Real root gets
+// CLONE_NEWNS alone, which still provides the mount-namespace
+// isolation/cleanup-on-exit benefit without losing the ability to mount
+// real filesystems.
+//
 // If namespace creation is not possible (e.g. AppArmor restricts
 // unprivileged user namespaces), the shim runs without mount isolation
 // and this function returns false.
 // cloneMntNs returns true if user namespace clone flags were set.
 func cloneMntNs(_ context.Context, cmd *exec.Cmd) bool {
+	if os.Geteuid() == 0 {
+		// Already real root: a plain mount namespace is enough, and
+		// avoids demoting into a non-initial user namespace (which would
+		// break mounts of real block-device filesystems).
+		cmd.SysProcAttr.Cloneflags |= syscall.CLONE_NEWNS
+		return false
+	}
+
 	if restricted, err := apparmorRestrictsUserns(); err != nil {
 		// Failed to check apparmor userns restriction, skipping mount namespace isolation")
 		// We can't log anything here as it will break the TTRPC protocol!

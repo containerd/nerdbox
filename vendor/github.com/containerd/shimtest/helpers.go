@@ -304,6 +304,17 @@ func newCreateTaskRequest(tb testing.TB, id, bundle, stdout, stderr string, root
 	return req
 }
 
+// newCreateTaskRequestStdin is like newCreateTaskRequest but also sets a stdin
+// FIFO path on the request. Use this for tests where the init process reads
+// from stdin (e.g. nc in TCP or UDP mode where the token is written by the
+// test over a FIFO).
+func newCreateTaskRequestStdin(tb testing.TB, id, bundle, stdin, stdout, stderr string, rootfs []*types.Mount) *taskAPI.CreateTaskRequest {
+	tb.Helper()
+	req := newCreateTaskRequest(tb, id, bundle, stdout, stderr, rootfs)
+	req.Stdin = stdin
+	return req
+}
+
 // bootstrapParams is the JSON / protobuf payload returned on stdout
 // from `shim start`.
 type bootstrapParams struct {

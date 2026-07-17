@@ -93,12 +93,19 @@ func (manager) Start(ctx context.Context, bparams *bootapi.BootstrapParams) (_ *
 		return nil, err
 	}
 	grouping := id
-	spec, err := readSpec()
+	sp, err := readSpec()
 	if err != nil {
-		return nil, err
+		// See the identical comment in manager_unix.go's Start: the sandbox
+		// bundle has no config.json when containerd's shim sandboxer
+		// creates a sandbox via CRI, and grouping-by-annotation is an
+		// optional convenience, not something Start should fail over.
+		if !os.IsNotExist(err) {
+			return nil, err
+		}
+		sp = &spec{}
 	}
 	for _, group := range groupLabels {
-		if groupID, ok := spec.Annotations[group]; ok {
+		if groupID, ok := sp.Annotations[group]; ok {
 			grouping = groupID
 			break
 		}

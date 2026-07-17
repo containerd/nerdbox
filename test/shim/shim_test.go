@@ -83,6 +83,12 @@ func TestMain(m *testing.M) {
 // LayersSuite (HundredLayers) packs 101 erofs layers into a single
 // GPT-partitioned VMDK, consuming only one virtio-blk device regardless
 // of layer count.
+//
+// NetworkSuite verifies a container's default outbound network
+// connectivity (TCP, UDP, DNS), independent of the mechanism a shim uses
+// to provide it. This is the regression guard for TSI (Transparent Socket
+// Impersonation), the default connectivity path for containers started
+// without any network configuration.
 func TestShim(t *testing.T) {
 	cfg := shimConfig()
 	shimtest.NewRunSuite(cfg).Run(t)
@@ -91,6 +97,7 @@ func TestShim(t *testing.T) {
 	shimtest.NewOOMSuite(cfg).Run(t)
 	shimtest.NewUDSSuite(cfg).Run(t)
 	shimtest.NewLayersSuite(cfg).Run(t)
+	shimtest.NewNetworkSuite(cfg).Run(t)
 }
 
 // FuzzTransferMissing exercises the transfer service with arbitrary paths

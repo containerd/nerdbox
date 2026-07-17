@@ -145,7 +145,7 @@ github.com/containerd/platforms
 ## explicit; go 1.22
 github.com/containerd/plugin
 github.com/containerd/plugin/registry
-# github.com/containerd/shimtest v0.2.1
+# github.com/containerd/shimtest v0.3.0
 ## explicit; go 1.26.3
 github.com/containerd/shimtest
 github.com/containerd/shimtest/internal/transfer

@@ -94,8 +94,9 @@ COPY kernel/config-${KERNEL_VERSION}-${KERNEL_ARCH} /usr/src/linux/.config
 
 COPY kernel/patches /usr/src/linux/patches
 RUN <<EOT
+    set -e
     for patch in $(ls -d /usr/src/linux/patches/*.patch); do
-        patch -p1 -d /usr/src/linux < "$patch";
+        patch -p1 -d /usr/src/linux --fuzz=0 < "$patch";
     done
 EOT
 

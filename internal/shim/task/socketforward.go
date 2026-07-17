@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/containerd/continuity/fs"
 	"github.com/containerd/log"
 	"github.com/opencontainers/runtime-spec/specs-go"
 
@@ -136,11 +137,23 @@ func parseUDSMount(containerID string, m specs.Mount) (socketForwardEntry, error
 // mounted read-only, the placeholders must be present in the source before
 // the mount is applied.
 //
+// entry.containerPath is an OCI mount destination and is normally absolute
+// (e.g. "/run/shared.sock"); it may also contain ".." components. Both
+// fs.RootPath (rather than a plain filepath.Join, which would resolve
+// ".." components and could walk right out of sourceRootfs) and symlinks
+// already present inside sourceRootfs are resolved safely so the
+// placeholder can never be created outside sourceRootfs.
+//
 // Errors are logged but not returned: a missing placeholder will cause the
 // OCI runtime to fail at container creation, which is reported there.
 func (p *socketForwardsProvider) CreateRootfsPlaceholders(ctx context.Context, sourceRootfs string) {
 	for _, entry := range p.entries {
-		destInRootfs := filepath.Join(sourceRootfs, entry.containerPath)
+		destInRootfs, err := fs.RootPath(sourceRootfs, entry.containerPath)
+		if err != nil {
+			log.G(ctx).WithError(err).WithField("path", entry.containerPath).
+				Warn("socketforward: failed to resolve UDS mount placeholder path")
+			continue
+		}
 		if err := os.MkdirAll(filepath.Dir(destInRootfs), 0o755); err != nil {
 			log.G(ctx).WithError(err).WithField("path", destInRootfs).
 				Warn("socketforward: failed to create parent dirs for UDS mount placeholder")

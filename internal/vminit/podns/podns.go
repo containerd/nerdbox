@@ -150,18 +150,33 @@ func createPIDAnchor(ctx context.Context, path string) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start pod-pause anchor: %w", err)
 	}
+
+	nsSrc := fmt.Sprintf("/proc/%d/ns/pid", cmd.Process.Pid)
+	if err := unix.Mount(nsSrc, path, "", unix.MS_BIND, ""); err != nil {
+		// The bind mount is what's supposed to keep the anchor's
+		// namespace referenced (see the doc comment above); if it never
+		// happens, nothing will ever wait on or kill this process, so it
+		// would otherwise run for the rest of the VM's lifetime. Kill it
+		// and wait synchronously here rather than leaking it.
+		if killErr := cmd.Process.Kill(); killErr != nil {
+			log.G(ctx).WithError(killErr).Warn("failed to kill pod-pause anchor after mount failure")
+		}
+		if waitErr := cmd.Wait(); waitErr != nil {
+			log.G(ctx).WithError(waitErr).Warn("pod-pause anchor wait after mount failure")
+		}
+		return fmt.Errorf("bind mount %s -> %s: %w", nsSrc, path, err)
+	}
+
 	// Reap the anchor's own exit in the background (it should never exit
 	// on its own — only via SIGKILL at sandbox teardown) so it never
-	// becomes a zombie under vminitd.
+	// becomes a zombie under vminitd. Started only once the bind mount
+	// has succeeded: a mount failure above is handled synchronously so
+	// this goroutine is never left running with nothing to wake it.
 	go func() {
 		if err := cmd.Wait(); err != nil {
 			log.G(ctx).WithError(err).Warn("pod-pause anchor process exited")
 		}
 	}()
 
-	nsSrc := fmt.Sprintf("/proc/%d/ns/pid", cmd.Process.Pid)
-	if err := unix.Mount(nsSrc, path, "", unix.MS_BIND, ""); err != nil {
-		return fmt.Errorf("bind mount %s -> %s: %w", nsSrc, path, err)
-	}
 	return nil
 }

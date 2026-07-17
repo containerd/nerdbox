@@ -200,6 +200,32 @@ func withExtraMounts(mounts ...specs.Mount) func(*specs.Spec) {
 	}
 }
 
+// withHostPathNamespace returns a CreateOCISpec opt that sets (or adds)
+// a namespace entry of the given type with a host path. A non-empty Path
+// on an IPC/PID/network namespace entry is how an OCI spec requests that
+// a container join a namespace shared with others, rather than getting a
+// fresh, isolated one — for example, a host "/proc/<sandboxPid>/ns/<type>"
+// path, as containerd's WithPodNamespaces sets for pod-level namespace
+// sharing. The actual path value here is a placeholder — it only needs
+// to be non-empty, since the shim's job is to recognize that a host path
+// is present at all and substitute its own guest-side shared namespace,
+// not to interpret the path itself (which is meaningless off the host
+// that produced it).
+func withHostPathNamespace(nsType specs.LinuxNamespaceType, path string) func(*specs.Spec) {
+	return func(s *specs.Spec) {
+		if s.Linux == nil {
+			s.Linux = &specs.Linux{}
+		}
+		for i, ns := range s.Linux.Namespaces {
+			if ns.Type == nsType {
+				s.Linux.Namespaces[i].Path = path
+				return
+			}
+		}
+		s.Linux.Namespaces = append(s.Linux.Namespaces, specs.LinuxNamespace{Type: nsType, Path: path})
+	}
+}
+
 // withMemoryLimit returns a CreateOCISpec opt that sets the memory
 // limit (in bytes) on the spec, with swap clamped equal to the limit
 // so the container cannot grow via swap before the OOM killer fires.

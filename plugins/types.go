@@ -31,6 +31,9 @@ const (
 
 	// StreamingPlugin implements a stream manager
 	StreamingPlugin plugin.Type = "nerdbox.streaming.v1"
+
+	// TaskPlugin implements the task interface
+	TaskPlugin plugin.Type = "nerdbox.task.v1"
 )
 
 const (

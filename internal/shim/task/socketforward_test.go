@@ -18,6 +18,8 @@ package task
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/opencontainers/runtime-spec/specs-go"
@@ -133,4 +135,44 @@ func TestSocketForwardsProviderFromBundle(t *testing.T) {
 			assert.Equal(t, tc.wantEntries, p.entries)
 		})
 	}
+}
+
+// TestCreateRootfsPlaceholders_ConfinesToRootfs verifies that a UDS mount
+// destination containing ".." components cannot escape sourceRootfs when
+// the placeholder file is created — a regression test for a path-traversal
+// issue where a plain filepath.Join(sourceRootfs, containerPath) would
+// resolve ".." segments right out of sourceRootfs.
+func TestCreateRootfsPlaceholders_ConfinesToRootfs(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	sourceRootfs := filepath.Join(root, "rootfs")
+	require.NoError(t, os.MkdirAll(sourceRootfs, 0o755))
+
+	p := &socketForwardsProvider{
+		entries: []socketForwardEntry{
+			{containerPath: "/../../etc/escaped.sock"},
+			{containerPath: "/run/normal.sock"},
+		},
+	}
+
+	p.CreateRootfsPlaceholders(ctx, sourceRootfs)
+
+	// Neither placeholder should have escaped sourceRootfs: walk the
+	// entire temp dir tree and confirm every created file is contained
+	// within sourceRootfs.
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		require.NoError(t, err)
+		if info.IsDir() || path == sourceRootfs {
+			return nil
+		}
+		rel, err := filepath.Rel(sourceRootfs, path)
+		require.NoError(t, err)
+		assert.False(t, len(rel) >= 2 && rel[:2] == "..",
+			"file %q escaped sourceRootfs %q", path, sourceRootfs)
+		return nil
+	})
+	require.NoError(t, err)
+
+	// The well-behaved mount's placeholder must still be created normally.
+	assert.FileExists(t, filepath.Join(sourceRootfs, "run", "normal.sock"))
 }

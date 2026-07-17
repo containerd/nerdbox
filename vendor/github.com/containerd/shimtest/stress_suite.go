@@ -64,12 +64,24 @@ type StressOptions struct {
 	// test. The shim under test must implement the transfer service.
 	Transfer bool
 
+	// Sandbox enables the sandbox container-churn stress test.  The
+	// shim under test must implement the containerd sandbox shim API
+	// (runtime/sandbox/v1).
+	Sandbox bool
+
 	// ExecRSSGrowthOverride, when non-zero, replaces the platform default
 	// RSS growth threshold for the exec stress test. Use this for shims
 	// that host a VM or other large runtime in-process and therefore have
 	// a higher expected one-time RSS step than a thin supervisor shim.
 	// The value is in bytes.
 	ExecRSSGrowthOverride int64
+
+	// SandboxRSSGrowthOverride, when non-zero, replaces the platform default
+	// RSS growth threshold for the sandbox stress test.  VM-based shims
+	// have a large one-time RSS step from the VM boot that saturates
+	// early; set this to accommodate the expected baseline.
+	// The value is in bytes.
+	SandboxRSSGrowthOverride int64
 }
 
 // NewStressSuite constructs a StressSuite from cfg and options.
@@ -91,6 +103,9 @@ func (s *StressSuite) Run(t *testing.T) {
 	t.Run("Exec", s.testExec)
 	if s.options.Transfer {
 		t.Run("Transfer", s.testTransfer)
+	}
+	if s.options.Sandbox {
+		t.Run("Sandbox", s.testSandbox)
 	}
 }
 

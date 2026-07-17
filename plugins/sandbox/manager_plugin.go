@@ -17,36 +17,30 @@
 package sandbox
 
 import (
-	"fmt"
-
 	"github.com/containerd/plugin"
 	"github.com/containerd/plugin/registry"
 
+	"github.com/containerd/nerdbox/internal/shim/sandbox"
+	vmsbox "github.com/containerd/nerdbox/internal/shim/sandbox/vm"
+	"github.com/containerd/nerdbox/pkg/vm"
 	"github.com/containerd/nerdbox/plugins"
 )
 
 func init() {
 	registry.Register(&plugin.Registration{
-		Type: plugins.TTRPCPlugin,
-		ID:   "sandbox",
+		Type: plugins.SandboxPlugin,
+		ID:   "manager",
 		Requires: []plugin.Type{
-			plugins.SandboxPlugin,
+			plugins.VMManagerPlugin,
 		},
 		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
-			sbRaw, err := ic.GetSingle(plugins.SandboxPlugin)
+			// Only a single VM manager plugin is supported.
+			vmm, err := ic.GetSingle(plugins.VMManagerPlugin)
 			if err != nil {
 				return nil, err
 			}
-			// Unwrap the sandboxManager to get the *SandboxService.
-			// The SandboxService implements both the Sandbox interface and the
-			// containerd TTRPCSandboxService. Returning it here (as a
-			// TTRPCPlugin) causes the shim framework to call RegisterTTRPC
-			// exactly once, registering the sandbox TTRPC service.
-			sm, ok := sbRaw.(*sandboxManager)
-			if !ok {
-				return nil, fmt.Errorf("unexpected SandboxPlugin implementation %T", sbRaw)
-			}
-			return sm.Service(), nil
+			sb := vmsbox.NewVMSandbox(vmm.(vm.Manager))
+			return sandbox.NewSandboxService(sb), nil
 		},
 	})
 }

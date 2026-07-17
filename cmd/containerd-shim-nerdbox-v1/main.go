@@ -24,6 +24,7 @@ import (
 	"github.com/containerd/nerdbox/pkg/logging"
 	"github.com/containerd/nerdbox/pkg/shim/manager"
 
+	_ "github.com/containerd/nerdbox/plugins/sandbox"
 	_ "github.com/containerd/nerdbox/plugins/shim/sandbox"
 	_ "github.com/containerd/nerdbox/plugins/shim/streaming"
 	_ "github.com/containerd/nerdbox/plugins/shim/task"

@@ -50,10 +50,7 @@ import (
 	"github.com/containerd/nerdbox/internal/shim/task/bundle"
 )
 
-var (
-	_     = shim.TTRPCService(&service{})
-	empty = &ptypes.Empty{}
-)
+var empty = &ptypes.Empty{}
 
 // guestRuncOptions constructs a fresh runc Options message containing only the
 // fields that are meaningful inside the VM guest, and returns it as a
@@ -224,11 +221,6 @@ type service struct {
 	initiateShutdown     func()
 	initiateShutdownOnce sync.Once
 	shutdownDone         <-chan struct{}
-}
-
-func (s *service) RegisterTTRPC(server *ttrpc.Server) error {
-	taskAPI.RegisterTTRPCTaskService(server, s)
-	return nil
 }
 
 func (s *service) shutdown(ctx context.Context) error {

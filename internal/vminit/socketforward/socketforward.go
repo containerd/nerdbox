@@ -169,8 +169,10 @@ func (s *Service) bind(ctx context.Context, forwardID, socketPath string) error 
 	// Allow all processes (including those in user namespaces) to connect to
 	// this forwarded socket.  Containers in user namespaces run as a mapped
 	// UID that is "other" from the VM init namespace's perspective, so they
-	// need write permission on the socket file to call connect(2).
-	if err := os.Chmod(socketPath, 0o777); err != nil {
+	// need write permission on the socket file to call connect(2). Execute
+	// bits are not meaningful for a UNIX socket, so 0o666 (rw for all) is
+	// sufficient; no need for 0o777.
+	if err := os.Chmod(socketPath, 0o666); err != nil {
 		l.Close()
 		return fmt.Errorf("chmod socket %s: %w", socketPath, err)
 	}

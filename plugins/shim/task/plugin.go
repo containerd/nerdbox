@@ -55,15 +55,10 @@ func init() {
 				return nil, err
 			}
 
-			// Unwrap the sandboxManager to get the underlying SandboxService.
-			type sandboxManagerUnwrapper interface {
-				Service() *intsandbox.SandboxService
-			}
-			unwrapper, ok := sbRaw.(sandboxManagerUnwrapper)
+			svc, ok := sbRaw.(*intsandbox.SandboxService)
 			if !ok {
 				return nil, fmt.Errorf("unexpected SandboxPlugin implementation %T", sbRaw)
 			}
-			svc := unwrapper.Service()
 
 			// Determine debug flag from shim opts stored in context.
 			debug := false

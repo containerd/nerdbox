@@ -131,12 +131,6 @@ func (s *SandboxService) RegisterStartOptions(fn StartOptionsFunc) {
 	s.startOptsFn = fn
 }
 
-// RegisterTTRPC registers the sandbox service on the TTRPC server.
-func (s *SandboxService) RegisterTTRPC(server *ttrpc.Server) error {
-	sandboxAPI.RegisterTTRPCSandboxService(server, s)
-	return nil
-}
-
 // FS returns the SharedFS associated with this sandbox, or nil if the sandbox
 // has not been created yet. The task service uses this to share container
 // rootfses into the VM.
@@ -227,6 +221,16 @@ func (s *SandboxService) Options() *anypb.Any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.options
+}
+
+// NetworkSandboxPath returns the host-side network sandbox path (e.g. a Linux netns)
+func (s *SandboxService) NetworkSandboxPath() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.networkSandbox != nil {
+		return s.networkSandbox.Path()
+	}
+	return ""
 }
 
 // StartSandbox boots the VM. It calls the registered StartOptionsFunc (if

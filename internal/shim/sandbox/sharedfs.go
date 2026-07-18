@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sync"
 
@@ -84,14 +85,20 @@ func (s *SharedFS) Root() string {
 
 // GuestRootfsPath returns the in-guest path of the container's assembled
 // rootfs, suitable for passing to the guest Task.Create as the rootfs source.
+//
+// This uses path.Join, not filepath.Join: the guest is always Linux
+// regardless of the host OS this shim runs on, so the result must always
+// use '/' separators, even on a Windows host (where filepath.Join would
+// use '\' and produce a path the guest can't use).
 func GuestRootfsPath(containerID string) string {
-	return filepath.Join(GuestContainersDir, containerID, "rootfs")
+	return path.Join(GuestContainersDir, containerID, "rootfs")
 }
 
 // GuestVolumePath returns the in-guest path for volume mount n of the given
 // container (0-indexed), suitable for bind-mounting into the container.
+// See GuestRootfsPath for why this uses path.Join rather than filepath.Join.
 func GuestVolumePath(containerID string, n int) string {
-	return filepath.Join(GuestContainersDir, containerID, "volumes", fmt.Sprintf("%d", n))
+	return path.Join(GuestContainersDir, containerID, "volumes", fmt.Sprintf("%d", n))
 }
 
 // ShareRootfs resolves the container rootfs from the given containerd mount

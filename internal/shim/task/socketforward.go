@@ -159,7 +159,7 @@ func (p *socketForwardsProvider) CreateRootfsPlaceholders(ctx context.Context, s
 				Warn("socketforward: failed to create parent dirs for UDS mount placeholder")
 			continue
 		}
-		f, err := os.OpenFile(destInRootfs, os.O_CREATE|os.O_EXCL, 0o666)
+		f, err := os.OpenFile(destInRootfs, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 		if err != nil && !os.IsExist(err) {
 			log.G(ctx).WithError(err).WithField("path", destInRootfs).
 				Warn("socketforward: failed to create UDS mount placeholder")

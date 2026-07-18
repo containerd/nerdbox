@@ -39,6 +39,27 @@ func All(ctx context.Context, rootfs, mdir string, mounts []*types.Mount) (retEr
 	log.G(ctx).WithField("mounts", mounts).Debug("mounting rootfs components")
 	active := []mount.ActiveMount{}
 
+	// Registered before the loop below (rather than after it, as originally
+	// written) so that it actually runs when the loop returns early on
+	// error: a defer only takes effect once the defer statement itself
+	// executes, and every error path inside the loop returns directly,
+	// never reaching a defer statement placed after the loop. Without this,
+	// a failure partway through left every mount already established by
+	// this call active and untracked by any caller.
+	defer func() {
+		if retErr != nil {
+			for i := len(active) - 1; i >= 0; i-- {
+				// TODO: delegate custom types to handlers
+				if active[i].Type == "mkdir" {
+					continue
+				}
+				if err := mount.UnmountAll(active[i].MountPoint, 0); err != nil {
+					log.G(ctx).WithError(err).WithField("mountpoint", active[i].MountPoint).Warn("failed to cleanup mount")
+				}
+			}
+		}
+	}()
+
 	// TODO: Use mount manager interface, mount temps to directory
 	for i, m := range mounts {
 		var target string
@@ -130,19 +151,6 @@ func All(ctx context.Context, rootfs, mdir string, mounts []*types.Mount) (retEr
 		active = append(active, am)
 
 	}
-	defer func() {
-		if retErr != nil {
-			for i := len(active) - 1; i >= 0; i-- {
-				// TODO: delegate custom types to handlers
-				if active[i].Type == "mkdir" {
-					continue
-				}
-				if err := mount.UnmountAll(active[i].MountPoint, 0); err != nil {
-					log.G(ctx).WithError(err).WithField("mountpoint", active[i].MountPoint).Warn("failed to cleanup mount")
-				}
-			}
-		}
-	}()
 
 	return nil
 }

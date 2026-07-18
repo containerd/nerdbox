@@ -53,13 +53,38 @@ import (
 // container delete, and the VM itself performs all container-visible
 // filesystem setup.
 //
+// The UID/GID mapping maps container-side 0 to the real host UID/GID,
+// so the child appears as root *only inside its own, brand-new user
+// namespace*. This grants no additional real host privilege: every
+// interaction with a resource outside the namespace (files, sockets
+// inherited across the namespace boundary, etc.) is still translated
+// back through the mapping to the real, unprivileged host UID for
+// permission checks.
+//
+// Mapping to UID 0 (rather than mapping the host UID to itself, which
+// would leave euid non-zero inside the new namespace) matters because of
+// how Linux computes capabilities across exec: a process whose effective
+// UID is non-zero *within its own current user namespace* has its
+// capability sets cleared to empty when it execs, even though the
+// namespace's creator normally holds a full capability set in it. Since
+// this child is always exec'd into the new namespace (see above), a
+// non-zero-inside-its-own-namespace mapping would leave it with no
+// capabilities at all afterward — unable to perform the bind mounts
+// SharedFS needs, or even call getsockopt(2) on a listening-socket fd
+// inherited across the namespace boundary (reproduced standalone by
+// script/userns-check). Mapping to UID 0 keeps the child's effective UID
+// zero *inside its own namespace* across exec, so the capability set is
+// preserved and mount(2)/getsockopt(2) work as expected — with no change
+// to what the process can do to real host resources, which remain gated
+// by the real, unprivileged host UID/GID the mapping points at.
+//
 // When the calling process already has real root (euid 0), we deliberately
 // skip CLONE_NEWUSER: entering a *new* user namespace — even one that maps
-// a UID to itself — demotes the process to a non-initial user namespace,
-// and the kernel restricts mounting real block-device-backed filesystems
-// (e.g. ext4) to the initial user namespace regardless of the effective
-// capabilities held within a descendant namespace. Real root gets
-// CLONE_NEWNS alone, which still provides the mount-namespace
+// UID 0 to the real root UID — demotes the process to a non-initial user
+// namespace, and the kernel restricts mounting real block-device-backed
+// filesystems (e.g. ext4) to the initial user namespace regardless of the
+// effective capabilities held within a descendant namespace. Real root
+// gets CLONE_NEWNS alone, which still provides the mount-namespace
 // isolation/cleanup-on-exit benefit without losing the ability to mount
 // real filesystems.
 //
@@ -90,10 +115,10 @@ func cloneMntNs(_ context.Context, cmd *exec.Cmd) bool {
 	gid := os.Getgid()
 	cmd.SysProcAttr.Cloneflags |= syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS
 	cmd.SysProcAttr.UidMappings = []syscall.SysProcIDMap{
-		{ContainerID: uid, HostID: uid, Size: 1},
+		{ContainerID: 0, HostID: uid, Size: 1},
 	}
 	cmd.SysProcAttr.GidMappings = []syscall.SysProcIDMap{
-		{ContainerID: gid, HostID: gid, Size: 1},
+		{ContainerID: 0, HostID: gid, Size: 1},
 	}
 	return true
 }

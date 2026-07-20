@@ -102,6 +102,17 @@ func GuestVolumePath(containerID string, n int) string {
 	return path.Join(GuestContainersDir, containerID, "volumes", fmt.Sprintf("%d", n))
 }
 
+// RootfsHostPath returns the host-side path where ShareRootfs assembles the
+// container's rootfs (the same directory GuestRootfsPath(containerID)
+// exposes to the guest via the virtiofs share). Only meaningful after
+// ShareRootfs has returned successfully for containerID: this is a pure
+// path builder with no validation of its own (it has no error to report
+// one with), so callers must only act on its result once containerID has
+// already been accepted by ShareRootfs, ShareVolume, or Unshare.
+func (s *SharedFS) RootfsHostPath(containerID string) string {
+	return filepath.Join(s.root, containerID, "rootfs")
+}
+
 // validateContainerID rejects container IDs that are empty or that could
 // escape s.root (on the host) or GuestContainersDir (in the guest) once
 // joined onto it — e.g. "..", "../x", or an ID containing a path

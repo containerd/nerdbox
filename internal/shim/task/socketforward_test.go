@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/containerd/containerd/api/types"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -175,4 +176,145 @@ func TestCreateRootfsPlaceholders_ConfinesToRootfs(t *testing.T) {
 
 	// The well-behaved mount's placeholder must still be created normally.
 	assert.FileExists(t, filepath.Join(sourceRootfs, "run", "normal.sock"))
+}
+
+// TestUDSPlaceholderSource covers the mount-shape decision at the heart of
+// the sandboxed UDS placeholder fix: only a rootfs whose *last* mount spec
+// (the one mountutil.All actually mounts at the assembled path) is a
+// read-only bind needs its placeholder written to that mount's Source
+// before ShareRootfs runs. Every other shape — in particular a multi-entry
+// overlay/erofs assembly, which is what a real snapshotter or this repo's
+// erofs layer format actually hands Task.Create — has no single mount
+// whose Source is the final assembled tree, so the assembled rootfs path
+// itself is the only correct, and only available-after-ShareRootfs, target.
+func TestUDSPlaceholderSource(t *testing.T) {
+	const assembled = "/state/containers/ctr-1/rootfs"
+
+	testcases := []struct {
+		name           string
+		mounts         []*types.Mount
+		wantPath       string
+		wantBefore     bool
+		wantPathReason string
+	}{
+		{
+			name:           "no mounts",
+			mounts:         nil,
+			wantPath:       assembled,
+			wantBefore:     false,
+			wantPathReason: "empty rootfs still assembles an (empty) directory at the guest path",
+		},
+		{
+			name: "read-only bind (non-root shimtest / a committed snapshot)",
+			mounts: []*types.Mount{
+				{Type: "bind", Source: "/tmp/extracted-rootfs", Options: []string{"ro", "rbind"}},
+			},
+			wantPath:       "/tmp/extracted-rootfs",
+			wantBefore:     true,
+			wantPathReason: "ShareRootfs will mount this Source read-only at the assembled path",
+		},
+		{
+			name: "writable bind (no ro option)",
+			mounts: []*types.Mount{
+				{Type: "bind", Source: "/tmp/writable-rootfs", Options: []string{"rbind"}},
+			},
+			wantPath:       assembled,
+			wantBefore:     false,
+			wantPathReason: "the bind stays writable, so using the assembled path (equivalent content) after ShareRootfs is correct and simpler",
+		},
+		{
+			name: "bind marked ro but missing Source",
+			mounts: []*types.Mount{
+				{Type: "bind", Source: "", Options: []string{"ro"}},
+			},
+			wantPath:       assembled,
+			wantBefore:     false,
+			wantPathReason: "an empty Source can't be written to before assembly; fall back to the assembled path",
+		},
+		{
+			name: "overlay/erofs multi-layer assembly (the common CRI/erofs shape)",
+			mounts: []*types.Mount{
+				{Type: "ext4", Source: "/state/scratch.ext4", Options: []string{"rw", "loop"}},
+				{Type: "erofs", Source: "/layers/base.erofs", Options: []string{"ro", "loop"}},
+				{
+					Type:   "format/mkdir/overlay",
+					Source: "overlay",
+					Options: []string{
+						"workdir={{ mount 0 }}/work",
+						"upperdir={{ mount 0 }}/upper",
+						"lowerdir={{ mount 1 }}",
+					},
+				},
+			},
+			wantPath:       assembled,
+			wantBefore:     false,
+			wantPathReason: "no single mount's Source is the assembled tree; the overlay's writable upperdir backs the assembled path itself",
+		},
+		{
+			name: "single overlay mount with explicit upperdir",
+			mounts: []*types.Mount{
+				{
+					Type:    "overlay",
+					Source:  "overlay",
+					Options: []string{"lowerdir=/l1:/l2", "upperdir=/upper", "workdir=/work"},
+				},
+			},
+			wantPath:       assembled,
+			wantBefore:     false,
+			wantPathReason: "an overlay mount is never type \"bind\", so it must resolve to the assembled path",
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotPath, gotBefore := udsPlaceholderSource(tc.mounts, assembled)
+			assert.Equal(t, tc.wantPath, gotPath, tc.wantPathReason)
+			assert.Equal(t, tc.wantBefore, gotBefore)
+		})
+	}
+}
+
+// TestCreateRootfsPlaceholders_OverlayShapedRootfs is an end-to-end
+// regression test for the bug identified in review: previously, placeholder
+// creation only ever scanned r.Rootfs for a "bind"-typed entry, so an
+// overlay/erofs-shaped rootfs (no "bind" entry at all — the shape used by
+// the erofs snapshotter and any real CRI overlay snapshotter) produced zero
+// placeholders, leaving a UDS mount's rewritten bind destination missing.
+//
+// This test drives the same two-call sequence service.go's
+// createSandboxedContainer uses (udsPlaceholderSource to pick a target,
+// then CreateRootfsPlaceholders) against an overlay-shaped mount list and a
+// writable directory standing in for the host path SharedFS.ShareRootfs
+// would have assembled, and asserts the placeholder lands there.
+func TestCreateRootfsPlaceholders_OverlayShapedRootfs(t *testing.T) {
+	ctx := context.Background()
+	assembledRootfs := t.TempDir()
+
+	overlayShapedMounts := []*types.Mount{
+		{Type: "ext4", Source: "/state/scratch.ext4", Options: []string{"rw", "loop"}},
+		{Type: "erofs", Source: "/layers/base.erofs", Options: []string{"ro", "loop"}},
+		{Type: "format/mkdir/overlay", Source: "overlay", Options: []string{
+			"workdir={{ mount 0 }}/work",
+			"upperdir={{ mount 0 }}/upper",
+			"lowerdir={{ mount 1 }}",
+		}},
+	}
+
+	p := &socketForwardsProvider{
+		entries: []socketForwardEntry{
+			{containerPath: "/run/shared.sock"},
+		},
+	}
+
+	placeholderSrc, beforeAssembly := udsPlaceholderSource(overlayShapedMounts, assembledRootfs)
+	require.False(t, beforeAssembly, "an overlay-shaped rootfs has no writable Source available before assembly")
+	require.Equal(t, assembledRootfs, placeholderSrc)
+
+	// Mirror service.go: this call only happens after ShareRootfs would
+	// have assembled the rootfs (here, simply because assembledRootfs
+	// already exists and is writable).
+	p.CreateRootfsPlaceholders(ctx, placeholderSrc)
+
+	assert.FileExists(t, filepath.Join(assembledRootfs, "run", "shared.sock"),
+		"UDS placeholder must be created in the assembled rootfs when no mount entry has a usable pre-assembly Source")
 }

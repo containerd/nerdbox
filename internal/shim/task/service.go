@@ -152,11 +152,12 @@ type container struct {
 	// ioDone is closed when the host-side copy goroutines for the init
 	// process have fully drained output to the destination FIFO.
 	ioDone <-chan struct{}
-	// stdinEOF, when non-nil, signals the host stdin goroutine to stop
-	// reading the FIFO and send OP_SHUTDOWN(SEND) in-order on the stdin
-	// stream. Called by CloseIO instead of forwarding the RPC out-of-band,
-	// guaranteeing the EOF arrives after all in-flight stdin bytes.
-	stdinEOF func() error
+	// stdinEOF, when non-nil, drains the host stdin FIFO and sends
+	// OP_SHUTDOWN(SEND) in-order on the stdin stream. Called by CloseIO with
+	// the CloseIO request context instead of forwarding the RPC out-of-band,
+	// guaranteeing the EOF arrives after all in-flight stdin bytes. It blocks
+	// until the EOF is delivered or the context is cancelled.
+	stdinEOF func(context.Context) error
 
 	// forwarder is the UNIX socket forwarder for this specific container.
 	forwarder *socketForwarder
@@ -168,7 +169,7 @@ type container struct {
 	// before the caller can issue Delete.
 	execIODone map[string]<-chan struct{}
 	// execStdinEOF holds the in-band stdin EOF sender per exec ID.
-	execStdinEOF map[string]func() error
+	execStdinEOF map[string]func(context.Context) error
 }
 
 // shutdown shuts down the container's IO streams, socket forwarding, and all
@@ -490,7 +491,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		stdinEOF:      initStdinEOF,
 		execShutdowns: make(map[string]func(context.Context) error),
 		execIODone:    make(map[string]<-chan struct{}),
-		execStdinEOF:  make(map[string]func() error),
+		execStdinEOF:  make(map[string]func(context.Context) error),
 	}
 
 	guestOpts, err := guestRuncOptions(ctx, r.Options)
@@ -772,7 +773,7 @@ func (s *service) CloseIO(ctx context.Context, r *taskAPI.CloseIORequest) (*ptyp
 		// stream, preventing truncation caused by an out-of-band RPC on a
 		// separate vsock connection racing in-flight stdin bytes.
 		s.mu.Lock()
-		var stdinEOF func() error
+		var stdinEOF func(context.Context) error
 		if c, ok := s.containers[r.ID]; ok {
 			if r.ExecID != "" {
 				stdinEOF = c.execStdinEOF[r.ExecID]
@@ -783,7 +784,7 @@ func (s *service) CloseIO(ctx context.Context, r *taskAPI.CloseIORequest) (*ptyp
 		s.mu.Unlock()
 
 		if stdinEOF != nil {
-			if err := stdinEOF(); err != nil {
+			if err := stdinEOF(ctx); err != nil {
 				log.G(ctx).WithError(err).WithFields(log.Fields{
 					"container_id": r.ID,
 					"exec_id":      r.ExecID,

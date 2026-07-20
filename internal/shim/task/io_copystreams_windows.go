@@ -38,7 +38,7 @@ type stdinStreamWriteCloser interface {
 	CloseWrite() error
 }
 
-func copyStreams(ctx context.Context, streams [3]io.ReadWriteCloser, stdin, stdout, stderr string, done chan struct{}) (stdinEOF func() error, err error) {
+func copyStreams(ctx context.Context, streams [3]io.ReadWriteCloser, stdin, stdout, stderr string, done chan struct{}) (stdinEOF func(context.Context) error, err error) {
 	var cwg sync.WaitGroup
 	var copying atomic.Int32
 	copying.Store(2)
@@ -142,19 +142,7 @@ func copyStreams(ctx context.Context, streams [3]io.ReadWriteCloser, stdin, stdo
 				return nil, fmt.Errorf("containerd-shim: opening %s failed: %s", stdin, err)
 			}
 		}
-		closeCh := make(chan struct{})
-		cwg.Add(1)
-		go func() {
-			cwg.Done()
-			p := bufPool.Get().(*[]byte)
-			defer bufPool.Put(p)
-			copyStdinUntilClose(ctx, sc, f, *p, closeCh)
-			f.Close()
-		}()
-		stdinEOF = func() error {
-			close(closeCh)
-			return nil
-		}
+		stdinEOF = startStdinForward(ctx, &cwg, sc, f)
 	}
 	cwg.Wait()
 	return stdinEOF, nil

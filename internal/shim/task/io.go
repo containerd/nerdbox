@@ -46,7 +46,7 @@ func generateStreamID(prefix string) string {
 	return fmt.Sprintf("%s-%d-%s", prefix, time.Now().UnixNano(), base64.RawURLEncoding.EncodeToString(b[:]))
 }
 
-func (s *service) forwardIO(ctx context.Context, ss streamCreator, idPrefix string, sio stdio.Stdio) (stdio.Stdio, func(ctx context.Context) error, <-chan struct{}, func() error, error) {
+func (s *service) forwardIO(ctx context.Context, ss streamCreator, idPrefix string, sio stdio.Stdio) (stdio.Stdio, func(ctx context.Context) error, <-chan struct{}, func(context.Context) error, error) {
 	pio := sio
 	if pio.IsNull() {
 		return pio, nil, nil, nil, nil

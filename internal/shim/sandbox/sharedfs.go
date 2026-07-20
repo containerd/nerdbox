@@ -101,6 +101,14 @@ func GuestVolumePath(containerID string, n int) string {
 	return path.Join(GuestContainersDir, containerID, "volumes", fmt.Sprintf("%d", n))
 }
 
+// RootfsHostPath returns the host-side path where ShareRootfs assembles the
+// container's rootfs (the same directory GuestRootfsPath(containerID)
+// exposes to the guest via the virtiofs share). Only meaningful after
+// ShareRootfs has returned successfully for containerID.
+func (s *SharedFS) RootfsHostPath(containerID string) string {
+	return filepath.Join(s.root, containerID, "rootfs")
+}
+
 // ShareRootfs resolves the container rootfs from the given containerd mount
 // specs by executing them on the host inside the shim's mount namespace, and
 // exposes the result in the shared filesystem tree so the guest can access it

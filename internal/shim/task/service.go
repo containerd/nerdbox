@@ -351,10 +351,7 @@ func (s *service) createSandboxedContainer(ctx context.Context, r *taskAPI.Creat
 	}
 	sharedNS := &sharedNamespaces{client: vmc}
 
-	// Load the OCI bundle and apply per-container transformers.  This must
-	// happen before ShareRootfs so that UDS mount destinations can be
-	// pre-created in the source rootfs (which is still writable at this
-	// point) before the read-only bind mount is applied.
+	// Load the OCI bundle and apply per-container transformers.
 	var (
 		ctrNetCfg ctrNetConfig
 		svm       = sandboxVolumeMounter{fs: fs, containerID: r.ID}
@@ -391,24 +388,28 @@ func (s *service) createSandboxedContainer(ctx context.Context, r *taskAPI.Creat
 
 	// UDS mounts are rewritten to bind mounts whose source is a socket
 	// file inside the VM and whose destination is a path in the container
-	// rootfs (e.g. /run/shared.sock).  The OCI runtime requires the
-	// destination to already exist as a regular file.  Since the rootfs
-	// will be bind-mounted read-only, we create empty placeholder files in
-	// the SOURCE rootfs directory now, while it is still writable.
-	for _, m := range r.Rootfs {
-		if m.Type == "bind" && m.Source != "" {
-			sfpr.CreateRootfsPlaceholders(ctx, m.Source)
-			break // placeholders are the same regardless of layer; one source suffices
-		}
+	// rootfs (e.g. /run/shared.sock). The OCI runtime requires the
+	// destination to already exist as a regular file. See
+	// udsPlaceholderSource's doc comment for why the correct target
+	// depends on the shape of r.Rootfs: a read-only bind needs its
+	// placeholder written to the still-writable Source before ShareRootfs
+	// mounts it read-only; anything else (in particular the common
+	// overlay/erofs assembly) needs it written to the assembled rootfs
+	// itself, which is only available after ShareRootfs runs.
+	placeholderSrc, placeholderBeforeAssembly := udsPlaceholderSource(r.Rootfs, fs.RootfsHostPath(r.ID))
+	if placeholderBeforeAssembly {
+		sfpr.CreateRootfsPlaceholders(ctx, placeholderSrc)
 	}
 
 	// Assemble the container rootfs on the host inside the shared dir.
-	// Done after bundle loading so UDS placeholders are in place before the
-	// read-only bind mount is applied.
 	guestRootfs, err := fs.ShareRootfs(ctx, r.ID, r.Rootfs)
 	if err != nil {
 		fs.Unshare(ctx, r.ID) //nolint:errcheck
 		return nil, errgrpc.ToGRPC(fmt.Errorf("share rootfs for %s: %w", r.ID, err))
+	}
+
+	if !placeholderBeforeAssembly {
+		sfpr.CreateRootfsPlaceholders(ctx, placeholderSrc)
 	}
 
 	nwJSON, err := json.Marshal(ctrNetCfg)

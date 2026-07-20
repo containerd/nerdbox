@@ -25,8 +25,10 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
+	"github.com/containerd/containerd/api/types"
 	"github.com/containerd/continuity/fs"
 	"github.com/containerd/log"
 	"github.com/opencontainers/runtime-spec/specs-go"
@@ -169,6 +171,41 @@ func (p *socketForwardsProvider) CreateRootfsPlaceholders(ctx context.Context, s
 			f.Close()
 		}
 	}
+}
+
+// udsPlaceholderSource returns the writable directory where UDS mount
+// placeholder files must be created for a container whose rootfs is
+// assembled from rootfsMounts, and whether that directory is available
+// before SharedFS.ShareRootfs assembles the rootfs (beforeAssembly) or only
+// after (i.e. assembledRootfs, the host path SharedFS.RootfsHostPath
+// returns once ShareRootfs has run).
+//
+// mountutil.All mounts every entry in rootfsMounts, but only the *last*
+// entry ends up at the final assembled path — every other entry (lower
+// layers, ext4 scratch devices, etc.) is mounted elsewhere purely to feed
+// that last mount (e.g. as overlay lowerdir/upperdir sources). So the only
+// mount spec that can tell us anything about the assembled rootfs itself is
+// the last one:
+//
+//   - If it is a plain "bind" mount with the "ro" option, ShareRootfs will
+//     mount its Source read-only at the assembled path, so placeholders
+//     must be written into that still-writable Source *before* ShareRootfs
+//     runs — writing into the assembled path afterward would fail with
+//     EROFS.
+//   - Otherwise — an overlay/erofs assembly with a writable upperdir, a
+//     plain writable bind, or anything else mountutil.All supports — the
+//     assembled path itself stays writable, and is in fact the *only*
+//     correct target: for a multi-entry rootfs (the common overlay/erofs
+//     case) no single entry's Source is the final tree, only the assembled
+//     mountpoint is.
+func udsPlaceholderSource(rootfsMounts []*types.Mount, assembledRootfs string) (path string, beforeAssembly bool) {
+	if len(rootfsMounts) > 0 {
+		last := rootfsMounts[len(rootfsMounts)-1]
+		if last.Type == "bind" && last.Source != "" && slices.Contains(last.Options, "ro") {
+			return last.Source, true
+		}
+	}
+	return assembledRootfs, false
 }
 
 // bindSockets calls the Bind RPC on the VM to set up socket forward

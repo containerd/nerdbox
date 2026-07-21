@@ -649,18 +649,21 @@ func (s *service) Connect(ctx context.Context, r *taskAPI.ConnectRequest) (*task
 
 func (s *service) Shutdown(ctx context.Context, r *taskAPI.ShutdownRequest) (*ptypes.Empty, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	// return out if the shim is still servicing containers
 	if len(s.containers) > 0 {
+		s.mu.Unlock()
 		return empty, nil
 	}
+	s.mu.Unlock()
 
-	// please make sure that temporary resource has been cleanup or registered
-	// for cleanup before calling shutdown
 	s.shutdown.Shutdown()
 
-	return empty, nil
+	select {
+	case <-s.shutdown.Done():
+		return empty, nil
+	case <-ctx.Done():
+		return nil, errgrpc.ToGRPC(ctx.Err())
+	}
 }
 
 func (s *service) Stats(ctx context.Context, r *taskAPI.StatsRequest) (*taskAPI.StatsResponse, error) {

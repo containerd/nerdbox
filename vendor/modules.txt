@@ -67,6 +67,7 @@ github.com/containerd/console
 ## explicit; go 1.24.0
 github.com/containerd/containerd/api/events
 github.com/containerd/containerd/api/runtime/bootstrap/v1
+github.com/containerd/containerd/api/runtime/sandbox/v1
 github.com/containerd/containerd/api/runtime/task/v3
 github.com/containerd/containerd/api/services/streaming/v1
 github.com/containerd/containerd/api/services/transfer/v1
@@ -145,7 +146,7 @@ github.com/containerd/platforms
 ## explicit; go 1.22
 github.com/containerd/plugin
 github.com/containerd/plugin/registry
-# github.com/containerd/shimtest v0.3.0
+# github.com/containerd/shimtest v0.3.1-0.20260712075910-a8efaacdfbb8
 ## explicit; go 1.26.3
 github.com/containerd/shimtest
 github.com/containerd/shimtest/internal/transfer
@@ -446,3 +447,6 @@ google.golang.org/protobuf/types/known/timestamppb
 # gopkg.in/yaml.v3 v3.0.1
 ## explicit
 gopkg.in/yaml.v3
+# k8s.io/cri-api v0.36.0
+## explicit; go 1.26.0
+k8s.io/cri-api/pkg/apis/runtime/v1

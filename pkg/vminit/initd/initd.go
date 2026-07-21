@@ -46,6 +46,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/containerd/nerdbox/internal/systools"
+	"github.com/containerd/nerdbox/internal/vminit/podnetns"
 	"github.com/containerd/nerdbox/internal/vminit/vmnetworking"
 	"github.com/containerd/nerdbox/plugins"
 )
@@ -194,6 +195,40 @@ func Run(ctx context.Context) error {
 func systemInit(ctx context.Context, config Config, shutdownSvc shutdown.Service) error {
 	t := time.Now()
 
+	// Raise the open-file-descriptor limit for the init process and all
+	// children.  The kernel default (1024) is too low for long-running
+	// sandbox sessions under sustained container churn.
+	//
+	// Each container's OOM monitor (oomv2.Add) creates one inotify FD via
+	// cgroup2.Manager.EventChan and spawns a short-lived goroutine that holds
+	// it until the goroutine is scheduled and completes (microseconds of work).
+	// Under heavy load with GOMAXPROCS=2, the Go scheduler may not immediately
+	// service these goroutines, allowing a burst of unscheduled goroutines to
+	// accumulate.  Each holds one inotify FD until it runs.  At ~36 container
+	// starts/second the burst can briefly hold hundreds of FDs before the
+	// scheduler catches up.  65536 gives ~1800 seconds of headroom at that
+	// rate — far beyond any scheduling stall in practice.
+	//
+	// Only ever raise the limit, never lower it: read the current soft/hard
+	// limits first and leave them untouched if either is already at or above
+	// the target, so we never clobber a higher value set by the guest kernel
+	// or anything that ran before us.
+	const wantNofile = 65536
+	var nofileLimit unix.Rlimit
+	if err := unix.Getrlimit(unix.RLIMIT_NOFILE, &nofileLimit); err != nil {
+		log.G(ctx).WithError(err).Warn("failed to read RLIMIT_NOFILE; leaving it unchanged")
+	} else if nofileLimit.Cur < wantNofile || nofileLimit.Max < wantNofile {
+		if nofileLimit.Cur < wantNofile {
+			nofileLimit.Cur = wantNofile
+		}
+		if nofileLimit.Max < wantNofile {
+			nofileLimit.Max = wantNofile
+		}
+		if err := unix.Setrlimit(unix.RLIMIT_NOFILE, &nofileLimit); err != nil {
+			log.G(ctx).WithError(err).Warn("failed to raise RLIMIT_NOFILE; FD exhaustion may occur under sustained load")
+		}
+	}
+
 	if err := systemMounts(); err != nil {
 		return err
 	}
@@ -204,6 +239,14 @@ func systemInit(ctx context.Context, config Config, shutdownSvc shutdown.Service
 
 	dhcpRenewer, dhcpReleaser, err := vmnetworking.SetupVM(ctx, config.Networks, config.Debug)
 	if err != nil {
+		return err
+	}
+
+	// Create the persistent, shared network namespace that sandbox member
+	// containers join by default (see internal/podnetns for why). This is
+	// independent of the VM's own root network namespace set up above by
+	// vmnetworking.SetupVM.
+	if err := podnetns.Create(ctx); err != nil {
 		return err
 	}
 
@@ -223,7 +266,7 @@ func systemInit(ctx context.Context, config Config, shutdownSvc shutdown.Service
 }
 
 func systemMounts() error {
-	return mount.All([]mount.Mount{
+	required := []mount.Mount{
 		{
 			Type:    "proc",
 			Source:  "proc",
@@ -265,7 +308,25 @@ func systemMounts() error {
 		},
 		// /dev is handled by the kernel via CONFIG_DEVTMPFS_MOUNT=y before
 		// the init process starts; no explicit mount is needed here.
-	}, "/")
+	}
+
+	if err := mount.All(required, "/"); err != nil {
+		return err
+	}
+
+	// Mount the sandbox container-shared virtiofs at /run/containers.
+	// The host shim assembles each container's rootfs under
+	// <sandbox-state>/containers/<id>/rootfs and exposes it through this
+	// single share tagged "containers". This mount is optional: on the legacy
+	// single-container path the "containers" tag is not registered by the host
+	// and the mount will fail. We ignore the error so the legacy path is
+	// unaffected.
+	//
+	// /run/containers is created at runtime (under the /run tmpfs) so no
+	// change to the erofs rootfs image is required.
+	mountContainersFS()
+
+	return nil
 }
 
 func setupCgroupControl() error {

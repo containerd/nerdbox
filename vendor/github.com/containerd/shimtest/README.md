@@ -40,7 +40,7 @@ Tests are driven by one or more JSON configuration files. See
 | `uid` | int | UID to run as; defaults to the current user's UID. If set to a value different from the current UID and the effective UID is 0, the harness re-execs itself as that user via `sudo` |
 | `gid` | int | GID to run as |
 | `format_mounts` | bool | Provide the rootfs as formatted erofs/ext4 images with a `format/mkdir/overlay` descriptor for the shim to mount. Default (`false`) extracts the rootfs and provides a pre-mounted overlay (or plain directory when rootless) |
-| `skip` | []string | Feature names to skip (`exec`, `layers`, `net`, `oom`, `transfer`, `uds`) |
+| `skip` | []string | Feature names to skip (`exec`, `layers`, `net`, `oom`, `sandbox`, `transfer`, `uds`) |
 | `env` | map | Additional environment variables for the test run |
 | `debug` | bool | Enable debug logging on the shim |
 
@@ -113,7 +113,18 @@ config, the tree is `TestShim/<config-name>/<test-name>`.
 | `OutboundTCP` | net | A container's init process opens an outbound TCP connection to a host-reachable endpoint and completes a round trip. Implementation-neutral: does not assume any particular networking mechanism, only that a container has working default outbound TCP connectivity, as "host networking" would provide. |
 | `OutboundUDP` | net | A container's init process exchanges a UDP datagram with a host-reachable endpoint. Same neutrality as `OutboundTCP`, for the datagram path. |
 | `DNSResolve` | net | A container's init process resolves a real external hostname (`example.com`, forcing an actual DNS query — not answered from `/etc/hosts`) and gets back valid IP addresses. Requires outbound internet access from the test host. |
-| `Stress` | (per feature) | Long-running concurrent stress run. Composes subtests from the enabled features (currently transfer: stat/write/read). Each subtest runs as a goroutine until the test deadline approaches or any one fails (which cancels the rest). Skipped under `-test.short`. |
+| `Lifecycle` | sandbox | Full sandbox lifecycle: `CreateSandbox` → `StartSandbox` → `SandboxStatus`(ready) → `StopSandbox` → `SandboxStatus`(stopped) → `ShutdownSandbox`. Verifies state transitions and that the bootstrap version is ≥ 3. Linux only. |
+| `Platform` | sandbox | `Platform` RPC returns a non-empty OS and Architecture. Linux only. |
+| `Ping` | sandbox | `PingSandbox` succeeds while the sandbox is running. Linux only. |
+| `SingleContainer` | sandbox | One member container created on the shared connection produces expected output and exits cleanly. Linux only. |
+| `MultipleContainers` | sandbox | Three member containers run concurrently in one sandbox VM, each with isolated rootfs and independent output. Linux only. |
+| `ContainerLifecycleIndependence` | sandbox | Deleting one member container leaves the sandbox and other containers running; `SandboxStatus` remains ready. Linux only. |
+| `StatusAfterStop` | sandbox | `SandboxStatus` after `StopSandbox` does not report ready; a second `StopSandbox` is idempotent. Linux only. |
+| `WaitUnblocksOnStop` | sandbox | `WaitSandbox` returns within 15 s after `StopSandbox`. Linux only. |
+| `CreateTwiceRejected` | sandbox | A second `CreateSandbox` on the same shim process returns `AlreadyExists`. Linux only. |
+| `StartWithoutCreateRejected` | sandbox | `StartSandbox` before `CreateSandbox` returns `FailedPrecondition`. Linux only. |
+| `ResourceReleaseOnShutdown` | sandbox | After `ShutdownSandbox`, no per-container mount points remain in the shim's mount namespace. Linux only. |
+| `Stress` | (per feature) | Long-running concurrent stress run. Composes subtests from the enabled features (Lifecycle, Exec, Transfer, Sandbox). Each subtest runs as a goroutine until the test deadline approaches or any one fails (which cancels the rest). Skipped under `-test.short`. The Sandbox subtest also checks host RSS growth and mount-point leaks after each run. |
 
 A separate top-level fuzz target exists alongside `TestShim`:
 
@@ -152,6 +163,26 @@ Benchmarks live under `BenchmarkShim/<config-name>/<bench-name>`.
 | `StdioRoundTrip` | exec | Stdio write/read at 8B, 4KB, 4MB |
 | `UDSRoundTrip` | uds | UDS forwarded-socket throughput in both directions (HostToContainer, ContainerToHost) at 8B, 4KB, 4MB |
 | `ThirtyLayers` | layers | Bring up a container with a 30-layer erofs rootfs (same shape as `HundredLayers`, smaller). Reports per-phase metrics (`ms/shim-start`, `ms/create`, `ms/task-start`, `ms/total`) so multi-layer mount overhead can be localized. Requires `format_mounts=true` |
+| `ContainerCreate` | sandbox | Per-container create/start/wait/delete cycle inside a single shared sandbox VM. The sandbox is started once before the `b.N` loop; each iteration adds one member container, runs it to completion, and removes it. Reports `ms/create`, `ms/start`, `ms/wait`, `ms/delete`, `ms/total`, and `ms/sandbox-start` (one-time amortised cost). Compare `ms/create` and `ms/total` with `RunSuite.Lifecycle` to quantify the marginal cost of a sandbox container versus a fresh-VM container. Linux only. |
+
+### Member-container workload contracts
+
+These tests (all gated on the `sandbox` feature) verify the shim API contract for member-container workloads: status fields, host-network sandboxes, exec, shared endpoints, shared namespaces, volumes, and network scoping.
+
+| Test | Feature | Linux only | Verifies |
+|---|---|---|---|
+| `StatusReportsPidAndCreatedAt` | sandbox | no | `SandboxStatus` returns a non-zero `pid` and a non-zero `created_at` after `StartSandbox`. Both let a caller reference the sandbox's namespaces (`/proc/<pid>/ns/*`) and report its age (e.g. as CRI's `PodSandboxStatus.CreatedAt` does). `SandboxStatus.Info` must carry `pid` and `state` entries. |
+| `HostNetworkNoNetworkSandbox` | sandbox | no | A sandbox created with an empty `netns_path` (no network sandbox provided) must succeed. Member containers must run normally. The shim must accept the no-isolation case without error. |
+| `MemberContainerExec` | sandbox | no | `Task.Exec` + `Task.Start(ExecID)` must run an additional process inside a running member container with correct output and exit-status propagation. Underpins any exec-into-a-running-container use case (interactive exec, health probes, sidecar tooling). |
+| `CrossContainerViaUDS` | sandbox | yes | Two exec processes running inside a sandbox member container both connect to a shared host-side UNIX domain socket forwarded in via the `uds` mount type. Proves that multiple processes in a sandbox can reach a common host-forwarded endpoint. |
+| `NetworkSandboxHeldOpen` | sandbox | yes | When a non-empty `netns_path` is provided in `CreateSandboxRequest`, the shim must hold the network sandbox resource open for the sandbox lifetime. The path must remain reachable while the sandbox is ready and must be releasable after `StopSandbox`. No special privileges required. |
+| `NetworkSandboxPathInStatus` | sandbox | yes | If a network sandbox path was provided in `CreateSandboxRequest`, `SandboxStatus.Info["networkSandboxPath"]` should report the same path. Informational (absence does not hard-fail); the field is optional in the base protocol. No special privileges required. |
+| `ContainerOutboundTCP` | sandbox | no | A process exec'd into a member container must be able to resolve a real external hostname, proving it has a working outbound network path. Implementation-neutral: does not assume any particular networking mechanism (native netns, virtual NIC, or otherwise). DNS is used here (rather than a raw TCP round trip) because `Task.Exec` has no stdin plumbing; `NetworkSuite` separately covers TCP and UDP round trips end-to-end on the legacy path. No special privileges required. |
+| `ContainerTrafficScopedToNetworkSandbox` | sandbox | yes | When a non-empty `netns_path` is provided, a member container's outbound traffic must actually originate from within that network sandbox, not merely have the path pinned open. Uses a veth pair fully contained in a real network namespace (unreachable from outside it) as a falsifiable probe: a successful round trip is only possible if the container's traffic originates inside the sandbox. Requires root (CAP_SYS_ADMIN) to create the namespace and interfaces; skipped otherwise. |
+| `MemberContainersShareNetwork` | sandbox | yes | Member containers of the same sandbox must share a network stack: a listener started by one member container must be reachable from a second, independently created member container via loopback, with no explicit network configuration on either container. Implementation-neutral: does not assume any particular mechanism (a real shared network namespace, a shared virtual interface, or any other approach). No special privileges required. |
+| `MemberContainerHostVolume` | sandbox | yes | A member container's OCI spec may include a "bind" mount referencing a host directory (e.g. as CRI's hostPath volumes or Kubernetes `RecursiveReadOnly=false` bind mounts produce). The shim must honor it as a live, two-way share, not a one-time copy: a file updated on the host after the container has already started must become visible inside it. Implementation-neutral: does not assume any particular sharing mechanism. No special privileges required. |
+| `MemberContainersSharePID` | sandbox | yes | When a member container's OCI spec carries a host path on its PID namespace entry (e.g. as a caller uses to express Kubernetes' `shareProcessNamespace: true` or `hostPID: true`), the shim must place that container in a PID namespace shared with its sandbox peers. A process started in one member container must be visible — by PID and argv — via `/proc` in a second, independently created member container. Implementation-neutral: does not assume any particular sharing mechanism. No special privileges required. |
+| `MemberContainersShareIPC` | sandbox | yes | When a member container's OCI spec carries a host path on its IPC namespace entry (e.g. as a caller uses to express Kubernetes' default of always sharing one IPC namespace across a pod's containers), the shim must place that container in an IPC namespace shared with its sandbox peers. A SysV shared memory segment created by one member container must be visible — by its well-known key — to a second, independently created member container. Implementation-neutral: does not assume any particular sharing mechanism. No special privileges required. |
 
 ## Using shimtest in your shim's CI
 
@@ -233,7 +264,7 @@ unbounded `Stress` run, and run active fuzzing as its own step:
 - **`uid`**: omit to run as the runner user. Set explicitly when you
   want the harness to `sudo` re-exec itself or rewrite the profile.
 - **`skip`**: list of feature names to disable. Currently meaningful
-  values are `exec`, `layers`, `net`, `oom`, `transfer`, and `uds` —
+  values are `exec`, `layers`, `net`, `oom`, `sandbox`, `transfer`, and `uds` —
   useful when your shim doesn't implement transfer/UDS forwarding,
   multi-layer rootfs descriptors, or when running rootless without
   cgroup delegation.

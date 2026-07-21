@@ -77,6 +77,14 @@ type StartOpts struct {
 	// console output in addition to the implementation's default sink
 	// (typically os.Stderr). Useful for capturing boot logs in tests.
 	ConsoleWriter io.Writer
+
+	// NetNS is the host-side network namespace path (e.g.
+	// "/var/run/netns/<id>" or a bind-mount of /proc/<pid>/ns/net) that
+	// the VM's networking should originate from. An empty value means
+	// host-network (no namespace switch). Implementations that support
+	// networking should enter this namespace before creating any
+	// networking-related host resources or worker threads.
+	NetNS string
 }
 
 // StartOpt mutates a [StartOpts] value. Options are applied in order.
@@ -95,6 +103,14 @@ func WithInitArgs(args ...string) StartOpt {
 func WithConsoleWriter(w io.Writer) StartOpt {
 	return func(o *StartOpts) {
 		o.ConsoleWriter = w
+	}
+}
+
+// WithNetNS sets [StartOpts.NetNS] to path. An empty path is equivalent to
+// not calling WithNetNS at all (host-network).
+func WithNetNS(path string) StartOpt {
+	return func(o *StartOpts) {
+		o.NetNS = path
 	}
 }
 
@@ -182,6 +198,10 @@ type Instance interface {
 	// must not be called after Start. Returns an error if the VM exits or
 	// the guest fails to connect within an implementation-defined
 	// timeout.
+	//
+	// If [WithNetNS] is used, implementations should enter that network
+	// namespace before creating any networking-related host resources or
+	// worker threads, so that VM traffic originates from it.
 	Start(ctx context.Context, opts ...StartOpt) error
 
 	// Client returns the TTRPC client connected to the guest agent. The

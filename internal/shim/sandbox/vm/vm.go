@@ -121,6 +121,11 @@ func (s *localsandbox) Start(ctx context.Context, opts ...sandbox.Opt) error {
 	if len(o.InitArgs) > 0 {
 		startOpts = append(startOpts, vm.WithInitArgs(o.InitArgs...))
 	}
+	// The VM implementation is responsible for entering this network
+	// namespace (if non-empty) before creating any networking-related
+	// host resources or worker threads, so that VM traffic originates
+	// inside the pod netns.
+	startOpts = append(startOpts, vm.WithNetNS(o.NetnsPath))
 
 	if err := vmi.Start(ctx, startOpts...); err != nil {
 		return err

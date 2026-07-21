@@ -8,6 +8,7 @@ require (
 	github.com/containerd/console v1.0.5
 	github.com/containerd/containerd/api v1.11.1
 	github.com/containerd/containerd/v2 v2.3.3
+	github.com/containerd/continuity v0.5.0
 	github.com/containerd/errdefs v1.0.0
 	github.com/containerd/errdefs/pkg v0.3.0
 	github.com/containerd/fifo v1.1.0
@@ -15,7 +16,7 @@ require (
 	github.com/containerd/log v0.1.1-0.20260403072107-cb1839ebf76b
 	github.com/containerd/otelttrpc v0.1.0
 	github.com/containerd/plugin v1.1.0
-	github.com/containerd/shimtest v0.3.0
+	github.com/containerd/shimtest v0.3.1-0.20260712075910-a8efaacdfbb8
 	github.com/containerd/ttrpc v1.2.9
 	github.com/containerd/typeurl/v2 v2.3.0
 	github.com/docker/go-events v0.0.0-20190806004212-e31b211e4f1c
@@ -31,13 +32,13 @@ require (
 	golang.org/x/sys v0.46.0
 	google.golang.org/grpc v1.82.1
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
+	k8s.io/cri-api v0.36.0
 )
 
 require (
 	github.com/Microsoft/hcsshim v0.15.0-rc.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cilium/ebpf v0.16.0 // indirect
-	github.com/containerd/continuity v0.5.0 // indirect
 	github.com/containerd/platforms v1.0.0-rc.4 // indirect
 	github.com/coreos/go-systemd/v22 v22.7.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect

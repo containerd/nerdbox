@@ -75,6 +75,12 @@ func (s *localsandbox) Start(ctx context.Context, opts ...sandbox.Opt) error {
 	if err != nil {
 		return err
 	}
+	vmiStarted := false
+	defer func() {
+		if !vmiStarted {
+			_ = vmi.Shutdown(ctx)
+		}
+	}()
 
 	for _, d := range o.Disks {
 		var mountOpts []vm.MountOpt
@@ -126,6 +132,7 @@ func (s *localsandbox) Start(ctx context.Context, opts ...sandbox.Opt) error {
 		return err
 	}
 
+	vmiStarted = true
 	s.instance = vmi
 	return nil
 }

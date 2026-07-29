@@ -59,7 +59,7 @@ func (s *localsandbox) Start(ctx context.Context, opts ...sandbox.Opt) error {
 	defer s.mu.Unlock()
 
 	if s.instance != nil {
-		return errdefs.ErrFailedPrecondition
+		return fmt.Errorf("sandbox is already started: %w", errdefs.ErrFailedPrecondition)
 	}
 
 	var o sandbox.Options
@@ -142,7 +142,7 @@ func (s *localsandbox) Stop(ctx context.Context) error {
 	defer s.mu.Unlock()
 
 	if s.instance == nil {
-		return errdefs.ErrFailedPrecondition
+		return fmt.Errorf("sandbox must be started: %w", errdefs.ErrFailedPrecondition)
 	}
 
 	if err := s.instance.Shutdown(ctx); err != nil {
@@ -158,7 +158,7 @@ func (s *localsandbox) Client() (*ttrpc.Client, error) {
 	defer s.mu.Unlock()
 
 	if s.instance == nil {
-		return nil, errdefs.ErrFailedPrecondition
+		return nil, fmt.Errorf("sandbox must be started: %w", errdefs.ErrFailedPrecondition)
 	}
 
 	return s.instance.Client(), nil
@@ -169,7 +169,7 @@ func (s *localsandbox) StartStream(ctx context.Context, streamID string) (net.Co
 	defer s.mu.Unlock()
 
 	if s.instance == nil {
-		return nil, errdefs.ErrFailedPrecondition
+		return nil, fmt.Errorf("sandbox must be started: %w", errdefs.ErrFailedPrecondition)
 	}
 
 	return s.instance.StartStream(ctx, streamID)

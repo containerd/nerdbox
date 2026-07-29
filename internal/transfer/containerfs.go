@@ -19,6 +19,8 @@ package transfer
 import (
 	"archive/tar"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -51,10 +53,14 @@ func (t *containerFSTransferrer) Transfer(ctx context.Context, src, dst any, opt
 		if !ok {
 			return errdefs.ErrNotImplemented
 		}
-		rootfs := filepath.Join(t.bundleDir, s.ContainerID, "rootfs")
+		bundle := filepath.Join(t.bundleDir, s.ContainerID)
+		root, src, err := resolveMountRoot(bundle, s.Path)
+		if err != nil {
+			return err
+		}
 		w := d.Writer(ctx)
 		defer w.Close()
-		return writePath(rootfs, s.Path, w, d.MediaType, s.NoWalk)
+		return writePath(root, src, w, d.MediaType, s.NoWalk)
 
 	case *ReadStream:
 		// Copy-to: ReadStream -> ContainerPath
@@ -62,12 +68,80 @@ func (t *containerFSTransferrer) Transfer(ctx context.Context, src, dst any, opt
 		if !ok {
 			return errdefs.ErrNotImplemented
 		}
-		rootfs := filepath.Join(t.bundleDir, d.ContainerID, "rootfs")
+		bundle := filepath.Join(t.bundleDir, d.ContainerID)
+		root, dst, err := resolveMountRoot(bundle, d.Path)
+		if err != nil {
+			return err
+		}
 		r := s.Reader(ctx)
-		return readPath(r, rootfs, d.Path, s.MediaType, d.PreserveOwnership)
+		return readPath(r, root, dst, s.MediaType, d.PreserveOwnership)
 	}
 
 	return errdefs.ErrNotImplemented
+}
+
+// resolveMountRoot maps a path expressed in the container's view onto the
+// directory that backs it, returning that directory and the path relative to
+// it.
+//
+// The bundle's rootfs backs only the paths no mount covers. Where the runtime
+// spec declares a bind mount, the container's mount namespace has the source
+// mounted over the destination, so the rootfs entry underneath is shadowed:
+// extracting there produces a file the container never sees, and archiving
+// from there reads whatever the rootfs happens to hold rather than the mounted
+// content. Resolving against the mount's source keeps both directions
+// consistent with the container's own view of its filesystem.
+//
+// The longest matching destination wins, so a mount nested inside another
+// resolves against the innermost one. A bundle with no readable or parseable
+// config.json resolves to the rootfs: absent mount information there is
+// nothing to redirect, and the caller reports any genuine failure.
+func resolveMountRoot(bundleContainerDir, containerPath string) (root, rel string, err error) {
+	rootfs := filepath.Join(bundleContainerDir, "rootfs")
+
+	data, err := os.ReadFile(filepath.Join(bundleContainerDir, "config.json"))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return rootfs, containerPath, nil
+		}
+		return "", "", fmt.Errorf("failed to read bundle config: %w", err)
+	}
+
+	var spec struct {
+		Mounts []struct {
+			Destination string `json:"destination"`
+			Type        string `json:"type"`
+			Source      string `json:"source"`
+		} `json:"mounts"`
+	}
+	if err := json.Unmarshal(data, &spec); err != nil {
+		return rootfs, containerPath, nil
+	}
+
+	target := path.Clean("/" + containerPath)
+
+	var bestDest, bestSrc string
+	for _, m := range spec.Mounts {
+		if m.Type != "bind" || m.Source == "" {
+			continue
+		}
+		dest := path.Clean("/" + m.Destination)
+		if target != dest && !strings.HasPrefix(target, strings.TrimSuffix(dest, "/")+"/") {
+			continue
+		}
+		if len(dest) > len(bestDest) {
+			bestDest, bestSrc = dest, m.Source
+		}
+	}
+	if bestDest == "" {
+		return rootfs, containerPath, nil
+	}
+
+	rel = strings.TrimPrefix(target, bestDest)
+	if rel == "" {
+		rel = "."
+	}
+	return bestSrc, rel, nil
 }
 
 // rootRel converts a path expressed in the container's view (which

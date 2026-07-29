@@ -19,6 +19,7 @@ package transfer
 import (
 	"archive/tar"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
@@ -796,5 +797,175 @@ func TestWritePathExportRootDotfilesPreserved(t *testing.T) {
 	}
 	if _, ok := entries["bashrc"]; ok {
 		t.Errorf("dotfile was renamed to 'bashrc' (leading dot stripped by TrimPrefix bug)")
+	}
+}
+
+// writeBundleSpec writes a config.json declaring the given bind mounts, as
+// destination -> source pairs.
+func writeBundleSpec(t *testing.T, bundle string, binds map[string]string) {
+	t.Helper()
+	type mount struct {
+		Destination string `json:"destination"`
+		Type        string `json:"type"`
+		Source      string `json:"source"`
+	}
+	spec := struct {
+		Mounts []mount `json:"mounts"`
+	}{}
+	for dest, src := range binds {
+		spec.Mounts = append(spec.Mounts, mount{Destination: dest, Type: "bind", Source: src})
+	}
+	data, err := json.Marshal(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bundle, "config.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestResolveMountRootNoSpec resolves to the rootfs when the bundle carries no
+// config.json, so a bundle without mount information behaves as before.
+func TestResolveMountRootNoSpec(t *testing.T) {
+	bundle, rootfs, _ := makeRootfs(t)
+
+	root, rel, err := resolveMountRoot(bundle, "/etc/hosts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root != rootfs {
+		t.Fatalf("root = %q, want %q", root, rootfs)
+	}
+	if rel != "/etc/hosts" {
+		t.Fatalf("rel = %q, want %q", rel, "/etc/hosts")
+	}
+}
+
+// TestResolveMountRootSelectsLongestDestination pins the nesting rule: a path
+// covered by two mounts resolves against the innermost one.
+func TestResolveMountRootSelectsLongestDestination(t *testing.T) {
+	bundle, rootfs, _ := makeRootfs(t)
+	writeBundleSpec(t, bundle, map[string]string{
+		"/data":       "/mnt/outer",
+		"/data/inner": "/mnt/inner",
+	})
+
+	for _, tc := range []struct {
+		path     string
+		wantRoot string
+		wantRel  string
+	}{
+		{"/data/file", "/mnt/outer", "/file"},
+		{"/data/inner/file", "/mnt/inner", "/file"},
+		{"/data", "/mnt/outer", "."},
+		{"/elsewhere/file", rootfs, "/elsewhere/file"},
+		// A sibling whose name merely shares the prefix is not inside the mount.
+		{"/database", rootfs, "/database"},
+	} {
+		root, rel, err := resolveMountRoot(bundle, tc.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if root != tc.wantRoot || rel != tc.wantRel {
+			t.Errorf("%s -> (%q, %q), want (%q, %q)", tc.path, root, rel, tc.wantRoot, tc.wantRel)
+		}
+	}
+}
+
+// TestReadPathImportLandsInBindSource is the observable effect on the import
+// side: extracting to a bind-mounted destination must produce the file in the
+// mount's source directory, where the container reads it through the mount —
+// not in the shadowed rootfs entry underneath.
+func TestReadPathImportLandsInBindSource(t *testing.T) {
+	bundle, rootfs, _ := makeRootfs(t)
+	source := filepath.Join(bundle, "bind-source")
+	if err := os.MkdirAll(source, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// The shadowed directory exists in the rootfs, as it does for a real
+	// container: the runtime creates the mount point before mounting over it.
+	if err := os.MkdirAll(filepath.Join(rootfs, "data"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeBundleSpec(t, bundle, map[string]string{"/data": source})
+
+	root, rel, err := resolveMountRoot(bundle, "/data")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	body := []byte("through the mount\n")
+	if err := tw.WriteHeader(&tar.Header{
+		Typeflag: tar.TypeReg,
+		Name:     "payload.txt",
+		Mode:     0644,
+		Size:     int64(len(body)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := readPath(&buf, root, rel, mediaTypeTar, false); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(source, "payload.txt"))
+	if err != nil {
+		t.Fatalf("file missing from the bind source: %v", err)
+	}
+	if string(got) != string(body) {
+		t.Fatalf("content = %q, want %q", got, body)
+	}
+	if _, err := os.Stat(filepath.Join(rootfs, "data", "payload.txt")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal("file was written to the shadowed rootfs entry, where the container cannot see it")
+	}
+}
+
+// TestWritePathExportReadsBindSource is the same effect on the export side: an
+// archive of a bind-mounted path must carry the mounted content, not whatever
+// the shadowed rootfs entry holds.
+func TestWritePathExportReadsBindSource(t *testing.T) {
+	bundle, rootfs, _ := makeRootfs(t)
+	source := filepath.Join(bundle, "bind-source")
+	if err := os.MkdirAll(source, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "payload.txt"), []byte("mounted\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Same name under the shadowed rootfs entry, with different content: if
+	// resolution is wrong the export silently returns this instead.
+	if err := os.MkdirAll(filepath.Join(rootfs, "data"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootfs, "data", "payload.txt"), []byte("shadowed\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	writeBundleSpec(t, bundle, map[string]string{"/data": source})
+
+	root, rel, err := resolveMountRoot(bundle, "/data/payload.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	if err := writePath(root, rel, &buf, mediaTypeTar, false); err != nil {
+		t.Fatal(err)
+	}
+
+	entries := readTar(t, &buf)
+	e, ok := entries["payload.txt"]
+	if !ok {
+		t.Fatalf("payload.txt missing from archive, got %v", entries)
+	}
+	if string(e.body) != "mounted\n" {
+		t.Fatalf("archived %q, want the mounted content", e.body)
 	}
 }

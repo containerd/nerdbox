@@ -931,45 +931,117 @@ file: {
   }
 }
 file: {
-  name: "proto/nerdbox/services/podns/v1/podns.proto"
-  package: "containerd.vminitd.services.podns.v1"
+  name: "proto/nerdbox/services/namespaces/v1/namespaces.proto"
+  package: "containerd.vminitd.services.namespaces.v1"
   message_type: {
-    name: "EnsureNamespacesRequest"
-  }
-  message_type: {
-    name: "EnsureNamespacesResponse"
+    name: "Namespace"
     field: {
-      name: "ipc_namespace_path"
+      name: "type"
       number: 1
       label: LABEL_OPTIONAL
-      type: TYPE_STRING
-      json_name: "ipcNamespacePath"
+      type: TYPE_ENUM
+      type_name: ".containerd.vminitd.services.namespaces.v1.NamespaceType"
+      json_name: "type"
     }
     field: {
-      name: "pid_namespace_path"
+      name: "path"
       number: 2
       label: LABEL_OPTIONAL
       type: TYPE_STRING
-      json_name: "pidNamespacePath"
+      json_name: "path"
+    }
+  }
+  message_type: {
+    name: "CreateRequest"
+    field: {
+      name: "id"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "id"
+    }
+    field: {
+      name: "types"
+      number: 2
+      label: LABEL_REPEATED
+      type: TYPE_ENUM
+      type_name: ".containerd.vminitd.services.namespaces.v1.NamespaceType"
+      json_name: "types"
+    }
+  }
+  message_type: {
+    name: "CreateResponse"
+    field: {
+      name: "namespaces"
+      number: 1
+      label: LABEL_REPEATED
+      type: TYPE_MESSAGE
+      type_name: ".containerd.vminitd.services.namespaces.v1.Namespace"
+      json_name: "namespaces"
+    }
+  }
+  message_type: {
+    name: "DeleteRequest"
+    field: {
+      name: "id"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "id"
+    }
+    field: {
+      name: "types"
+      number: 2
+      label: LABEL_REPEATED
+      type: TYPE_ENUM
+      type_name: ".containerd.vminitd.services.namespaces.v1.NamespaceType"
+      json_name: "types"
+    }
+  }
+  message_type: {
+    name: "DeleteResponse"
+  }
+  enum_type: {
+    name: "NamespaceType"
+    value: {
+      name: "NAMESPACE_TYPE_UNSPECIFIED"
+      number: 0
+    }
+    value: {
+      name: "NAMESPACE_TYPE_IPC"
+      number: 1
+    }
+    value: {
+      name: "NAMESPACE_TYPE_PID"
+      number: 2
+    }
+    value: {
+      name: "NAMESPACE_TYPE_NETWORK"
+      number: 3
     }
   }
   service: {
-    name: "PodNamespaces"
+    name: "NamespaceManager"
     method: {
-      name: "EnsureNamespaces"
-      input_type: ".containerd.vminitd.services.podns.v1.EnsureNamespacesRequest"
-      output_type: ".containerd.vminitd.services.podns.v1.EnsureNamespacesResponse"
+      name: "Create"
+      input_type: ".containerd.vminitd.services.namespaces.v1.CreateRequest"
+      output_type: ".containerd.vminitd.services.namespaces.v1.CreateResponse"
+    }
+    method: {
+      name: "Delete"
+      input_type: ".containerd.vminitd.services.namespaces.v1.DeleteRequest"
+      output_type: ".containerd.vminitd.services.namespaces.v1.DeleteResponse"
     }
   }
   options: {
-    go_package: "github.com/containerd/nerdbox/api/services/podns/v1;podns"
+    go_package: "github.com/containerd/nerdbox/api/services/namespaces/v1;namespaces"
   }
   source_code_info: {
     location: {
       span: 16
       span: 0
-      span: 49
-      span: 1
+      span: 90
+      span: 25
     }
     location: {
       path: 12
@@ -982,54 +1054,35 @@ file: {
       path: 2
       span: 18
       span: 0
-      span: 45
+      span: 50
     }
     location: {
       path: 8
       span: 20
       span: 0
-      span: 80
+      span: 90
     }
     location: {
       path: 8
       path: 11
       span: 20
       span: 0
-      span: 80
+      span: 90
     }
     location: {
       path: 6
       path: 0
-      span: 38
+      span: 42
       span: 0
-      span: 40
+      span: 45
       span: 1
-      leading_comments: " PodNamespaces manages the guest-side namespaces that member containers\n of one sandbox share by default: the IPC and PID namespaces (network\n sharing is handled separately by internal/podnetns, created\n unconditionally at vminitd startup since it needs no anchor process;\n hostname sharing needs no namespace at all — see addHostname in\n internal/shim/task/podconfig.go, which sets the same spec.Hostname on\n every member container's own, independent UTS namespace, which is\n enough to give them all the same observable hostname).\n\n Unlike the network namespace, the shared PID namespace requires a real,\n persistent anchor process to exist as its PID 1 (a Linux PID namespace\n has no content, and is torn down, once its PID 1 exits) — so, unlike\n internal/podnetns, this is not something to create unconditionally at\n vminitd startup for every VM regardless of whether it is ever needed.\n EnsureNamespaces is called once per sandbox, on demand, the first time\n the host needs shared namespaces for it.\n"
+      leading_comments: " NamespaceManager creates and deletes the guest-side Linux namespaces that\n containers sharing a sandbox join, and reports the guest paths at which\n they are pinned.\n\n Namespaces are addressed by a caller-chosen group id plus a type. A group\n is simply the set of namespaces sharing an id, so the caller decides\n whether namespaces are grouped (one id for every container of a sandbox,\n the usual case) or independent (a distinct id per container). Nothing here\n interprets the id beyond using it to key and name the namespaces.\n\n Creation is on demand and per type: a caller asks only for the types it\n actually needs, and only those are created. This matters because the cost\n is not uniform. A network or IPC namespace is created by unsharing it on a\n dedicated, locked OS thread and bind-mounting it to a well-known path; the\n bind mount alone keeps it alive afterwards, so it is cheap. A PID\n namespace cannot work that way: unshare(CLONE_NEWPID) does not move the\n caller into the new namespace, only the caller's next child becomes its\n PID 1, and the kernel destroys the namespace the moment that PID 1 exits.\n It therefore requires a real, persistent anchor process, which is why\n asking for a PID namespace that is never used is worth avoiding.\n"
     }
     location: {
       path: 6
       path: 0
       path: 1
-      span: 38
-      span: 8
-      span: 21
-    }
-    location: {
-      path: 6
-      path: 0
-      path: 2
-      path: 0
-      span: 39
-      span: 4
-      span: 85
-    }
-    location: {
-      path: 6
-      path: 0
-      path: 2
-      path: 0
-      path: 1
-      span: 39
+      span: 42
       span: 8
       span: 24
     }
@@ -1038,10 +1091,29 @@ file: {
       path: 0
       path: 2
       path: 0
+      span: 43
+      span: 4
+      span: 55
+    }
+    location: {
+      path: 6
+      path: 0
       path: 2
-      span: 39
-      span: 25
-      span: 48
+      path: 0
+      path: 1
+      span: 43
+      span: 8
+      span: 14
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      path: 2
+      span: 43
+      span: 15
+      span: 28
     }
     location: {
       path: 6
@@ -1049,40 +1121,293 @@ file: {
       path: 2
       path: 0
       path: 3
+      span: 43
       span: 39
-      span: 59
-      span: 83
+      span: 53
     }
     location: {
-      path: 4
+      path: 6
       path: 0
-      span: 42
+      path: 2
+      path: 1
+      span: 44
+      span: 4
+      span: 55
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 1
+      path: 1
+      span: 44
+      span: 8
+      span: 14
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 1
+      path: 2
+      span: 44
+      span: 15
+      span: 28
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 1
+      path: 3
+      span: 44
+      span: 39
+      span: 53
+    }
+    location: {
+      path: 5
+      path: 0
+      span: 48
       span: 0
+      span: 53
+      span: 1
+      leading_comments: " NamespaceType identifies a kind of Linux namespace.\n"
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 1
+      span: 48
+      span: 5
+      span: 18
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 0
+      path: 1
+      span: 49
+      span: 4
+      span: 30
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 0
+      span: 49
+      span: 4
+      span: 35
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 0
+      path: 2
+      span: 49
+      span: 33
       span: 34
     }
     location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 1
+      path: 1
+      span: 50
+      span: 4
+      span: 22
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 1
+      span: 50
+      span: 4
+      span: 27
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 1
+      path: 2
+      span: 50
+      span: 25
+      span: 26
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 2
+      path: 1
+      span: 51
+      span: 4
+      span: 22
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 2
+      span: 51
+      span: 4
+      span: 27
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 2
+      path: 2
+      span: 51
+      span: 25
+      span: 26
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 3
+      path: 1
+      span: 52
+      span: 4
+      span: 26
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 3
+      span: 52
+      span: 4
+      span: 31
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 3
+      path: 2
+      span: 52
+      span: 29
+      span: 30
+    }
+    location: {
+      path: 4
+      path: 0
+      span: 56
+      span: 0
+      span: 61
+      span: 1
+      leading_comments: " Namespace is a created namespace and the guest path it is pinned at.\n"
+    }
+    location: {
       path: 4
       path: 0
       path: 1
-      span: 42
+      span: 56
       span: 8
-      span: 31
+      span: 17
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      path: 6
+      span: 57
+      span: 4
+      span: 17
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      span: 57
+      span: 4
+      span: 27
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      path: 1
+      span: 57
+      span: 18
+      span: 22
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      path: 3
+      span: 57
+      span: 25
+      span: 26
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 1
+      path: 5
+      span: 60
+      span: 4
+      span: 10
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 1
+      span: 60
+      span: 4
+      span: 20
+      leading_comments: " path is a guest-side bind-mount path, suitable for use directly as an\n OCI runtime spec LinuxNamespace.Path.\n"
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 1
+      path: 1
+      span: 60
+      span: 11
+      span: 15
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 1
+      path: 3
+      span: 60
+      span: 18
+      span: 19
     }
     location: {
       path: 4
       path: 1
-      span: 44
+      span: 63
       span: 0
-      span: 49
+      span: 71
       span: 1
     }
     location: {
       path: 4
       path: 1
       path: 1
-      span: 44
+      span: 63
       span: 8
-      span: 32
+      span: 21
     }
     location: {
       path: 4
@@ -1090,7 +1415,7 @@ file: {
       path: 2
       path: 0
       path: 5
-      span: 47
+      span: 67
       span: 4
       span: 10
     }
@@ -1099,10 +1424,10 @@ file: {
       path: 1
       path: 2
       path: 0
-      span: 47
+      span: 67
       span: 4
-      span: 34
-      leading_comments: " Guest paths (bind-mounted namespace files, suitable for an OCI\n LinuxNamespace.Path) for the shared IPC and PID namespaces.\n"
+      span: 18
+      leading_comments: " id groups the namespaces being created. Namespaces are created once\n per (id, type) and reused, so repeating a request returns the paths of\n the namespaces already created rather than creating new ones.\n"
     }
     location: {
       path: 4
@@ -1110,9 +1435,9 @@ file: {
       path: 2
       path: 0
       path: 1
-      span: 47
+      span: 67
       span: 11
-      span: 29
+      span: 13
     }
     location: {
       path: 4
@@ -1120,48 +1445,246 @@ file: {
       path: 2
       path: 0
       path: 3
-      span: 47
-      span: 32
-      span: 33
+      span: 67
+      span: 16
+      span: 17
     }
     location: {
       path: 4
       path: 1
       path: 2
       path: 1
+      path: 4
+      span: 70
+      span: 4
+      span: 12
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 1
+      span: 70
+      span: 4
+      span: 37
+      leading_comments: " types are the namespace types to create. Types already created for id\n are returned without being recreated.\n"
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 1
+      path: 6
+      span: 70
+      span: 13
+      span: 26
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 1
+      path: 1
+      span: 70
+      span: 27
+      span: 32
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 1
+      path: 3
+      span: 70
+      span: 35
+      span: 36
+    }
+    location: {
+      path: 4
+      path: 2
+      span: 73
+      span: 0
+      span: 76
+      span: 1
+    }
+    location: {
+      path: 4
+      path: 2
+      path: 1
+      span: 73
+      span: 8
+      span: 22
+    }
+    location: {
+      path: 4
+      path: 2
+      path: 2
+      path: 0
+      path: 4
+      span: 75
+      span: 4
+      span: 12
+    }
+    location: {
+      path: 4
+      path: 2
+      path: 2
+      path: 0
+      span: 75
+      span: 4
+      span: 38
+      leading_comments: " namespaces contains one entry per requested type.\n"
+    }
+    location: {
+      path: 4
+      path: 2
+      path: 2
+      path: 0
+      path: 6
+      span: 75
+      span: 13
+      span: 22
+    }
+    location: {
+      path: 4
+      path: 2
+      path: 2
+      path: 0
+      path: 1
+      span: 75
+      span: 23
+      span: 33
+    }
+    location: {
+      path: 4
+      path: 2
+      path: 2
+      path: 0
+      path: 3
+      span: 75
+      span: 36
+      span: 37
+    }
+    location: {
+      path: 4
+      path: 3
+      span: 78
+      span: 0
+      span: 88
+      span: 1
+    }
+    location: {
+      path: 4
+      path: 3
+      path: 1
+      span: 78
+      span: 8
+      span: 21
+    }
+    location: {
+      path: 4
+      path: 3
+      path: 2
+      path: 0
       path: 5
-      span: 48
+      span: 80
       span: 4
       span: 10
     }
     location: {
       path: 4
-      path: 1
+      path: 3
       path: 2
-      path: 1
-      span: 48
+      path: 0
+      span: 80
       span: 4
-      span: 34
+      span: 18
+      leading_comments: " id is the group to delete namespaces from.\n"
     }
     location: {
       path: 4
+      path: 3
+      path: 2
+      path: 0
       path: 1
+      span: 80
+      span: 11
+      span: 13
+    }
+    location: {
+      path: 4
+      path: 3
+      path: 2
+      path: 0
+      path: 3
+      span: 80
+      span: 16
+      span: 17
+    }
+    location: {
+      path: 4
+      path: 3
+      path: 2
+      path: 1
+      path: 4
+      span: 87
+      span: 4
+      span: 12
+    }
+    location: {
+      path: 4
+      path: 3
+      path: 2
+      path: 1
+      span: 87
+      span: 4
+      span: 37
+      leading_comments: " types are the namespace types to delete. An empty list deletes every\n namespace belonging to id.\n\n Deleting a namespace that containers are still using is a caller\n error: for a PID namespace it kills the anchor process, which makes\n the kernel tear the namespace down and kill everything in it.\n"
+    }
+    location: {
+      path: 4
+      path: 3
+      path: 2
+      path: 1
+      path: 6
+      span: 87
+      span: 13
+      span: 26
+    }
+    location: {
+      path: 4
+      path: 3
       path: 2
       path: 1
       path: 1
-      span: 48
-      span: 11
-      span: 29
+      span: 87
+      span: 27
+      span: 32
     }
     location: {
       path: 4
-      path: 1
+      path: 3
       path: 2
       path: 1
       path: 3
-      span: 48
-      span: 32
-      span: 33
+      span: 87
+      span: 35
+      span: 36
+    }
+    location: {
+      path: 4
+      path: 4
+      span: 90
+      span: 0
+      span: 25
+    }
+    location: {
+      path: 4
+      path: 4
+      path: 1
+      span: 90
+      span: 8
+      span: 22
     }
   }
   syntax: "proto3"

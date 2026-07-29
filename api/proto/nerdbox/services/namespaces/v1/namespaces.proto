@@ -1,0 +1,91 @@
+/*
+	Copyright The containerd Authors.
+
+	Licensed under the Apache License, Version 2.0 (the "License");
+	you may not use this file except in compliance with the License.
+	You may obtain a copy of the License at
+
+		http://www.apache.org/licenses/LICENSE-2.0
+
+	Unless required by applicable law or agreed to in writing, software
+	distributed under the License is distributed on an "AS IS" BASIS,
+	WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+	See the License for the specific language governing permissions and
+	limitations under the License.
+*/
+
+syntax = "proto3";
+
+package containerd.vminitd.services.namespaces.v1;
+
+option go_package = "github.com/containerd/nerdbox/api/services/namespaces/v1;namespaces";
+
+// NamespaceManager creates and deletes the guest-side Linux namespaces that
+// containers sharing a sandbox join, and reports the guest paths at which
+// they are pinned.
+//
+// Namespaces are addressed by a caller-chosen group id plus a type. A group
+// is simply the set of namespaces sharing an id, so the caller decides
+// whether namespaces are grouped (one id for every container of a sandbox,
+// the usual case) or independent (a distinct id per container). Nothing here
+// interprets the id beyond using it to key and name the namespaces.
+//
+// Creation is on demand and per type: a caller asks only for the types it
+// actually needs, and only those are created. This matters because the cost
+// is not uniform. A network or IPC namespace is created by unsharing it on a
+// dedicated, locked OS thread and bind-mounting it to a well-known path; the
+// bind mount alone keeps it alive afterwards, so it is cheap. A PID
+// namespace cannot work that way: unshare(CLONE_NEWPID) does not move the
+// caller into the new namespace, only the caller's next child becomes its
+// PID 1, and the kernel destroys the namespace the moment that PID 1 exits.
+// It therefore requires a real, persistent anchor process, which is why
+// asking for a PID namespace that is never used is worth avoiding.
+service NamespaceManager {
+	rpc Create(CreateRequest) returns (CreateResponse);
+	rpc Delete(DeleteRequest) returns (DeleteResponse);
+}
+
+// NamespaceType identifies a kind of Linux namespace.
+enum NamespaceType {
+	NAMESPACE_TYPE_UNSPECIFIED = 0;
+	NAMESPACE_TYPE_IPC = 1;
+	NAMESPACE_TYPE_PID = 2;
+	NAMESPACE_TYPE_NETWORK = 3;
+}
+
+// Namespace is a created namespace and the guest path it is pinned at.
+message Namespace {
+	NamespaceType type = 1;
+	// path is a guest-side bind-mount path, suitable for use directly as an
+	// OCI runtime spec LinuxNamespace.Path.
+	string path = 2;
+}
+
+message CreateRequest {
+	// id groups the namespaces being created. Namespaces are created once
+	// per (id, type) and reused, so repeating a request returns the paths of
+	// the namespaces already created rather than creating new ones.
+	string id = 1;
+	// types are the namespace types to create. Types already created for id
+	// are returned without being recreated.
+	repeated NamespaceType types = 2;
+}
+
+message CreateResponse {
+	// namespaces contains one entry per requested type.
+	repeated Namespace namespaces = 1;
+}
+
+message DeleteRequest {
+	// id is the group to delete namespaces from.
+	string id = 1;
+	// types are the namespace types to delete. An empty list deletes every
+	// namespace belonging to id.
+	//
+	// Deleting a namespace that containers are still using is a caller
+	// error: for a PID namespace it kills the anchor process, which makes
+	// the kernel tear the namespace down and kill everything in it.
+	repeated NamespaceType types = 2;
+}
+
+message DeleteResponse {}

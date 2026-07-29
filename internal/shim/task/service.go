@@ -356,13 +356,13 @@ func (s *service) createSandboxedContainer(ctx context.Context, r *taskAPI.Creat
 
 	// Fetched here (rather than where the VM client is otherwise obtained
 	// further below) because sanitizeNamespaces, run as part of bundle.Load
-	// next, may need it to call the guest's PodNamespaces service if this
-	// container's spec asks for PID/IPC namespace sharing.
+	// next, may need it to call the guest's NamespaceManager service if this
+	// container's spec asks to share any namespace.
 	vmc, err := s.sb.Client()
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
-	sharedNS := &sharedNamespaces{client: vmc}
+	sharedNS := &sharedNamespaces{client: vmc, sandboxID: s.svc.SandboxID()}
 
 	// Load the OCI bundle and apply per-container transformers.
 	var (

@@ -24,12 +24,12 @@ import (
 
 	"github.com/containerd/log"
 
-	"github.com/containerd/nerdbox/internal/vminit/podpause"
+	"github.com/containerd/nerdbox/internal/vminit/namespaces"
 	"github.com/containerd/nerdbox/pkg/vminit/initd"
 
 	_ "github.com/containerd/nerdbox/plugins/services/bundle"
 	_ "github.com/containerd/nerdbox/plugins/services/mount"
-	_ "github.com/containerd/nerdbox/plugins/services/podns"
+	_ "github.com/containerd/nerdbox/plugins/services/namespaces"
 	_ "github.com/containerd/nerdbox/plugins/services/system"
 	_ "github.com/containerd/nerdbox/plugins/services/transfer"
 
@@ -40,12 +40,13 @@ import (
 )
 
 func main() {
-	// Hidden subcommand: vminitd re-execs itself as "pod-pause" (see
-	// internal/vminit/podns.createPIDAnchor) to anchor a sandbox's shared
-	// PID namespace. This must be checked before any of the normal
-	// vminitd startup/flag-parsing logic runs.
-	if len(os.Args) > 1 && os.Args[1] == "pod-pause" {
-		podpause.Run()
+	// Hidden subcommand: vminitd re-execs itself to become the anchor
+	// process holding a sandbox's shared PID namespace open (see
+	// internal/vminit/namespaces.createPID for why that needs a process).
+	// This must be checked before any of the normal vminitd
+	// startup/flag-parsing logic runs.
+	if len(os.Args) > 1 && os.Args[1] == namespaces.AnchorSubcommand {
+		namespaces.Anchor()
 		return
 	}
 

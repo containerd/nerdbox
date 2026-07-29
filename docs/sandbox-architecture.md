@@ -73,8 +73,8 @@ namespace setup, cgroup accounting, syscall filtering — is managed
 | Mount namespaces | VM kernel | Each container gets its own mount namespace; rootfs is bind-mounted from the virtiofs share |
 | cgroups (v2 unified) | VM kernel | One cgroup per container, under vminitd's cgroup tree |
 | Network namespaces | VM kernel | All containers share the VM init namespace by default; per-container network isolation is supported via OCI spec |
-| IPC / /dev/shm | VM kernel | Shared IPC namespace, created on demand, when CRI's pod-level IPC sharing is requested (see [Pod PID and IPC namespace sharing](#pod-pid-and-ipc-namespace-sharing)); otherwise each container gets its own |
-| PID namespace | VM kernel | Own PID namespace by default; joins a shared, on-demand pod PID namespace when CRI's pod-level PID sharing is requested (see [Pod PID and IPC namespace sharing](#pod-pid-and-ipc-namespace-sharing)) |
+| IPC / /dev/shm | VM kernel | Shared IPC namespace, created on demand, when CRI's pod-level IPC sharing is requested (see [Shared guest namespaces](#shared-guest-namespaces)); otherwise each container gets its own |
+| PID namespace | VM kernel | Own PID namespace by default; joins a shared, on-demand PID namespace when CRI's pod-level PID sharing is requested (see [Shared guest namespaces](#shared-guest-namespaces)) |
 | Hostname / UTS | VM kernel | Inherited from the VM init namespace unless overridden by the container OCI spec |
 
 ## Container filesystem
@@ -408,7 +408,7 @@ networking is handled exclusively by TSI (default) or the virtio-net NIC
 | `ctr run` (no sandbox) | No netns (legacy single-container path) | TSI or virtio in shim's own netns |
 | Host-network pod (`NamespaceMode_NODE`) | Not created; `netns_path` is empty | TSI or virtio in shim's own netns |
 
-## Pod PID and IPC namespace sharing
+## Shared guest namespaces
 
 Kubernetes pods share an IPC namespace by default, and can opt into sharing
 a PID namespace (`shareProcessNamespace: true`) or the node's PID/IPC
@@ -416,50 +416,55 @@ namespaces (`hostPID`/`hostIPC: true`). containerd's `WithPodNamespaces`
 oci-spec opt expresses all of these the same way: it sets a host path (e.g.
 `/proc/<sandboxPid>/ns/ipc`) on the relevant namespace entry of a member
 container's OCI spec. That host path is meaningless in the guest — the
-guest is a different kernel with its own, unrelated PID/IPC namespaces —
-so, exactly as with the network namespace (see
-[TSI and guest network namespaces](#tsi-and-guest-network-namespaces)
-above), the shim recognizes the request and substitutes a guest-side
-equivalent rather than copying the host path verbatim.
+guest is a different kernel with its own, unrelated namespaces — so the shim
+recognizes the request and substitutes a guest-side equivalent rather than
+copying the host path verbatim.
 
 ### Mechanism
 
-Unlike the network namespace (created unconditionally at vminitd startup —
-see `internal/podnetns`), the shared PID and IPC namespaces are created
-**on demand**, the first time any member container's spec actually asks
-for one of them, via a small guest-side TTRPC service
-(`internal/vminit/podns`, registered as plugin `podns`):
+Guest namespaces are created **on demand** by a guest-side TTRPC service,
+`NamespaceManager` (`internal/vminit/namespaces`, registered as plugin
+`namespaces`). Namespaces are addressed by a group id — the sandbox ID — plus
+a type, and are created once per `(id, type)` and reused thereafter. The guest
+returns the path each namespace is pinned at, so the host never hardcodes a
+guest path.
 
-- **IPC**: created the same way as the shared network namespace — a
-  dedicated goroutine locks itself to an OS thread, calls
-  `unshare(CLONE_NEWIPC)` (which, unlike `CLONE_NEWPID`, takes effect on
-  the calling thread immediately), and bind-mounts
-  `/proc/self/task/<tid>/ns/ipc` to a well-known path
-  (`/run/ipcns/pod`). The bind mount alone keeps the namespace alive.
-- **PID**: a PID namespace has no content of its own and is torn down
-  (every process in it killed) the instant its PID 1 exits, so it cannot
-  be anchored by a bind-mount alone the way IPC and network namespaces
-  can. `unshare(CLONE_NEWPID)` also does not move the calling
-  thread/process into the new namespace — it only causes the *next
-  forked child* to become PID 1 of a new namespace. So the guest instead
-  execs a real, persistent anchor process (vminitd re-execs itself with a
-  hidden `pod-pause` argument — see `internal/vminit/podpause`) with
-  `SysProcAttr.Cloneflags: CLONE_NEWPID`, then bind-mounts
-  `/proc/<anchor-pid>/ns/pid` to `/run/pidns/pod`. The anchor ignores
-  every signal except SIGKILL and reaps any process reparented to it (a
-  PID-1-of-namespace duty), and is only ever killed by the host at
-  sandbox teardown.
+Crucially, a caller requests **only the types it needs**, because the cost is
+not uniform:
 
-On the host side, `internal/shim/task/podnetns.go`'s `sanitizeNamespaces`
-bundle transformer (which already rewrites the network namespace path)
-also handles IPC and PID: any IPC or PID namespace entry with a non-empty
-incoming `Path` is treated as "share within this pod" and rewritten to
-point at the guest's shared namespace, fetched lazily (and memoized per
-`Task.Create` call) via `internal/shim/task/podns.go`'s `sharedNamespaces`
-— a TTRPC client wrapper around the guest's `PodNamespaces.EnsureNamespaces`
-call. A container whose spec has no such entry at all (the common case: no
-pod-level sharing requested) never triggers the guest RPC, and therefore
-never causes the guest to spawn the pod-pause anchor process, at all.
+- **Network** and **IPC**: created by locking a goroutine to an OS thread,
+  calling `unshare(CLONE_NEWNET)` / `unshare(CLONE_NEWIPC)` (which, unlike
+  `CLONE_NEWPID`, take effect on the calling thread immediately), and
+  bind-mounting the thread's namespace file to `/run/netns/<id>` or
+  `/run/ipcns/<id>`. The bind mount alone keeps the namespace alive, so the
+  creating goroutine does not need to stay running. Cheap.
+- **PID**: cannot work that way. `unshare(CLONE_NEWPID)` does not move the
+  caller into the new namespace — only the caller's *next child* becomes its
+  PID 1 — so a thread can never itself be PID 1, and
+  `/proc/self/ns/pid_for_children` has no value to bind-mount until that
+  first child exists. The kernel also destroys a PID namespace the instant
+  its PID 1 exits, after which no further process can be created in it, so a
+  bind mount cannot substitute for a live process the way it can for the
+  other types. The guest therefore starts a real anchor process with
+  `SysProcAttr.Cloneflags: CLONE_NEWPID` and bind-mounts
+  `/proc/<anchor-pid>/ns/pid` to `/run/pidns/<id>`. The anchor ignores every
+  signal except SIGKILL and reaps any process reparented to it (a
+  PID-1-of-namespace duty).
+
+Requesting only what is needed matters most for the PID namespace: Kubernetes
+shares pod IPC by default but shares PID only when explicitly asked, so a
+service that created both together would spawn an anchor process for
+effectively every pod, whether or not anything used it.
+
+On the host side, `internal/shim/task/namespaces.go`'s `sanitizeNamespaces`
+bundle transformer determines which namespaces a container needs, fetches
+them from the guest in a single `NamespaceManager.Create` call (memoized per
+`Task.Create` via `sharedNamespaces`), and rewrites the spec's namespace
+paths to the returned guest paths. Any IPC or PID namespace entry with a
+non-empty incoming `Path` is treated as "share within this sandbox". A
+container whose spec has no such entry at all (the common case: no
+pod-level sharing requested) never triggers the guest RPC for that type, and
+therefore never causes the guest to create the namespace on its behalf.
 
 ### HostPID / HostIPC vs. PodPID
 

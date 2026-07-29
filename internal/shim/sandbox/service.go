@@ -223,6 +223,14 @@ func (s *SandboxService) Options() *anypb.Any {
 	return s.options
 }
 
+// SandboxID returns the ID of the sandbox this service manages, or the empty
+// string if CreateSandbox has not been called yet.
+func (s *SandboxService) SandboxID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sandboxID
+}
+
 // NetworkSandboxPath returns the host-side network sandbox path (e.g. a Linux netns)
 func (s *SandboxService) NetworkSandboxPath() string {
 	s.mu.Lock()

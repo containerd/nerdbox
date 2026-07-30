@@ -122,21 +122,36 @@ func (n *sharedNamespaces) get(ctx context.Context, types []nsAPI.NamespaceType)
 // namespace in particular, which the guest can only provide by spawning a
 // persistent anchor process.
 //
-// hasDedicatedNIC should be true when the container has its own
-// annotation-driven virtio-NIC network configured (ctrNetConfig.Networks is
-// non-empty). Such a container keeps its own, separate guest network
-// namespace (crun's default for an empty-Path network namespace entry) rather
-// than joining the shared one, so the per-container NIC/veth wiring in
-// internal/vminit/ctrnetworking, which assumes each such container owns its
-// namespace, is unaffected.
-func sanitizeNamespaces(ctx context.Context, b *bundle.Bundle, hasDedicatedNIC bool, getSharedNS sharedNamespacesFunc) error {
+// A network namespace exists to scope in-guest networking, and a virtio-net
+// interface is what creates that, so NIC presence alone decides the outcome:
+//
+//   - hasContainerNIC: the container has its own annotation-driven NIC
+//     (ctrNetConfig.Networks is non-empty), so it keeps a namespace of its own
+//     — an empty Path, which asks the runtime to create a fresh one. The
+//     per-container NIC/veth wiring in internal/vminit/ctrnetworking assumes
+//     each such container owns its namespace, so it must not be put in a
+//     shared one.
+//   - hasSandboxNIC: the VM has an interface, so containers join the
+//     sandbox's shared namespace to get a common view of it.
+//   - no NIC anywhere: there is no in-guest networking for a namespace to
+//     scope, so the entry is dropped entirely, leaving the container in the
+//     VM's own network namespace. Since the VM is per-sandbox that still gives
+//     the containers of one sandbox a shared view of each other, including
+//     loopback, but costs nothing to set up and cannot be mistaken for
+//     isolation it does not provide. Container traffic in this configuration
+//     reaches the host by other means (the guest kernel proxying its IP
+//     sockets), which no network namespace can scope in any case.
+func sanitizeNamespaces(ctx context.Context, b *bundle.Bundle, hasContainerNIC, hasSandboxNIC bool, getSharedNS sharedNamespacesFunc) error {
 	if b.Spec.Linux == nil {
 		return nil
 	}
 
+	shareNetwork := !hasContainerNIC && hasSandboxNIC
+	dropNetwork := !hasContainerNIC && !hasSandboxNIC
+
 	// First pass: work out which shared namespaces this container needs, so
 	// they can all be requested from the guest in one call.
-	wantNetwork := !hasDedicatedNIC
+	wantNetwork := shareNetwork
 	var (
 		wantIPC bool
 		wantPID bool
@@ -172,38 +187,47 @@ func sanitizeNamespaces(ctx context.Context, b *bundle.Bundle, hasDedicatedNIC b
 		}
 	}
 
-	// Second pass: rewrite the spec.
-	for i, ns := range b.Spec.Linux.Namespaces {
+	// Second pass: rewrite the spec. Built as a new slice because the network
+	// namespace entry is dropped outright in the no-guest-networking case.
+	out := make([]specs.LinuxNamespace, 0, len(b.Spec.Linux.Namespaces)+1)
+	for _, ns := range b.Spec.Linux.Namespaces {
 		switch ns.Type {
 		case specs.NetworkNamespace:
-			if wantNetwork {
-				b.Spec.Linux.Namespaces[i].Path = paths[nsAPI.NamespaceType_NAMESPACE_TYPE_NETWORK]
-			} else {
-				b.Spec.Linux.Namespaces[i].Path = ""
+			switch {
+			case dropNetwork:
+				continue
+			case shareNetwork:
+				ns.Path = paths[nsAPI.NamespaceType_NAMESPACE_TYPE_NETWORK]
+			default:
+				ns.Path = ""
 			}
 		case specs.IPCNamespace:
-			if ns.Path == "" {
-				continue
+			if ns.Path != "" {
+				ns.Path = paths[nsAPI.NamespaceType_NAMESPACE_TYPE_IPC]
 			}
-			b.Spec.Linux.Namespaces[i].Path = paths[nsAPI.NamespaceType_NAMESPACE_TYPE_IPC]
 		case specs.PIDNamespace:
-			if ns.Path == "" {
-				continue
+			if ns.Path != "" {
+				ns.Path = paths[nsAPI.NamespaceType_NAMESPACE_TYPE_PID]
 			}
-			b.Spec.Linux.Namespaces[i].Path = paths[nsAPI.NamespaceType_NAMESPACE_TYPE_PID]
 		default:
 			// No other namespace type ever has a valid host Path in the
 			// guest.
-			b.Spec.Linux.Namespaces[i].Path = ""
+			ns.Path = ""
 		}
+		out = append(out, ns)
 	}
 
-	if !foundNetworkNS && wantNetwork {
-		b.Spec.Linux.Namespaces = append(b.Spec.Linux.Namespaces, specs.LinuxNamespace{
+	if !foundNetworkNS && shareNetwork {
+		out = append(out, specs.LinuxNamespace{
 			Type: specs.NetworkNamespace,
 			Path: paths[nsAPI.NamespaceType_NAMESPACE_TYPE_NETWORK],
 		})
 	}
+
+	if len(out) == 0 {
+		out = nil
+	}
+	b.Spec.Linux.Namespaces = out
 
 	return nil
 }

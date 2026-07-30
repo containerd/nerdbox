@@ -72,7 +72,7 @@ namespace setup, cgroup accounting, syscall filtering — is managed
 | Container process lifecycle | VM | runc creates/starts/stops containers |
 | Mount namespaces | VM kernel | Each container gets its own mount namespace; rootfs is bind-mounted from the virtiofs share |
 | cgroups (v2 unified) | VM kernel | One cgroup per container, under vminitd's cgroup tree |
-| Network namespaces | VM kernel | All containers share the VM init namespace by default; per-container network isolation is supported via OCI spec |
+| Network namespaces | VM kernel | Containers share the VM init namespace when the sandbox has no NIC (nothing for a namespace to scope); a shared per-sandbox namespace is created on demand when it does (see [Sandbox networking summary](#sandbox-networking-summary)); per-container isolation is supported via OCI spec |
 | IPC / /dev/shm | VM kernel | Shared IPC namespace, created on demand, when CRI's pod-level IPC sharing is requested (see [Shared guest namespaces](#shared-guest-namespaces)); otherwise each container gets its own |
 | PID namespace | VM kernel | Own PID namespace by default; joins a shared, on-demand PID namespace when CRI's pod-level PID sharing is requested (see [Shared guest namespaces](#shared-guest-namespaces)) |
 | Hostname / UTS | VM kernel | Inherited from the VM init namespace unless overridden by the container OCI spec |
@@ -291,11 +291,17 @@ no re-exec or trampoline process required.
 
 #### TSI (Transparent Socket Impersonation)
 
-TSI is **not configured by the shim** — it is a compiled-in feature of the
-guest kernel (`CONFIG_TSI=y`, patches `0009`–`0012` in `kernel/patches/`).
+TSI is a compiled-in feature of the guest kernel (`CONFIG_TSI=y`, patches
+`0009`–`0012` in `kernel/patches/`), gated at runtime by the `tsi_hijack`
+kernel parameter, which defaults to **off**. The shim does not set it: libkrun
+does, and only when no virtio-net interface has been attached. TSI and a NIC
+are alternative ways to provide the same connectivity, so libkrun enables TSI
+exactly when there is no NIC (`enable_tsi = net.list.is_empty() && ...` in its
+`VsockConfig::Implicit` handling). libkrun gates its own host side to match,
+rejecting proxy requests when the hijack is disabled.
 
-Inside the VM, the patched kernel intercepts `AF_INET` socket calls
-(TCP/UDP). When a container opens a TCP connection, the kernel transparently
+Inside the VM, the patched kernel intercepts `AF_INET` and `AF_INET6` socket
+calls (`SOCK_STREAM`/`SOCK_DGRAM`, i.e. TCP/UDP). When a container opens a TCP connection, the kernel transparently
 rewrites it to `AF_TSI` and proxies it over vsock to libkrun, which performs
 the real `connect()` on the host — now inside the pod netns (after the
 executor thread's `setns`).
@@ -312,8 +318,9 @@ Container (guest)                    Host (pod netns)
                                      └──────────────────────┘
 ```
 
-TSI covers IPv4 TCP/UDP traffic; it does not proxy ICMP, raw sockets, or
-IPv6.
+TSI covers TCP and UDP over both IPv4 (`AF_TSI`) and IPv6 (`AF_TSI6`). It does
+not proxy ICMP or raw sockets, which stay in whatever network namespace the
+container is in.
 
 #### DNS configuration
 
@@ -333,14 +340,23 @@ in the default no-NIC/TSI configuration).
 TSI's socket hijack operates on address family alone, before any
 namespace-aware routing decision, and the resulting vsock channel to
 `VMADDR_CID_HOST` is not real IP routing — so it is not scoped by, and
-cannot be filtered via, guest-internal network namespaces. Guest-internal
-network namespaces (per-container or otherwise) provide
-container-to-container isolation, via the veth/bridge mechanisms in
-`internal/vminit/ctrnetworking`, while the host-reachability boundary is
-established entirely on the host side: the pod netns the shim pins and
-the executor thread enters via `setns` (see
-[Layer 1](#layer-1--host-network-sandbox-linux-netns) above), which
-determines which host network TSI's proxied connections land in.
+cannot be filtered via, guest-internal network namespaces. The
+host-reachability boundary is established entirely on the host side: the pod
+netns the shim pins and the executor thread enters via `setns` (see
+[Layer 1](#layer-1--host-network-sandbox-linux-netns) above) determines which
+host network TSI's proxied connections land in.
+
+Because of this, the shim does not create a guest network namespace at all
+when TSI is carrying container traffic: one would be created, joined, and then
+ignored. Containers instead stay in the VM's own network namespace, which —
+since the VM is per-sandbox — still gives the containers of one sandbox a
+shared view of each other, including loopback.
+
+The decision needs nothing driver-specific. A network namespace exists to
+scope in-guest networking, and a virtio-net interface is what creates that, so
+the presence of a NIC decides it: no NIC means nothing to scope. Where
+containers do have their own NICs, the veth/bridge mechanisms in
+`internal/vminit/ctrnetworking` provide container-to-container isolation.
 
 TSI proxies individual outbound `connect()`/`listen()` calls; it does not
 mirror the host's own socket table into the guest, so introspection tools
@@ -400,13 +416,20 @@ networking is handled exclusively by TSI (default) or the virtio-net NIC
 
 ### Sandbox networking summary
 
-| Scenario | Host netns | VM network |
-|---|---|---|
-| No annotation (default) | Pinned (FD + entered by executor thread) | TSI — AF_INET TCP/UDP through pod netns |
-| `io.containerd.nerdbox.network.*` | Pinned (FD + entered by executor thread) | virtio-net NIC; AF_UNIX to external provider from pod netns |
-| Kubernetes CRI pod | Created by containerd CRI (`unshare` + bind-mount); CNI ADD before sandbox | Either of the above, with full pod netns integration |
-| `ctr run` (no sandbox) | No netns (legacy single-container path) | TSI or virtio in shim's own netns |
-| Host-network pod (`NamespaceMode_NODE`) | Not created; `netns_path` is empty | TSI or virtio in shim's own netns |
+| Scenario | Host netns | VM network | Guest netns |
+|---|---|---|---|
+| No annotation (default) | Pinned (FD + entered by executor thread) | TSI — TCP/UDP through pod netns | None; containers share the VM's own |
+| `io.containerd.nerdbox.network.*` | Pinned (FD + entered by executor thread) | virtio-net NIC; AF_UNIX to external provider from pod netns | Shared per-sandbox namespace |
+| Kubernetes CRI pod | Created by containerd CRI (`unshare` + bind-mount); CNI ADD before sandbox | Either of the above, with full pod netns integration | As above |
+| `ctr run` (no sandbox) | No netns (legacy single-container path) | TSI or virtio in shim's own netns | n/a (legacy path) |
+| Host-network pod (`NamespaceMode_NODE`) | Not created; `netns_path` is empty | TSI or virtio in shim's own netns | As above |
+
+Guest network namespaces follow NIC presence alone, with no per-driver
+behaviour: a namespace is created when the sandbox has an interface for it to
+scope, and not otherwise. This holds regardless of how a driver provides
+connectivity without a NIC, since anything that bypasses in-guest IP routing
+(TSI being one example) is by definition not something a network namespace
+can scope.
 
 ## Shared guest namespaces
 

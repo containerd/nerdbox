@@ -82,8 +82,12 @@ func TestSanitizeNamespaces(t *testing.T) {
 	testcases := []struct {
 		name            string
 		linux           *specs.Linux
-		hasDedicatedNIC bool
-		want            []specs.LinuxNamespace
+		hasContainerNIC bool
+		// hasSandboxNIC is set on the cases describing the shared-namespace
+		// behaviour; the no-NIC-anywhere disposition is covered separately
+		// below.
+		hasSandboxNIC bool
+		want          []specs.LinuxNamespace
 		// wantRequested is the exact set of namespace types the guest must be
 		// asked for, in order. Nil means the guest must not be called at all.
 		wantRequested []nsAPI.NamespaceType
@@ -94,21 +98,24 @@ func TestSanitizeNamespaces(t *testing.T) {
 			want:  nil,
 		},
 		{
-			name:  "no namespaces, no dedicated NIC: shared network namespace added",
-			linux: &specs.Linux{},
+			name:          "sandbox NIC, no container NIC: shared network namespace added",
+			linux:         &specs.Linux{},
+			hasSandboxNIC: true,
 			want: []specs.LinuxNamespace{
 				{Type: specs.NetworkNamespace, Path: fakeNetPath},
 			},
 			wantRequested: []nsAPI.NamespaceType{nsAPI.NamespaceType_NAMESPACE_TYPE_NETWORK},
 		},
 		{
-			name:            "no namespaces, dedicated NIC: nothing added, guest not called",
+			name:            "container NIC: nothing added, guest not called",
 			linux:           &specs.Linux{},
-			hasDedicatedNIC: true,
+			hasContainerNIC: true,
+			hasSandboxNIC:   true,
 			want:            nil,
 		},
 		{
-			name: "host network namespace path rewritten to the shared namespace",
+			name:          "host network namespace path rewritten to the shared namespace",
+			hasSandboxNIC: true,
 			linux: &specs.Linux{
 				Namespaces: []specs.LinuxNamespace{
 					{Type: specs.MountNamespace},
@@ -122,13 +129,14 @@ func TestSanitizeNamespaces(t *testing.T) {
 			wantRequested: []nsAPI.NamespaceType{nsAPI.NamespaceType_NAMESPACE_TYPE_NETWORK},
 		},
 		{
-			name: "dedicated NIC: existing network namespace path stripped (crun creates a fresh one)",
+			name: "container NIC: existing network namespace path stripped (crun creates a fresh one)",
 			linux: &specs.Linux{
 				Namespaces: []specs.LinuxNamespace{
 					{Type: specs.NetworkNamespace, Path: "/proc/12345/ns/net"},
 				},
 			},
-			hasDedicatedNIC: true,
+			hasContainerNIC: true,
+			hasSandboxNIC:   true,
 			want: []specs.LinuxNamespace{
 				{Type: specs.NetworkNamespace, Path: ""},
 			},
@@ -141,14 +149,16 @@ func TestSanitizeNamespaces(t *testing.T) {
 					{Type: specs.UserNamespace, Path: "/proc/12345/ns/user"},
 				},
 			},
-			hasDedicatedNIC: true, // avoid also asserting the added network entry
+			hasContainerNIC: true, // avoid also asserting the added network entry
+			hasSandboxNIC:   true,
 			want: []specs.LinuxNamespace{
 				{Type: specs.UTSNamespace, Path: ""},
 				{Type: specs.UserNamespace, Path: ""},
 			},
 		},
 		{
-			name: "empty-Path network namespace with no dedicated NIC joins the shared namespace",
+			name:          "empty-Path network namespace with a sandbox NIC joins the shared namespace",
+			hasSandboxNIC: true,
 			linux: &specs.Linux{
 				Namespaces: []specs.LinuxNamespace{
 					{Type: specs.NetworkNamespace},
@@ -166,7 +176,8 @@ func TestSanitizeNamespaces(t *testing.T) {
 					{Type: specs.IPCNamespace, Path: "/proc/12345/ns/ipc"},
 				},
 			},
-			hasDedicatedNIC: true,
+			hasContainerNIC: true,
+			hasSandboxNIC:   true,
 			want: []specs.LinuxNamespace{
 				{Type: specs.IPCNamespace, Path: fakeIPCPath},
 			},
@@ -179,7 +190,8 @@ func TestSanitizeNamespaces(t *testing.T) {
 					{Type: specs.PIDNamespace, Path: "/proc/12345/ns/pid"},
 				},
 			},
-			hasDedicatedNIC: true,
+			hasContainerNIC: true,
+			hasSandboxNIC:   true,
 			want: []specs.LinuxNamespace{
 				{Type: specs.PIDNamespace, Path: fakePIDPath},
 			},
@@ -193,7 +205,8 @@ func TestSanitizeNamespaces(t *testing.T) {
 					{Type: specs.PIDNamespace},
 				},
 			},
-			hasDedicatedNIC: true,
+			hasContainerNIC: true,
+			hasSandboxNIC:   true,
 			want: []specs.LinuxNamespace{
 				{Type: specs.IPCNamespace},
 				{Type: specs.PIDNamespace},
@@ -211,7 +224,8 @@ func TestSanitizeNamespaces(t *testing.T) {
 					{Type: specs.PIDNamespace},
 				},
 			},
-			hasDedicatedNIC: true,
+			hasContainerNIC: true,
+			hasSandboxNIC:   true,
 			want: []specs.LinuxNamespace{
 				{Type: specs.IPCNamespace, Path: fakeIPCPath},
 				{Type: specs.PIDNamespace},
@@ -219,7 +233,8 @@ func TestSanitizeNamespaces(t *testing.T) {
 			wantRequested: []nsAPI.NamespaceType{nsAPI.NamespaceType_NAMESPACE_TYPE_IPC},
 		},
 		{
-			name: "every shared namespace is requested in a single call",
+			name:          "every shared namespace is requested in a single call",
+			hasSandboxNIC: true,
 			linux: &specs.Linux{
 				Namespaces: []specs.LinuxNamespace{
 					{Type: specs.NetworkNamespace, Path: "/proc/12345/ns/net"},
@@ -238,6 +253,70 @@ func TestSanitizeNamespaces(t *testing.T) {
 				nsAPI.NamespaceType_NAMESPACE_TYPE_PID,
 			},
 		},
+
+		// With no interface anywhere there is no in-guest networking for a
+		// namespace to scope, so the entry is dropped and the container stays
+		// in the VM's own network namespace. Nothing is created for it.
+		{
+			name: "no NIC anywhere: host network namespace path dropped entirely",
+			linux: &specs.Linux{
+				Namespaces: []specs.LinuxNamespace{
+					{Type: specs.MountNamespace},
+					{Type: specs.NetworkNamespace, Path: "/proc/12345/ns/net"},
+				},
+			},
+			hasSandboxNIC: false,
+			want: []specs.LinuxNamespace{
+				{Type: specs.MountNamespace},
+			},
+		},
+		{
+			name: "no NIC anywhere: empty-Path network namespace dropped too",
+			linux: &specs.Linux{
+				Namespaces: []specs.LinuxNamespace{
+					{Type: specs.NetworkNamespace},
+				},
+			},
+			hasSandboxNIC: false,
+			want:          nil,
+		},
+		{
+			name:          "no NIC anywhere: no network namespace added",
+			linux:         &specs.Linux{},
+			hasSandboxNIC: false,
+			want:          nil,
+		},
+		{
+			// Dropping the network namespace must not affect the others.
+			name: "no NIC anywhere: IPC sharing still works",
+			linux: &specs.Linux{
+				Namespaces: []specs.LinuxNamespace{
+					{Type: specs.NetworkNamespace, Path: "/proc/12345/ns/net"},
+					{Type: specs.IPCNamespace, Path: "/proc/12345/ns/ipc"},
+				},
+			},
+			hasSandboxNIC: false,
+			want: []specs.LinuxNamespace{
+				{Type: specs.IPCNamespace, Path: fakeIPCPath},
+			},
+			wantRequested: []nsAPI.NamespaceType{nsAPI.NamespaceType_NAMESPACE_TYPE_IPC},
+		},
+		{
+			// A container with its own interface has in-guest networking
+			// whatever the sandbox has, so it keeps its own namespace rather
+			// than having the entry dropped.
+			name: "container NIC but no sandbox NIC: keeps its own namespace",
+			linux: &specs.Linux{
+				Namespaces: []specs.LinuxNamespace{
+					{Type: specs.NetworkNamespace, Path: "/proc/12345/ns/net"},
+				},
+			},
+			hasContainerNIC: true,
+			hasSandboxNIC:   false,
+			want: []specs.LinuxNamespace{
+				{Type: specs.NetworkNamespace, Path: ""},
+			},
+		},
 	}
 
 	for _, tc := range testcases {
@@ -245,7 +324,7 @@ func TestSanitizeNamespaces(t *testing.T) {
 			var rec recorder
 
 			b := &bundle.Bundle{Spec: specs.Spec{Linux: tc.linux}}
-			if err := sanitizeNamespaces(ctx, b, tc.hasDedicatedNIC, rec.fn()); err != nil {
+			if err := sanitizeNamespaces(ctx, b, tc.hasContainerNIC, tc.hasSandboxNIC, rec.fn()); err != nil {
 				t.Fatalf("sanitizeNamespaces: %v", err)
 			}
 
@@ -273,7 +352,7 @@ func TestSanitizeNamespacesPropagatesSharedNSError(t *testing.T) {
 		},
 	}}}
 	wantErr := errors.New("guest unreachable")
-	err := sanitizeNamespaces(context.Background(), b, true,
+	err := sanitizeNamespaces(context.Background(), b, true, true,
 		func(context.Context, []nsAPI.NamespaceType) (map[nsAPI.NamespaceType]string, error) {
 			return nil, wantErr
 		})

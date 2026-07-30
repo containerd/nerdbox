@@ -39,6 +39,9 @@ type localsandbox struct {
 	mu       sync.Mutex
 	vmm      vm.Manager
 	instance vm.Instance
+	// hasNIC records, once the VM has been started, whether it was given a
+	// virtio-net interface. See HasNIC.
+	hasNIC bool
 }
 
 // diskReserver is a package-private optional interface for vm.Manager
@@ -52,6 +55,15 @@ func (s *localsandbox) ReservedDisks() int {
 		return dr.ReservedDisks()
 	}
 	return 0
+}
+
+// HasNIC reports whether the VM was given a virtio-net interface, and so
+// whether there is any in-guest networking at all. It is only meaningful after
+// Start, since NICs are attached as part of it.
+func (s *localsandbox) HasNIC() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.hasNIC
 }
 
 func (s *localsandbox) Start(ctx context.Context, opts ...sandbox.Opt) error {
@@ -114,6 +126,8 @@ func (s *localsandbox) Start(ctx context.Context, opts ...sandbox.Opt) error {
 			return err
 		}
 	}
+
+	s.hasNIC = len(o.NICs) > 0
 
 	if o.CPU > 0 && o.Memory > 0 {
 		if err := vmi.SetCPUAndMemory(ctx, o.CPU, o.Memory); err != nil {

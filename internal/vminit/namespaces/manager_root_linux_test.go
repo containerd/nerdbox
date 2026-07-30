@@ -25,6 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -37,6 +38,21 @@ func requireNamespacePrivileges(t *testing.T) {
 	if os.Getuid() != 0 {
 		t.Skip("requires root to unshare and bind-mount namespaces")
 	}
+}
+
+// useTestAnchor points the PID namespace anchor at a host binary that blocks
+// forever, standing in for the real anchor (which only ships inside the guest
+// rootfs). Any process that does not exit will do: what matters to the
+// namespace is that its PID 1 stays alive.
+func useTestAnchor(t *testing.T) {
+	t.Helper()
+	const sleep = "/bin/sleep"
+	if _, err := os.Stat(sleep); err != nil {
+		t.Skipf("no stand-in anchor binary available: %v", err)
+	}
+	saved := anchorCommand
+	anchorCommand = []string{sleep, "infinity"}
+	t.Cleanup(func() { anchorCommand = saved })
 }
 
 // isMountPoint reports whether path is a mount point, by comparing its device
@@ -61,15 +77,12 @@ func isMountPoint(t *testing.T, path string) bool {
 // returned path, be returned again unchanged on a repeat request, and be fully
 // gone after Delete.
 //
-// Scope note for the PID namespace: createPID anchors it by re-execing
-// /proc/self/exe, which here is this test binary rather than vminitd, so the
-// anchor exits immediately instead of persisting. That is enough to exercise
-// the bind-mount and teardown mechanics asserted below, but it does not cover
-// the anchor actually holding the namespace open over time — that is covered
-// end to end by the shared-PID-namespace conformance test running against a
-// real guest.
+// The PID namespace's anchor is substituted for a host stand-in, since the
+// real one ships only in the guest rootfs; the anchor's liveness is asserted
+// too, because that is what keeps the namespace usable.
 func TestManagerCreateDeleteRoundTrip(t *testing.T) {
 	requireNamespacePrivileges(t)
+	useTestAnchor(t)
 
 	ctx := context.Background()
 	id := "nerdbox-test-" + randomSuffix(t)
@@ -119,6 +132,13 @@ func TestManagerCreateDeleteRoundTrip(t *testing.T) {
 		t.Errorf("subset Create = %v, want just the IPC path %q", subset, paths[TypeIPC])
 	}
 
+	// The PID namespace is only usable for as long as its anchor lives, so the
+	// anchor must still be running at this point.
+	anchor := anchorPID(t, &m, id)
+	if !processAlive(anchor) {
+		t.Errorf("PID namespace anchor (pid %d) is not running", anchor)
+	}
+
 	if err := m.Delete(ctx, id, nil); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
@@ -132,10 +152,39 @@ func TestManagerCreateDeleteRoundTrip(t *testing.T) {
 		}
 	}
 
+	// Deleting the PID namespace means killing its anchor, otherwise the
+	// process would outlive the sandbox.
+	deadline := time.Now().Add(5 * time.Second)
+	for processAlive(anchor) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if processAlive(anchor) {
+		t.Errorf("PID namespace anchor (pid %d) still running after Delete", anchor)
+	}
+
 	// Delete must be idempotent.
 	if err := m.Delete(ctx, id, nil); err != nil {
 		t.Errorf("second Delete: %v", err)
 	}
+}
+
+// anchorPID returns the pid of the anchor process holding the group's PID
+// namespace open.
+func anchorPID(t *testing.T, m *Manager, id string) int {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.ns[key{id: id, typ: TypePID}]
+	if !ok || e.anchor == nil {
+		t.Fatalf("no PID namespace anchor recorded for %q", id)
+	}
+	return e.anchor.Pid
+}
+
+// processAlive reports whether pid is still running. The anchor is a child of
+// this process, so once it has been killed and reaped the signal fails.
+func processAlive(pid int) bool {
+	return unix.Kill(pid, 0) == nil
 }
 
 // TestManagerCreateOnlyRequestedTypes verifies that asking for one type does

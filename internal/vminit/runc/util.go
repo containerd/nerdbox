@@ -28,8 +28,23 @@ import (
 	"github.com/opencontainers/runtime-spec/specs-go"
 )
 
-// ShouldKillAllOnExit reads the bundle's OCI spec and returns true if
-// there is an error reading the spec or if the container has a private PID namespace
+// ShouldKillAllOnExit reads the bundle's OCI spec and reports whether the
+// container's other processes need to be killed explicitly when its init
+// process exits.
+//
+// It returns false only when the spec has a PID namespace entry with an
+// empty Path — the container's own, private PID namespace (the default,
+// and PID namespace sharing's opposite: see internal/shim/task/namespaces.go
+// on the host side). In that case nothing else is needed: the kernel tears
+// the namespace down and kills every process still in it the moment PID 1
+// exits, so by the time this is even checked, everything else already is
+// gone.
+//
+// It returns true otherwise — including a shared PID namespace (a
+// non-empty Path), no PID namespace entry in the spec at all (the host's
+// PID namespace, which the kernel will not tear down on this container's
+// account), and a failure to read the spec, which is treated as the safe
+// default rather than silently skipping cleanup.
 func ShouldKillAllOnExit(ctx context.Context, bundlePath string) bool {
 	spec, err := readSpec(bundlePath)
 	if err != nil {

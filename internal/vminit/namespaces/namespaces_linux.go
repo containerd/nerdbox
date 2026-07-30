@@ -41,11 +41,15 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// AnchorSubcommand is the argument vminitd re-execs itself with to become a
-// PID namespace's anchor process (see Anchor). It is defined here, next to
-// the code that spawns it, so the spawn site and the dispatch site in
-// vminitd's main cannot drift apart: they are the same constant.
-const AnchorSubcommand = "namespace-anchor"
+// anchorBinary is the anchor executable in the guest rootfs. It exists only
+// to be PID 1 of a namespace: see createPID for why that needs a process, and
+// crates/pause for the implementation.
+const anchorBinary = "/sbin/nerdbox-pause"
+
+// anchorCommand is the command createPID runs to anchor a PID namespace. It
+// is a variable purely so tests can substitute a binary that exists on the
+// host, since the real one only ships in the guest rootfs.
+var anchorCommand = []string{anchorBinary}
 
 // Type identifies a kind of Linux namespace this package can manage. It
 // mirrors the NamespaceType enum in the NamespaceManager API, kept as a
@@ -363,12 +367,7 @@ func createPID(ctx context.Context, path string) (*os.Process, error) {
 		return nil, err
 	}
 
-	exe, err := os.Readlink("/proc/self/exe")
-	if err != nil {
-		return nil, fmt.Errorf("resolve /proc/self/exe: %w", err)
-	}
-
-	cmd := exec.Command(exe, AnchorSubcommand)
+	cmd := exec.Command(anchorCommand[0], anchorCommand[1:]...) //nolint:gosec // fixed command, not caller-controlled
 	cmd.SysProcAttr = &syscall.SysProcAttr{Cloneflags: syscall.CLONE_NEWPID}
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start anchor: %w", err)

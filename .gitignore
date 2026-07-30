@@ -3,3 +3,8 @@ kernel/*.old
 test/shim/testdata/testbin
 test/stress/testdata/testbin
 .task
+
+# Rust build output. Cargo.lock is intentionally committed: crates/pause
+# builds an executable, not a library.
+crates/*/target/
+**/*.rs.bk

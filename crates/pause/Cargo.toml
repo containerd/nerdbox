@@ -1,0 +1,38 @@
+#   Copyright The containerd Authors.
+
+#   Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+
+#       http://www.apache.org/licenses/LICENSE-2.0
+
+#   Unless required by applicable law or agreed to in writing, software
+#   distributed under the License is distributed on an "AS IS" BASIS,
+#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#   See the License for the specific language governing permissions and
+#   limitations under the License.
+
+[package]
+name = "nerdbox-pause"
+version = "0.1.0"
+description = "Anchor process holding a guest PID namespace open"
+license = "Apache-2.0"
+repository = "https://github.com/containerd/nerdbox"
+homepage = "https://containerd.io"
+edition = "2021"
+publish = false
+
+[dependencies]
+# default-features = false drops libc's "std" feature, which this crate does
+# not have available.
+libc = { version = "0.2", default-features = false }
+
+[profile.release]
+# This binary is exec'd once per sandbox that shares a PID namespace, so what
+# is being optimised for is process startup, not throughput. Keeping it small
+# is what makes that startup cheap.
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

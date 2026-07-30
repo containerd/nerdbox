@@ -534,7 +534,18 @@ func (s *service) Resume(ctx context.Context, r *taskAPI.ResumeRequest) (*ptypes
 	return empty, nil
 }
 
-// Kill a process with the provided signal
+// Kill a process with the provided signal.
+//
+// KillRequest carries no PID at all — only a container ID and an ExecID —
+// so a caller has no way to name a process by PID even if member containers
+// of a sandbox share a PID namespace (see internal/shim/task/namespaces.go).
+// getContainer resolves r.ID to this specific container's own tracked
+// state, and container.Kill resolves r.ExecID within that container's own
+// process map to the specific *runc.Container or *process.execProcess to
+// signal; the numeric PID a shared PID namespace makes visible to other
+// containers never enters the lookup. A signal request naming the wrong
+// container or exec ID fails outright (getContainer/Process return an
+// error) rather than silently landing on an unrelated process.
 func (s *service) Kill(ctx context.Context, r *taskAPI.KillRequest) (*ptypes.Empty, error) {
 	container, err := s.getContainer(r.ID)
 	if err != nil {
@@ -546,7 +557,13 @@ func (s *service) Kill(ctx context.Context, r *taskAPI.KillRequest) (*ptypes.Emp
 	return empty, nil
 }
 
-// Pids returns all pids inside the container
+// Pids returns all pids inside the container.
+//
+// Like Kill, this is scoped by container ID: getContainerPids below calls
+// `crun ps <container-id>`, which crun resolves via the container's own
+// cgroup, not by walking a (possibly shared) PID namespace. So a container
+// that shares its PID namespace with sandbox peers still only ever reports
+// its own processes here, never a peer's.
 func (s *service) Pids(ctx context.Context, r *taskAPI.PidsRequest) (*taskAPI.PidsResponse, error) {
 	container, err := s.getContainer(r.ID)
 	if err != nil {

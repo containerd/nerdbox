@@ -24,7 +24,6 @@ import (
 
 	"github.com/containerd/log"
 
-	"github.com/containerd/nerdbox/internal/vminit/namespaces"
 	"github.com/containerd/nerdbox/pkg/vminit/initd"
 
 	_ "github.com/containerd/nerdbox/plugins/services/bundle"
@@ -40,16 +39,6 @@ import (
 )
 
 func main() {
-	// Hidden subcommand: vminitd re-execs itself to become the anchor
-	// process holding a sandbox's shared PID namespace open (see
-	// internal/vminit/namespaces.createPID for why that needs a process).
-	// This must be checked before any of the normal vminitd
-	// startup/flag-parsing logic runs.
-	if len(os.Args) > 1 && os.Args[1] == namespaces.AnchorSubcommand {
-		namespaces.Anchor()
-		return
-	}
-
 	if err := initd.Run(context.Background()); err != nil {
 		log.G(context.Background()).WithError(err).Error("vminitd exited")
 		os.Exit(1)

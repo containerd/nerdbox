@@ -224,6 +224,34 @@ WORKDIR /usr/src/crun
 ARG TARGETARCH
 RUN mkdir /build && wget -O /build/crun https://github.com/containers/crun/releases/download/1.24/crun-1.24-linux-${TARGETARCH}-disable-systemd
 
+# Anchor process for guest PID namespaces (see crates/pause). Built against
+# musl so it is fully static: it runs as PID 1 of a namespace in a rootfs that
+# carries no dynamic loader of its own.
+FROM "${RUST_IMAGE}" AS pause-build
+WORKDIR /usr/src/pause
+
+ARG TARGETARCH
+RUN <<EOT
+    set -e
+    case "${TARGETARCH}" in
+        amd64) triple=x86_64-unknown-linux-musl ;;
+        arm64) triple=aarch64-unknown-linux-musl ;;
+        *) echo "unsupported TARGETARCH for pause: ${TARGETARCH}" >&2; exit 1 ;;
+    esac
+    echo "${triple}" > /rust-target
+    rustup target add "${triple}"
+EOT
+
+COPY crates/pause/ .
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=pause-cargo-registry \
+    --mount=type=cache,target=/usr/src/pause/target,id=pause-build-${TARGETARCH} <<EOT
+    set -e
+    triple="$(cat /rust-target)"
+    cargo build --release --locked --target "${triple}"
+    mkdir -p /build
+    cp "target/${triple}/release/nerdbox-pause" /build/nerdbox-pause
+EOT
+
 FROM base AS erofs-build
 WORKDIR /usr/src/rootfs
 ARG TARGETPLATFORM
@@ -243,10 +271,11 @@ RUN mkdir -p dev etc proc run sbin sys tmp var && ln -s /run var/run
 
 COPY --from=vminit-build /build/vminitd ./sbin/vminitd
 COPY --from=crun-build /build/crun ./sbin/crun
+COPY --from=pause-build /build/nerdbox-pause ./sbin/nerdbox-pause
 
 RUN <<EOT
     set -e
-    chmod +x sbin/vminitd sbin/crun
+    chmod +x sbin/vminitd sbin/crun sbin/nerdbox-pause
     mkdir /build
     mkfs.erofs -zlz4 /build/nerdbox-rootfs.erofs .
 EOT

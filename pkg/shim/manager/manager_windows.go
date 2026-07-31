@@ -276,11 +276,15 @@ func removeRootfs(ctx context.Context) {
 }
 
 func (manager) Stop(ctx context.Context, id string) (shim.StopStatus, error) {
+	// must run on all exits (including when the process is already gone)
+	// to ensure containerd's bundle cleanup is successful. See [removeRootfs]
+	// for more details.
+	defer removeRootfs(ctx)
+
 	p, err := os.ReadFile(filepath.Join(bundlePath(ctx), "shim.pid"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			// The shim already exited and cleaned up its pid file.
-			removeRootfs(ctx)
 			return shim.StopStatus{
 				ExitedAt:   time.Now(),
 				ExitStatus: 128 + 9,
@@ -328,8 +332,6 @@ func (manager) Stop(ctx context.Context, id string) (shim.StopStatus, error) {
 	if _, err := windows.WaitForSingleObject(h, windows.INFINITE); err != nil {
 		return shim.StopStatus{}, fmt.Errorf("wait for shim process: %w", err)
 	}
-
-	removeRootfs(ctx)
 
 	return shim.StopStatus{
 		ExitedAt:   time.Now(),

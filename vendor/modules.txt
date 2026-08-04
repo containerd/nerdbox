@@ -1,6 +1,7 @@
 # github.com/Microsoft/go-winio v0.6.3-0.20251027160822-ad3df93bed29
 ## explicit; go 1.23.0
 github.com/Microsoft/go-winio
+github.com/Microsoft/go-winio/backuptar
 github.com/Microsoft/go-winio/internal/fs
 github.com/Microsoft/go-winio/internal/socket
 github.com/Microsoft/go-winio/internal/stringbuffer
@@ -37,9 +38,13 @@ github.com/Microsoft/hcsshim/internal/winapi/cimfs
 github.com/Microsoft/hcsshim/internal/winapi/cimwriter
 github.com/Microsoft/hcsshim/internal/winapi/types
 github.com/Microsoft/hcsshim/osversion
+github.com/Microsoft/hcsshim/pkg/ociwclayer
 # github.com/cespare/xxhash/v2 v2.3.0
 ## explicit; go 1.11
 github.com/cespare/xxhash/v2
+# github.com/checkpoint-restore/checkpointctl v1.5.0
+## explicit; go 1.24.6
+github.com/checkpoint-restore/checkpointctl/lib
 # github.com/cilium/ebpf v0.16.0
 ## explicit; go 1.21
 github.com/cilium/ebpf
@@ -67,6 +72,8 @@ github.com/containerd/console
 ## explicit; go 1.24.0
 github.com/containerd/containerd/api/events
 github.com/containerd/containerd/api/runtime/bootstrap/v1
+github.com/containerd/containerd/api/runtime/sandbox/v1
+github.com/containerd/containerd/api/runtime/task/v2
 github.com/containerd/containerd/api/runtime/task/v3
 github.com/containerd/containerd/api/services/streaming/v1
 github.com/containerd/containerd/api/services/transfer/v1
@@ -77,26 +84,42 @@ github.com/containerd/containerd/api/types/task
 github.com/containerd/containerd/api/types/transfer
 # github.com/containerd/containerd/v2 v2.3.3
 ## explicit; go 1.26.3
+github.com/containerd/containerd/v2/core/containers
 github.com/containerd/containerd/v2/core/content
 github.com/containerd/containerd/v2/core/events
+github.com/containerd/containerd/v2/core/events/exchange
 github.com/containerd/containerd/v2/core/images
+github.com/containerd/containerd/v2/core/leases
+github.com/containerd/containerd/v2/core/metadata
+github.com/containerd/containerd/v2/core/metadata/boltutil
 github.com/containerd/containerd/v2/core/mount
 github.com/containerd/containerd/v2/core/runtime
+github.com/containerd/containerd/v2/core/runtime/v2
+github.com/containerd/containerd/v2/core/sandbox
+github.com/containerd/containerd/v2/core/snapshots
 github.com/containerd/containerd/v2/core/streaming
 github.com/containerd/containerd/v2/core/transfer
 github.com/containerd/containerd/v2/core/transfer/plugins
 github.com/containerd/containerd/v2/core/transfer/streaming
 github.com/containerd/containerd/v2/defaults
+github.com/containerd/containerd/v2/internal/fsview
 github.com/containerd/containerd/v2/internal/lazyregexp
 github.com/containerd/containerd/v2/internal/randutil
+github.com/containerd/containerd/v2/pkg/archive
 github.com/containerd/containerd/v2/pkg/archive/compression
+github.com/containerd/containerd/v2/pkg/archive/tarheader
 github.com/containerd/containerd/v2/pkg/atomicfile
+github.com/containerd/containerd/v2/pkg/cap
+github.com/containerd/containerd/v2/pkg/deprecation
 github.com/containerd/containerd/v2/pkg/dialer
+github.com/containerd/containerd/v2/pkg/epoch
 github.com/containerd/containerd/v2/pkg/filters
+github.com/containerd/containerd/v2/pkg/gc
 github.com/containerd/containerd/v2/pkg/identifiers
 github.com/containerd/containerd/v2/pkg/kernelversion
 github.com/containerd/containerd/v2/pkg/labels
 github.com/containerd/containerd/v2/pkg/namespaces
+github.com/containerd/containerd/v2/pkg/oci
 github.com/containerd/containerd/v2/pkg/oom
 github.com/containerd/containerd/v2/pkg/oom/v2
 github.com/containerd/containerd/v2/pkg/protobuf
@@ -107,8 +130,11 @@ github.com/containerd/containerd/v2/pkg/shutdown
 github.com/containerd/containerd/v2/pkg/stdio
 github.com/containerd/containerd/v2/pkg/sys
 github.com/containerd/containerd/v2/pkg/sys/reaper
+github.com/containerd/containerd/v2/pkg/timeout
+github.com/containerd/containerd/v2/pkg/tracing
 github.com/containerd/containerd/v2/pkg/ttrpcutil
 github.com/containerd/containerd/v2/plugins
+github.com/containerd/containerd/v2/plugins/services/warning
 github.com/containerd/containerd/v2/version
 # github.com/containerd/continuity v0.5.0
 ## explicit; go 1.21
@@ -145,7 +171,7 @@ github.com/containerd/platforms
 ## explicit; go 1.22
 github.com/containerd/plugin
 github.com/containerd/plugin/registry
-# github.com/containerd/shimtest v0.3.0
+# github.com/containerd/shimtest v0.3.1
 ## explicit; go 1.26.3
 github.com/containerd/shimtest
 github.com/containerd/shimtest/internal/transfer
@@ -180,6 +206,9 @@ github.com/ebitengine/purego/internal/xreflect
 github.com/erofs/go-erofs
 github.com/erofs/go-erofs/internal/builder
 github.com/erofs/go-erofs/internal/disk
+# github.com/felixge/httpsnoop v1.0.4
+## explicit; go 1.13
+github.com/felixge/httpsnoop
 # github.com/go-logr/logr v1.4.3
 ## explicit; go 1.18
 github.com/go-logr/logr
@@ -225,6 +254,12 @@ github.com/mdlayher/vsock
 # github.com/moby/sys/mountinfo v0.7.2
 ## explicit; go 1.17
 github.com/moby/sys/mountinfo
+# github.com/moby/sys/sequential v0.6.0
+## explicit; go 1.17
+github.com/moby/sys/sequential
+# github.com/moby/sys/user v0.4.0
+## explicit; go 1.17
+github.com/moby/sys/user
 # github.com/moby/sys/userns v0.1.0
 ## explicit; go 1.21
 github.com/moby/sys/userns
@@ -271,6 +306,12 @@ github.com/vishvananda/netlink/nl
 # github.com/vishvananda/netns v0.0.5
 ## explicit; go 1.17
 github.com/vishvananda/netns
+# go.etcd.io/bbolt v1.4.3
+## explicit; go 1.23
+go.etcd.io/bbolt
+go.etcd.io/bbolt/errors
+go.etcd.io/bbolt/internal/common
+go.etcd.io/bbolt/internal/freelist
 # go.opencensus.io v0.24.0
 ## explicit; go 1.13
 go.opencensus.io
@@ -282,6 +323,15 @@ go.opencensus.io/trace/tracestate
 ## explicit; go 1.24.0
 go.opentelemetry.io/auto/sdk
 go.opentelemetry.io/auto/sdk/internal/telemetry
+# go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.68.0
+## explicit; go 1.25.0
+go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc
+go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc/internal
+# go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.68.0
+## explicit; go 1.25.0
+go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp
+go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp/internal/request
+go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp/internal/semconv
 # go.opentelemetry.io/otel v1.44.0
 ## explicit; go 1.25.0
 go.opentelemetry.io/otel
@@ -296,11 +346,16 @@ go.opentelemetry.io/otel/internal/global
 go.opentelemetry.io/otel/propagation
 go.opentelemetry.io/otel/semconv/v1.17.0
 go.opentelemetry.io/otel/semconv/v1.37.0
+go.opentelemetry.io/otel/semconv/v1.37.0/rpcconv
+go.opentelemetry.io/otel/semconv/v1.40.0
+go.opentelemetry.io/otel/semconv/v1.40.0/httpconv
+go.opentelemetry.io/otel/semconv/v1.40.0/rpcconv
 go.opentelemetry.io/otel/semconv/v1.41.0
 # go.opentelemetry.io/otel/metric v1.44.0
 ## explicit; go 1.25.0
 go.opentelemetry.io/otel/metric
 go.opentelemetry.io/otel/metric/embedded
+go.opentelemetry.io/otel/metric/noop
 # go.opentelemetry.io/otel/trace v1.44.0
 ## explicit; go 1.25.0
 go.opentelemetry.io/otel/trace

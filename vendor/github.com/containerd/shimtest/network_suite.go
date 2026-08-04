@@ -130,7 +130,7 @@ func (s *NetworkSuite) testOutboundTCP(t *testing.T) {
 	client := ttrpc.NewClient(shimConn)
 	defer client.Close()
 
-	tc := taskAPI.NewTTRPCTaskClient(client)
+	tc := newTaskClient(client, params.Version)
 
 	var stdoutBuf bytes.Buffer
 	var stdoutMu sync.Mutex
@@ -244,7 +244,7 @@ func (s *NetworkSuite) testOutboundUDP(t *testing.T) {
 	client := ttrpc.NewClient(shimConn)
 	defer client.Close()
 
-	tc := taskAPI.NewTTRPCTaskClient(client)
+	tc := newTaskClient(client, params.Version)
 
 	var stdoutBuf bytes.Buffer
 	var stdoutMu sync.Mutex
@@ -334,7 +334,7 @@ func (s *NetworkSuite) testDNSResolve(t *testing.T) {
 	client := ttrpc.NewClient(shimConn)
 	defer client.Close()
 
-	tc := taskAPI.NewTTRPCTaskClient(client)
+	tc := newTaskClient(client, params.Version)
 
 	var stdoutBuf bytes.Buffer
 	var stdoutMu sync.Mutex

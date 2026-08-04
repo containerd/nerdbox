@@ -85,7 +85,7 @@ func (s *ExecSuite) testExec(t *testing.T) {
 	client := ttrpc.NewClient(conn)
 	defer client.Close()
 
-	tc := taskAPI.NewTTRPCTaskClient(client)
+	tc := newTaskClient(client, params.Version)
 
 	drainFifo(t, ctx, stdoutPath)
 	drainFifo(t, ctx, stderrPath)
@@ -172,7 +172,7 @@ func (s *ExecSuite) testStdioRoundTrip(t *testing.T) {
 	client := ttrpc.NewClient(conn)
 	defer client.Close()
 
-	tc := taskAPI.NewTTRPCTaskClient(client)
+	tc := newTaskClient(client, params.Version)
 
 	drainFifo(t, ctx, stdoutPath)
 	drainFifo(t, ctx, stderrPath)
@@ -271,7 +271,7 @@ func (s *ExecSuite) testClock(t *testing.T) {
 	client := ttrpc.NewClient(conn)
 	defer client.Close()
 
-	tc := taskAPI.NewTTRPCTaskClient(client)
+	tc := newTaskClient(client, params.Version)
 
 	drainFifo(t, ctx, stdoutPath)
 	drainFifo(t, ctx, stderrPath)
@@ -373,7 +373,7 @@ func (s *ExecSuite) testExitCodes(t *testing.T) {
 	client := ttrpc.NewClient(conn)
 	defer client.Close()
 
-	tc := taskAPI.NewTTRPCTaskClient(client)
+	tc := newTaskClient(client, params.Version)
 
 	drainFifo(t, ctx, stdoutPath)
 	drainFifo(t, ctx, stderrPath)
@@ -491,7 +491,7 @@ func (s *ExecSuite) runHashverify(t *testing.T, path, hashHex string, extraMount
 	client := ttrpc.NewClient(conn)
 	defer client.Close()
 
-	tc := taskAPI.NewTTRPCTaskClient(client)
+	tc := newTaskClient(client, params.Version)
 
 	drainFifo(t, ctx, stdoutPath)
 	drainFifo(t, ctx, stderrPath)
@@ -614,7 +614,7 @@ func (s *ExecSuite) testLargeStdioRoundTrip(t *testing.T) {
 	client := ttrpc.NewClient(conn)
 	defer client.Close()
 
-	tc := taskAPI.NewTTRPCTaskClient(client)
+	tc := newTaskClient(client, params.Version)
 
 	drainFifo(t, ctx, stdoutPath)
 	drainFifo(t, ctx, stderrPath)
@@ -852,7 +852,7 @@ func (s *ExecSuite) testFastExitOutput(t *testing.T) {
 	client := ttrpc.NewClient(conn)
 	defer client.Close()
 
-	tc := taskAPI.NewTTRPCTaskClient(client)
+	tc := newTaskClient(client, params.Version)
 
 	drainFifo(t, ctx, stdoutPath)
 	drainFifo(t, ctx, stderrPath)
@@ -972,7 +972,7 @@ func (s *ExecSuite) testExecOutputDrainAfterExit(t *testing.T) {
 	client := ttrpc.NewClient(conn)
 	defer client.Close()
 
-	tc := taskAPI.NewTTRPCTaskClient(client)
+	tc := newTaskClient(client, params.Version)
 
 	if _, err := tc.Create(ctx, newCreateTaskRequest(t, containerID, bundleDir, "", "", rootfsMounts)); err != nil {
 		t.Fatal("create failed:", err)
@@ -1069,7 +1069,7 @@ func (s *ExecSuite) testExecDiscardIO(t *testing.T) {
 	client := ttrpc.NewClient(conn)
 	defer client.Close()
 
-	tc := taskAPI.NewTTRPCTaskClient(client)
+	tc := newTaskClient(client, params.Version)
 
 	drainFifo(t, ctx, stdoutPath)
 	drainFifo(t, ctx, stderrPath)
@@ -1151,7 +1151,7 @@ func (s *ExecSuite) testExecCommandNotFound(t *testing.T) {
 	client := ttrpc.NewClient(conn)
 	defer client.Close()
 
-	tc := taskAPI.NewTTRPCTaskClient(client)
+	tc := newTaskClient(client, params.Version)
 
 	drainFifo(t, ctx, stdoutPath)
 	drainFifo(t, ctx, stderrPath)

@@ -152,7 +152,7 @@ func doFullLifecycle(t *testing.T, baseCtx context.Context, cfg Config, ttrpcClo
 	client := ttrpc.NewClient(conn)
 	defer client.Close()
 
-	tc := taskAPI.NewTTRPCTaskClient(client)
+	tc := newTaskClient(client, params.Version)
 
 	var stdoutBuf bytes.Buffer
 	var stdoutMu sync.Mutex

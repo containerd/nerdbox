@@ -84,7 +84,7 @@ func newShimEnv(tb testing.TB, baseCtx context.Context, cfg Config, suite string
 	client := ttrpc.NewClient(conn)
 	tb.Cleanup(func() { client.Close() })
 
-	tc := taskAPI.NewTTRPCTaskClient(client)
+	tc := newTaskClient(client, params.Version)
 
 	sc := &ttrpcStreamCreator{client: streamingapi.NewTTRPCStreamingClient(client)}
 
@@ -103,7 +103,7 @@ func newShimEnv(tb testing.TB, baseCtx context.Context, cfg Config, suite string
 	// also respond. Falls back to shim.pid for shims that fail
 	// Connect entirely.
 	shimPID := 0
-	if pid, err := shimPidViaConnect(params.Address, cid, 1*time.Second); err == nil {
+	if pid, err := shimPidViaConnect(params.Address, cid, params.Version, 1*time.Second); err == nil {
 		shimPID = pid
 	} else if data, err := os.ReadFile(filepath.Join(bundleDir, "shim.pid")); err == nil {
 		shimPID, _ = parseIntBytes(data)

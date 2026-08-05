@@ -33,6 +33,64 @@ const (
 	hwVersion           = "4"
 )
 
+// The names the shim writes into a bundle directory. They live here, beside
+// the writers that derive them, so that shim teardown — which has to recognise
+// and remove them — cannot drift from what was written.
+//
+// There is deliberately no "_tail.bin" suffix: the GPT disk is synthetic and
+// read-only, so no secondary GPT is written.
+const (
+	bundleDescriptorPrefix = "merged_fs"
+	GPTDescriptorName      = bundleDescriptorPrefix + "_gpt.vmdk"
+
+	auxHeaderSuffix = "_header.bin"
+	auxPadSuffix    = "_pad.bin"
+)
+
+var auxSuffixes = []string{auxHeaderSuffix, auxPadSuffix}
+
+// FlatDescriptorName is the basename of the flat-concat VMDK descriptor for a
+// multi-device erofs mount assigned the given disk letter. The letter keeps
+// several such mounts in one bundle from overwriting each other.
+func FlatDescriptorName(letter byte) string {
+	return fmt.Sprintf("%s_%c.vmdk", bundleDescriptorPrefix, letter)
+}
+
+// auxFilePath names one auxiliary blob after its descriptor, replacing the
+// descriptor's extension with suffix.
+func auxFilePath(vmdkPath, suffix string) string {
+	dir := filepath.Dir(vmdkPath)
+	base := strings.TrimSuffix(filepath.Base(vmdkPath), filepath.Ext(vmdkPath))
+	return filepath.Join(dir, base+suffix)
+}
+
+// IsBundleArtifact reports whether name — a bare directory entry name, not a
+// path — is a descriptor or auxiliary blob the shim wrote into a bundle.
+//
+// Shim teardown removes these before containerd deletes the bundle, because on
+// Windows a descriptor extent still mapped by the VM cannot be unlinked, and one
+// leftover file makes containerd's recursive bundle removal fail — permanently,
+// since the stale bundle then also blocks every later start of that container.
+//
+// Matching by name rather than globbing is deliberate: a bundle path holding a
+// glob metacharacter would make the pattern match nothing and report no error,
+// and on Windows it cannot even be escaped, the separator being the escape
+// character.
+func IsBundleArtifact(name string) bool {
+	if !strings.HasPrefix(name, bundleDescriptorPrefix) {
+		return false
+	}
+	if filepath.Ext(name) == ".vmdk" {
+		return true
+	}
+	for _, suffix := range auxSuffixes {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
 // vmdkDescAddExtent writes extent lines to the writer.
 // Each extent line follows the format: RW <count> FLAT "<filename>" <offset>
 // A single device > 2 GiB is split across multiple RW lines, each referencing
@@ -229,9 +287,7 @@ func DumpGPTVMDKDescriptorToFile(vmdkPath string, cid uint32, devices []string) 
 		return err
 	}
 
-	dir := filepath.Dir(vmdkPath)
-	base := strings.TrimSuffix(filepath.Base(vmdkPath), filepath.Ext(vmdkPath))
-	headerPath := filepath.Join(dir, base+"_header.bin")
+	headerPath := auxFilePath(vmdkPath, auxHeaderSuffix)
 
 	if err := writeBlob(headerPath, layout.WriteHeader); err != nil {
 		return err
@@ -248,7 +304,7 @@ func DumpGPTVMDKDescriptorToFile(vmdkPath string, cid uint32, devices []string) 
 	if !gptUseZeroExtents {
 		// The maximum single padding region is bounded by gptAlignSectors
 		// (1 MiB minus a sector); a 1 MiB pad file always suffices.
-		padFile = filepath.Join(dir, base+"_pad.bin")
+		padFile = auxFilePath(vmdkPath, auxPadSuffix)
 		if err := writePadFile(padFile, gptAlignSectors*gptSectorSize); err != nil {
 			cleanup()
 			return err

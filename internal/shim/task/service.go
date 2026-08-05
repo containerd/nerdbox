@@ -216,10 +216,48 @@ func (s *service) RegisterTTRPC(server *ttrpc.Server) error {
 	return nil
 }
 
+// Shutdown is bounded by its caller's context — containerd's shutdown service
+// gives it a deadline — so only the best-effort phases carry a timeout of their
+// own. Stopping the VM gets whatever time is left, because it is the phase that
+// releases the bundle's disk files and a VM left running is the one outcome
+// nothing downstream can recover from.
+const (
+	// Flushing guest journals before power-off is worth attempting, not worth
+	// the whole shutdown: an unhealthy guest keeps failing transiently for as
+	// long as it is given, and would leave nothing for the VM stop.
+	guestUnmountTimeout = 5 * time.Second
+
+	// What the VM stop runs under when the caller's context is spent before it
+	// is reached, so the one unrecoverable phase still gets a real attempt
+	// rather than an already-cancelled context.
+	exhaustedStopBudget = 2 * time.Second
+
+	eventSentinelTimeout = 1 * time.Second
+)
+
 func (s *service) shutdown(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var errs []error
+
+	// Deferred so that a phase below hanging cannot skip them: without the
+	// rootfs removal containerd's bundle cleanup attempts a bind filter unmount
+	// that fails on Windows, and without the sentinel the event forwarder never
+	// returns.
+	defer func() {
+		removeRootfsDir(ctx)
+
+		// Bounded rather than an unconditional send: the forwarder may be
+		// blocked in Publish or already gone, and waiting on it forever here
+		// would defeat the point of the deferral.
+		timer := time.NewTimer(eventSentinelTimeout)
+		defer timer.Stop()
+		select {
+		case s.events <- nil:
+		case <-timer.C:
+			log.G(ctx).Warn("timed out sending shutdown sentinel; event forwarder may still be running")
+		}
+	}()
 
 	for id, c := range s.containers {
 		if err := c.shutdown(ctx); err != nil {
@@ -230,28 +268,62 @@ func (s *service) shutdown(ctx context.Context) error {
 	if s.sb != nil {
 		// Unmount all block volumes inside the guest before stopping the VM,
 		// to flush ext4 journals and dirty pages to the virtio-blk devices.
-		// Best-effort with a short retry for transient EBUSY.
+		// Best-effort with a short retry for transient EBUSY — bounded, because
+		// an unhealthy guest keeps failing transiently for as long as it is
+		// given and would starve the VM stop below.
 		if vmc, err := s.sb.Client(); err != nil {
 			log.G(ctx).WithError(err).Warn("failed to get VM client; skipping unmount of block volumes before VM shutdown")
 		} else {
-			if err := unmountAllWithRetry(ctx, mountAPI.NewTTRPCMountClient(vmc)); err != nil {
-				log.G(ctx).WithError(err).Warn("failed to unmount all block volumes before VM shutdown")
+			unmountCtx, cancel := context.WithTimeout(ctx, guestUnmountTimeout)
+			err := unmountAllWithRetry(unmountCtx, mountAPI.NewTTRPCMountClient(vmc))
+			cancel()
+			if err != nil {
+				log.G(ctx).WithError(err).
+					Warn("failed to unmount all block volumes before VM shutdown")
 			}
 		}
 
-		if err := s.sb.Stop(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("sandbox shutdown: %w", err))
+		if err := s.stopSandbox(ctx); err != nil {
+			errs = append(errs, err)
 		}
 	}
 
-	// Remove the rootfs directory on Windows so containerd's bundle cleanup
-	// doesn't attempt a bind filter unmount (no-op on other platforms).
-	removeRootfsDir(ctx)
-
-	// Signal last event and stop forwarding
-	s.events <- nil
-
 	return errors.Join(errs...)
+}
+
+// stopSandbox stops the VM, abandoning the wait if it outlasts its share of the
+// shutdown budget.
+//
+// Stop cannot be relied on to honour its context — it delegates to a vm.Instance
+// implementation, and one blocked on an internal handoff is not cancellable from
+// here. Abandoning the wait is what keeps the deferred bundle cleanup in
+// [service.shutdown] reachable.
+func (s *service) stopSandbox(ctx context.Context) error {
+	stopCtx := ctx
+	if ctx.Err() != nil {
+		// An earlier phase spent the caller's budget. Running Stop on the dead
+		// context would abandon it before the goroutine below even started, so
+		// give it one of its own — see [exhaustedStopBudget].
+		var cancel context.CancelFunc
+		stopCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), exhaustedStopBudget)
+		defer cancel()
+		log.G(ctx).WithField("stop_budget", exhaustedStopBudget).
+			Warn("shutdown budget spent before stopping the VM; stopping it anyway")
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- s.sb.Stop(stopCtx) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("sandbox shutdown: %w", err)
+		}
+		return nil
+	case <-stopCtx.Done():
+		log.G(ctx).Error("gave up waiting for the VM to stop; it may still hold files in the bundle, which will prevent containerd from deleting the bundle and block subsequent starts of this container")
+		return fmt.Errorf("sandbox shutdown: %w", stopCtx.Err())
+	}
 }
 
 // unmountAllWithRetry asks the guest to unmount all tracked mounts, retrying

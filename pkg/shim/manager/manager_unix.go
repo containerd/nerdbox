@@ -37,6 +37,7 @@ import (
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/containerd/v2/pkg/shim"
 	"github.com/containerd/errdefs"
+	"github.com/containerd/log"
 	"golang.org/x/sys/unix"
 )
 
@@ -292,10 +293,27 @@ func (manager) Start(ctx context.Context, bparams *bootapi.BootstrapParams) (_ *
 	}, nil
 }
 
+const (
+	// Bounds the wait for the shim to release its shim.pid lock after SIGKILL,
+	// leaving slack inside containerd's "io.containerd.timeout.shim.cleanup"
+	// (5s by default), which bounds the whole `shim delete` binary call. Being
+	// killed by containerd instead would report no exit status at all.
+	shimExitWaitTimeout = 3 * time.Second
+
+	shimExitPollInterval = 50 * time.Millisecond
+)
+
 func (manager) Stop(ctx context.Context, id string) (shim.StopStatus, error) {
-	pid, err := waitForShimPidLock()
+	pid, exited, err := waitForShimPidLock(ctx)
 	if err != nil {
 		return shim.StopStatus{}, err
+	}
+	if !exited {
+		log.G(ctx).WithFields(log.Fields{
+			"pid":     pid,
+			"id":      id,
+			"timeout": shimExitWaitTimeout,
+		}).Error("shim process did not exit before the wait budget expired; it may still hold bundle files")
 	}
 	return shim.StopStatus{
 		ExitedAt:   time.Now(),
@@ -304,46 +322,89 @@ func (manager) Stop(ctx context.Context, id string) (shim.StopStatus, error) {
 	}, nil
 }
 
-// waitForShimPidLock opens shim.pid, reads the shim PID, and blocks until the
-// shim process releases the exclusive flock it holds on that file (i.e. until
-// the shim exits). It returns the PID on success.
+// waitForShimPidLock SIGKILLs the shim if it is still running and waits for it
+// to release the exclusive flock on shim.pid, which the OS does only once it
+// exits. It reports the shim's PID and whether that exit was observed.
 //
-// The shim is the only process that acquires the lock, so after SIGKILL it will
-// inevitably exit and release it. Blocking unconditionally — rather than racing
-// against a timeout — guarantees the caller does not return while the shim is
-// still alive.
-func waitForShimPidLock() (int, error) {
+// The shim is the only process that takes the lock, so after SIGKILL it will
+// almost always exit promptly; the wait is bounded anyway, and reports a shim
+// that outlives its budget rather than blocking on it. See [shimExitWaitTimeout].
+func waitForShimPidLock(ctx context.Context) (int, bool, error) {
 	f, err := os.Open("shim.pid")
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	defer f.Close()
 
 	p, err := io.ReadAll(f)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(p)))
 	if err != nil {
-		return 0, err
+		return 0, false, err
+	}
+	// Reject non-positive pids before they reach Kill: kill(0) signals every
+	// process in the caller's process group and kill(-n) a whole other group,
+	// so a truncated or zeroed shim.pid would take down the `shim delete`
+	// invocation (and whatever else shares its group) instead of the shim.
+	if pid <= 0 {
+		return 0, false, fmt.Errorf("invalid shim pid %d in shim.pid", pid)
+	}
+
+	// tryLock reports whether the lock is now free, i.e. the shim has exited.
+	tryLock := func() (bool, error) {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return true, nil
+		}
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return false, nil
+		}
+		return false, fmt.Errorf("flock shim.pid: %w", err)
 	}
 
 	// Try a non-blocking acquire first. If it succeeds the shim has already
 	// exited and the lock is free.
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
-		return pid, nil
-	} else if !errors.Is(err, syscall.EWOULDBLOCK) {
-		return 0, fmt.Errorf("flock shim.pid: %w", err)
+	free, err := tryLock()
+	if err != nil {
+		return 0, false, err
+	}
+	if free {
+		return pid, true, nil
 	}
 
-	// Lock is held — shim is still running. Kill it and block until the OS
-	// releases the lock on shim exit. There is no timeout: the shim cannot
-	// hold the lock after it dies, and returning early would leave it alive.
+	// Lock is held — the shim is still running. Kill it, then poll for the
+	// lock rather than blocking on LOCK_EX, so the wait stays bounded.
 	if kerr := unix.Kill(pid, unix.SIGKILL); kerr != nil && !errors.Is(kerr, unix.ESRCH) {
-		return 0, fmt.Errorf("kill shim: %w", kerr)
+		return 0, false, fmt.Errorf("kill shim: %w", kerr)
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		return 0, fmt.Errorf("flock shim.pid (wait): %w", err)
+
+	deadline := time.Now().Add(shimExitWaitTimeout)
+	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
+		deadline = dl
 	}
-	return pid, nil
+	for {
+		free, err := tryLock()
+		if err != nil {
+			return 0, false, err
+		}
+		if free {
+			return pid, true, nil
+		}
+
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return pid, false, nil
+		}
+		wait := shimExitPollInterval
+		if remaining < wait {
+			wait = remaining
+		}
+		select {
+		case <-ctx.Done():
+			return pid, false, nil
+		case <-time.After(wait):
+		}
+	}
 }

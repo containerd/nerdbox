@@ -38,6 +38,8 @@ import (
 	"github.com/containerd/containerd/v2/pkg/shim"
 	"github.com/containerd/log"
 	"golang.org/x/sys/windows"
+
+	"github.com/containerd/nerdbox/internal/erofs"
 )
 
 func newCommand(ctx context.Context, id, containerdAddress, containerdTTRPCAddress string, debug bool) (*exec.Cmd, error) {
@@ -164,6 +166,17 @@ const (
 	shimPipeReadyTimeout   = 10 * time.Second
 	shimPipeDialPerAttempt = 1 * time.Second
 	shimPipeRetryDelay     = 10 * time.Millisecond
+
+	// Stop waits for the shim to exit and then clears the bundle. The sum of
+	// the two budgets must leave slack inside containerd's
+	// "io.containerd.timeout.shim.cleanup" (5s by default), which bounds the
+	// whole `shim delete` binary call: if containerd kills us instead, the
+	// deferred bundle cleanup never runs at all.
+	shimExitWaitTimeout = 2 * time.Second
+	bundleRemoveWindow  = 1 * time.Second
+
+	shimExitPollInterval   = 50 * time.Millisecond
+	bundleRemoveRetryDelay = 200 * time.Millisecond
 )
 
 // waitForShimPipe polls a named pipe address with a short per-attempt DialPipe timeout
@@ -263,23 +276,111 @@ func bundlePath(ctx context.Context) string {
 	return ""
 }
 
-// removeRootfs removes the rootfs directory from the bundle so that
-// containerd's bundle cleanup doesn't attempt a bind filter unmount.
-// On Windows, Unmount calls bindfilter.RemoveFileBinding which fails with
-// ERROR_ACCESS_DENIED on directories that were never bind filter mounts
-// (nerdbox uses VM-based virtio block devices instead). Removing the
-// directory makes UnmountAll a no-op.
-func removeRootfs(ctx context.Context) {
-	if bp := bundlePath(ctx); bp != "" {
-		os.RemoveAll(filepath.Join(bp, "rootfs"))
+// removeBundleArtifacts removes everything the shim itself put in the bundle
+// directory, leaving containerd's own bundle cleanup nothing to trip over. Two
+// Windows failure modes make it necessary: Unmount calls
+// bindfilter.RemoveFileBinding, which fails with ERROR_ACCESS_DENIED on a rootfs
+// that was never a bind filter mount (nerdbox uses virtio block devices
+// instead), and a VMDK extent still mapped by the VM cannot be unlinked at all —
+// see [erofs.IsBundleArtifact].
+func removeBundleArtifacts(ctx context.Context) {
+	bp := bundlePath(ctx)
+	if bp == "" {
+		return
+	}
+
+	targets := []string{filepath.Join(bp, "rootfs")}
+	entries, err := os.ReadDir(bp)
+	if err != nil {
+		log.G(ctx).WithError(err).WithField("bundle", bp).
+			Error("failed to list bundle directory; shim-written artifacts may be left behind")
+	}
+	for _, entry := range entries {
+		if erofs.IsBundleArtifact(entry.Name()) {
+			targets = append(targets, filepath.Join(bp, entry.Name()))
+		}
+	}
+
+	// A shim being terminated can hold its mappings for a moment after
+	// TerminateProcess returns, so retry — but over the whole remaining set
+	// under one deadline. Retrying per target would multiply by the target
+	// count and could push this call past containerd's cleanup timeout, which
+	// is the very failure being fixed.
+	deadline := time.Now().Add(bundleRemoveWindow)
+	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
+		deadline = dl
+	}
+
+	var failures map[string]error
+	for {
+		var remaining []string
+		failures = make(map[string]error, len(targets))
+		for _, target := range targets {
+			if err := os.RemoveAll(target); err != nil {
+				failures[target] = err
+				remaining = append(remaining, target)
+			}
+		}
+		targets = remaining
+		if len(targets) == 0 || time.Until(deadline) <= bundleRemoveRetryDelay {
+			break
+		}
+		time.Sleep(bundleRemoveRetryDelay)
+	}
+
+	// Name the survivors: this is the file that will wedge subsequent starts.
+	for _, target := range targets {
+		log.G(ctx).WithError(failures[target]).WithField("path", target).
+			Error("failed to remove bundle artifact; containerd bundle cleanup and subsequent starts of this container will fail until it is released")
+	}
+}
+
+// waitForProcessExit blocks until the process handle h is signalled, ctx is
+// done, or timeout elapses — whichever comes first. It reports whether the
+// process exited.
+//
+// The wait is polled rather than a single WaitForSingleObject(INFINITE) so it
+// can honour ctx: containerd bounds the `shim delete` binary call, and being
+// killed mid-call would skip our deferred bundle cleanup.
+func waitForProcessExit(ctx context.Context, h windows.Handle, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
+		deadline = dl
+	}
+
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return false
+		}
+		if err := ctx.Err(); err != nil {
+			return false
+		}
+
+		wait := shimExitPollInterval
+		if remaining < wait {
+			wait = remaining
+		}
+		// WaitForSingleObject returns WAIT_OBJECT_0 (0) when the process has
+		// exited and WAIT_TIMEOUT when the interval elapsed first.
+		event, err := windows.WaitForSingleObject(h, uint32(wait.Milliseconds()))
+		if err != nil {
+			return false
+		}
+		if event == uint32(windows.WAIT_OBJECT_0) {
+			return true
+		}
 	}
 }
 
 func (manager) Stop(ctx context.Context, id string) (shim.StopStatus, error) {
 	// must run on all exits (including when the process is already gone)
-	// to ensure containerd's bundle cleanup is successful. See [removeRootfs]
-	// for more details.
-	defer removeRootfs(ctx)
+	// to ensure containerd's bundle cleanup is successful. See
+	// [removeBundleArtifacts] for more details. Every wait below is bounded so
+	// that this defer actually gets to run — containerd kills the `shim delete`
+	// call once "io.containerd.timeout.shim.cleanup" expires, and a killed
+	// process runs no defers.
+	defer removeBundleArtifacts(ctx)
 
 	p, err := os.ReadFile(filepath.Join(bundlePath(ctx), "shim.pid"))
 	if err != nil {
@@ -326,11 +427,24 @@ func (manager) Stop(ctx context.Context, id string) (shim.StopStatus, error) {
 		return shim.StopStatus{}, fmt.Errorf("terminate shim process: %w", err)
 	}
 
-	// Block until the process has fully exited. There is no timeout: the
-	// shim is the only target and TerminateProcess is unconditional, so
-	// WaitForSingleObject will always complete.
-	if _, err := windows.WaitForSingleObject(h, windows.INFINITE); err != nil {
-		return shim.StopStatus{}, fmt.Errorf("wait for shim process: %w", err)
+	// Wait for the process to fully exit, but only for a bounded period.
+	// TerminateProcess is not instantaneous: a VM-backed shim can have threads
+	// parked in kernel-mode hypervisor or memory-mapping calls, and the process
+	// does not die until those return. containerd bounds this whole binary call
+	// by "io.containerd.timeout.shim.cleanup" (5s), so waiting forever means
+	// being killed and skipping the bundle cleanup deferred above — which is
+	// what leaves a locked VMDK extent behind and wedges the container id.
+	//
+	// Report success either way: containerd proceeds to delete the bundle
+	// regardless of what we return here, so the useful thing is to finish under
+	// our own control with the cleanup done, and to say loudly when the shim
+	// outlived us.
+	if !waitForProcessExit(ctx, h, shimExitWaitTimeout) {
+		log.G(ctx).WithFields(log.Fields{
+			"pid":     pid,
+			"id":      id,
+			"timeout": shimExitWaitTimeout,
+		}).Error("shim process did not exit before the wait budget expired; it may still hold bundle files")
 	}
 
 	return shim.StopStatus{

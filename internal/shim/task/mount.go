@@ -136,7 +136,7 @@ func transformMounts(ctx context.Context, id string, ms []*types.Mount, da *disk
 				// Use the disk letter in the filename so that multiple
 				// multi-device erofs mounts within the same bundle each get
 				// a distinct descriptor and don't overwrite each other.
-				mergedfsPath := filepath.Join(bundleDir, fmt.Sprintf("merged_fs_%c.vmdk", letter))
+				mergedfsPath := filepath.Join(bundleDir, erofs.FlatDescriptorName(letter))
 				if err := erofs.DumpVMDKDescriptorToFile(mergedfsPath, 0xfffffffe, devices); err != nil {
 					log.G(ctx).WithError(err).WithField("path", mergedfsPath).Warn("failed to generate erofs vmdk descriptor")
 					return nil, nil, fmt.Errorf("erofs vmdk: %w", errdefs.ErrNotImplemented)
@@ -268,7 +268,7 @@ func finalizeErofsCandidates(ctx context.Context, id string, da *diskAllocator, 
 		// shim does not mutate the source image directories.  Cache by
 		// stat-check: setupMounts may be called more than once per bundle
 		// (e.g. on restore) but the layer set for a given bundle is fixed.
-		gptPath := filepath.Join(bundleDir, "merged_fs_gpt.vmdk")
+		gptPath := filepath.Join(bundleDir, erofs.GPTDescriptorName)
 		if _, err := os.Stat(gptPath); err != nil {
 			if !os.IsNotExist(err) {
 				log.G(ctx).WithError(err).WithField("path", gptPath).Warn("failed to stat erofs gpt vmdk descriptor")

@@ -58,6 +58,7 @@ func (s *ExecSuite) Run(t *testing.T) {
 	t.Run("Exec", s.testExec)
 	t.Run("StdioRoundTrip", s.testStdioRoundTrip)
 	t.Run("LargeStdioRoundTrip", s.testLargeStdioRoundTrip)
+	t.Run("StdinDetachReattach", s.testStdinDetachReattach)
 	t.Run("Clock", s.testClock)
 	t.Run("ExitCodes", s.testExitCodes)
 	t.Run("LargeFileRead", s.testLargeFileRead)
@@ -85,7 +86,7 @@ func (s *ExecSuite) testExec(t *testing.T) {
 	client := ttrpc.NewClient(conn)
 	defer client.Close()
 
-	tc := taskAPI.NewTTRPCTaskClient(client)
+	tc := newTaskClient(client, params.Version)
 
 	drainFifo(t, ctx, stdoutPath)
 	drainFifo(t, ctx, stderrPath)
@@ -172,7 +173,7 @@ func (s *ExecSuite) testStdioRoundTrip(t *testing.T) {
 	client := ttrpc.NewClient(conn)
 	defer client.Close()
 
-	tc := taskAPI.NewTTRPCTaskClient(client)
+	tc := newTaskClient(client, params.Version)
 
 	drainFifo(t, ctx, stdoutPath)
 	drainFifo(t, ctx, stderrPath)
@@ -271,7 +272,7 @@ func (s *ExecSuite) testClock(t *testing.T) {
 	client := ttrpc.NewClient(conn)
 	defer client.Close()
 
-	tc := taskAPI.NewTTRPCTaskClient(client)
+	tc := newTaskClient(client, params.Version)
 
 	drainFifo(t, ctx, stdoutPath)
 	drainFifo(t, ctx, stderrPath)
@@ -373,7 +374,7 @@ func (s *ExecSuite) testExitCodes(t *testing.T) {
 	client := ttrpc.NewClient(conn)
 	defer client.Close()
 
-	tc := taskAPI.NewTTRPCTaskClient(client)
+	tc := newTaskClient(client, params.Version)
 
 	drainFifo(t, ctx, stdoutPath)
 	drainFifo(t, ctx, stderrPath)
@@ -491,7 +492,7 @@ func (s *ExecSuite) runHashverify(t *testing.T, path, hashHex string, extraMount
 	client := ttrpc.NewClient(conn)
 	defer client.Close()
 
-	tc := taskAPI.NewTTRPCTaskClient(client)
+	tc := newTaskClient(client, params.Version)
 
 	drainFifo(t, ctx, stdoutPath)
 	drainFifo(t, ctx, stderrPath)
@@ -614,7 +615,7 @@ func (s *ExecSuite) testLargeStdioRoundTrip(t *testing.T) {
 	client := ttrpc.NewClient(conn)
 	defer client.Close()
 
-	tc := taskAPI.NewTTRPCTaskClient(client)
+	tc := newTaskClient(client, params.Version)
 
 	drainFifo(t, ctx, stdoutPath)
 	drainFifo(t, ctx, stderrPath)
@@ -755,6 +756,155 @@ func (s *ExecSuite) testLargeStdioRoundTrip(t *testing.T) {
 	tc.Shutdown(ctx, &taskAPI.ShutdownRequest{ID: containerID})
 }
 
+// testStdinDetachReattach verifies the detach/re-attach half of the stdin
+// EOF contract described in testLargeStdioRoundTrip: a client closing its
+// own stdin write end, without issuing CloseIO, must not deliver EOF to
+// the process. This lets one client detach from stdin and a later client
+// attach and continue writing to the same process, exactly as `ctr
+// attach` followed by a later re-attach would require. Only an explicit
+// CloseIO(Stdin=true) may cause the process to observe stdin EOF.
+//
+// The test writes a line to the exec's stdin, closes only its own write
+// end (detach) without CloseIO, then opens a new writer on the same stdin
+// path (re-attach) and writes a second line. Since /bin/cat's stdin must
+// not have seen EOF after the first detach, both lines must appear on
+// stdout. CloseIO is then issued to let the process exit.
+//
+// The first writer is opened before Exec, matching the convention used by
+// testLargeStdioRoundTrip and testStdioRoundTrip: on Windows the shim
+// dials the stdin pipe synchronously as part of the Exec RPC, so the
+// test's server-side Accept must already be in flight (openPipeWriter
+// starts it in a background goroutine) before that RPC is issued, or the
+// dial has nothing to connect to within its timeout.
+func (s *ExecSuite) testStdinDetachReattach(t *testing.T) {
+	shimBin, bundleDir, rootfsMounts := shimSetup(t, s.cfg)
+	containerID := containerID(t)
+
+	createOCISpec(t, bundleDir, []string{"/bin/forever"}, s.cfg)
+
+	stdoutPath, stderrPath := createIOFifos(t, bundleDir)
+	ns := uniqueTestNamespace(t, "exec")
+	ctx := namespaces.WithNamespace(t.Context(), ns)
+
+	params := startShim(t, shimBin, bundleDir, containerID, ns, s.cfg)
+	conn := connectShim(t, params.Address)
+	client := ttrpc.NewClient(conn)
+	defer client.Close()
+
+	tc := taskAPI.NewTTRPCTaskClient(client)
+
+	drainFifo(t, ctx, stdoutPath)
+	drainFifo(t, ctx, stderrPath)
+
+	if _, err := tc.Create(ctx, newCreateTaskRequest(t, containerID, bundleDir, stdoutPath, stderrPath, rootfsMounts)); err != nil {
+		t.Fatal("create failed:", err)
+	}
+	if _, err := tc.Start(ctx, &taskAPI.StartRequest{ID: containerID}); err != nil {
+		t.Fatal("start failed:", err)
+	}
+
+	execID := "detach-rt"
+	execDir := t.TempDir()
+	execStdin, execStdout, execStderr := createStdioFifos(t, execDir)
+
+	var outBuf bytes.Buffer
+	var outMu sync.Mutex
+	drainFifoInto(t, ctx, execStdout, &outBuf, &outMu)
+	drainFifo(t, ctx, execStderr)
+
+	// Open the first writer before Exec (see the doc comment above for
+	// why this ordering matters).
+	w1, err := openPipeWriter(ctx, execStdin)
+	if err != nil {
+		t.Fatal("open stdin (first writer):", err)
+	}
+
+	procSpec, err := typeurl.MarshalAnyToProto(&specs.Process{
+		Args: []string{"/bin/cat"},
+		Cwd:  "/",
+		Env:  []string{"PATH=/bin:/usr/bin"},
+	})
+	if err != nil {
+		t.Fatal("marshal exec spec:", err)
+	}
+
+	if _, err := tc.Exec(ctx, &taskAPI.ExecProcessRequest{
+		ID:     containerID,
+		ExecID: execID,
+		Spec:   procSpec,
+		Stdin:  execStdin,
+		Stdout: execStdout,
+		Stderr: execStderr,
+	}); err != nil {
+		t.Fatal("exec failed:", err)
+	}
+	if _, err := tc.Start(ctx, &taskAPI.StartRequest{ID: containerID, ExecID: execID}); err != nil {
+		t.Fatal("exec start failed:", err)
+	}
+
+	// First writer: write a line, then detach by closing only the local
+	// write end. No CloseIO is issued here, so the shim API must not
+	// deliver EOF to the process.
+	if _, err := w1.Write([]byte("first\n")); err != nil {
+		t.Fatal("write first line:", err)
+	}
+	w1.Close()
+
+	// Give the process a moment to have (incorrectly) observed EOF here
+	// if the shim does not honor detach semantics.
+	time.Sleep(500 * time.Millisecond)
+
+	// Second writer: a new client re-opens the same stdin FIFO path
+	// ("re-attach") and writes a second line. If the process had already
+	// exited after the first writer detached, this data would never reach
+	// stdout even though the write itself may still succeed.
+	w2, err := openPipeWriter(ctx, execStdin)
+	if err != nil {
+		t.Fatal("open stdin (second writer, re-attach):", err)
+	}
+	if _, err := w2.Write([]byte("second\n")); err != nil {
+		t.Fatal("write second line:", err)
+	}
+	w2.Close()
+
+	// Give cat a moment to read and echo the second line before EOF.
+	time.Sleep(500 * time.Millisecond)
+
+	// Now signal real EOF via CloseIO so the process exits.
+	if _, err := tc.CloseIO(ctx, &taskAPI.CloseIORequest{
+		ID:     containerID,
+		ExecID: execID,
+		Stdin:  true,
+	}); err != nil {
+		t.Fatal("CloseIO failed:", err)
+	}
+
+	waitResp, err := tc.Wait(ctx, &taskAPI.WaitRequest{ID: containerID, ExecID: execID})
+	if err != nil {
+		t.Fatal("exec wait failed:", err)
+	}
+	if waitResp.ExitStatus != 0 {
+		t.Fatalf("cat exited with status %d", waitResp.ExitStatus)
+	}
+
+	if _, err := tc.Delete(ctx, &taskAPI.DeleteRequest{ID: containerID, ExecID: execID}); err != nil {
+		t.Fatal("exec delete failed:", err)
+	}
+
+	outMu.Lock()
+	out := outBuf.String()
+	outMu.Unlock()
+
+	if !strings.Contains(out, "first") || !strings.Contains(out, "second") {
+		t.Fatalf("expected output to contain both the pre-detach and post-reattach writes, got: %q", out)
+	}
+
+	tc.Kill(ctx, &taskAPI.KillRequest{ID: containerID, Signal: uint32(syscall.SIGKILL), All: true})
+	tc.Wait(ctx, &taskAPI.WaitRequest{ID: containerID})
+	tc.Delete(ctx, &taskAPI.DeleteRequest{ID: containerID})
+	tc.Shutdown(ctx, &taskAPI.ShutdownRequest{ID: containerID})
+}
+
 // burstPayloadSize is the number of bytes written by /bin/burstexit in
 // the FastExitOutput and FastExitInit tests. It must be large enough
 // that the kernel socket buffers cannot absorb the entire stream
@@ -852,7 +1002,7 @@ func (s *ExecSuite) testFastExitOutput(t *testing.T) {
 	client := ttrpc.NewClient(conn)
 	defer client.Close()
 
-	tc := taskAPI.NewTTRPCTaskClient(client)
+	tc := newTaskClient(client, params.Version)
 
 	drainFifo(t, ctx, stdoutPath)
 	drainFifo(t, ctx, stderrPath)
@@ -972,7 +1122,7 @@ func (s *ExecSuite) testExecOutputDrainAfterExit(t *testing.T) {
 	client := ttrpc.NewClient(conn)
 	defer client.Close()
 
-	tc := taskAPI.NewTTRPCTaskClient(client)
+	tc := newTaskClient(client, params.Version)
 
 	if _, err := tc.Create(ctx, newCreateTaskRequest(t, containerID, bundleDir, "", "", rootfsMounts)); err != nil {
 		t.Fatal("create failed:", err)
@@ -1069,7 +1219,7 @@ func (s *ExecSuite) testExecDiscardIO(t *testing.T) {
 	client := ttrpc.NewClient(conn)
 	defer client.Close()
 
-	tc := taskAPI.NewTTRPCTaskClient(client)
+	tc := newTaskClient(client, params.Version)
 
 	drainFifo(t, ctx, stdoutPath)
 	drainFifo(t, ctx, stderrPath)
@@ -1151,7 +1301,7 @@ func (s *ExecSuite) testExecCommandNotFound(t *testing.T) {
 	client := ttrpc.NewClient(conn)
 	defer client.Close()
 
-	tc := taskAPI.NewTTRPCTaskClient(client)
+	tc := newTaskClient(client, params.Version)
 
 	drainFifo(t, ctx, stdoutPath)
 	drainFifo(t, ctx, stderrPath)

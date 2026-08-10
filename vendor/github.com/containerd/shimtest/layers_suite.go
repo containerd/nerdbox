@@ -122,7 +122,7 @@ func (s *LayersSuite) testHundredLayers(t *testing.T) {
 	client := ttrpc.NewClient(conn)
 	defer client.Close()
 
-	tc := taskAPI.NewTTRPCTaskClient(client)
+	tc := newTaskClient(client, params.Version)
 
 	drainFifo(t, ctx, stdoutPath)
 	drainFifo(t, ctx, stderrPath)

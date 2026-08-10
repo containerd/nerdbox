@@ -16,12 +16,15 @@
    limitations under the License.
 */
 
-// Package namespaces creates and deletes the guest-side Linux namespaces
-// that containers sharing a sandbox join, and reports the guest paths they
-// are pinned at. It implements the NamespaceManager service declared in
-// api/proto/nerdbox/services/namespaces/v1; see that file for the contract
-// and for why creation is per type rather than all-or-nothing.
-package namespaces
+// Package sharedresources creates and deletes guest-side resources that
+// containers sharing a sandbox use to share state with each other — Linux
+// namespaces (IPC, PID, network) and other guest-side resources set up the
+// same way (currently just a shared /dev/shm tmpfs) — and reports the guest
+// paths at which they are pinned. It implements the SharedResources service
+// declared in api/proto/nerdbox/services/sharedresources/v1; see that file
+// for the contract and for why creation is per type rather than
+// all-or-nothing.
+package sharedresources
 
 import (
 	"context"
@@ -51,49 +54,58 @@ const anchorBinary = "/sbin/nerdbox-pause"
 // host, since the real one only ships in the guest rootfs.
 var anchorCommand = []string{anchorBinary}
 
-// Type identifies a kind of Linux namespace this package can manage. It
-// mirrors the NamespaceType enum in the NamespaceManager API, kept as a
+// Type identifies a kind of guest-side shared resource this package can
+// manage. It mirrors the Type enum in the SharedResources API, kept as a
 // separate domain type so this package does not depend on the generated
-// protobuf bindings.
+// protobuf bindings. Most values are Linux namespace types; TypeDevShm is
+// not — see its own comment.
 type Type int
 
 const (
-	// TypeIPC is an IPC namespace.
-	TypeIPC Type = iota + 1
-	// TypePID is a PID namespace.
-	TypePID
-	// TypeNetwork is a network namespace.
-	TypeNetwork
+	// TypeNamespaceIPC is an IPC namespace.
+	TypeNamespaceIPC Type = iota + 1
+	// TypeNamespacePID is a PID namespace.
+	TypeNamespacePID
+	// TypeNamespaceNetwork is a network namespace.
+	TypeNamespaceNetwork
+	// TypeDevShm is not an OCI namespace: it is a per-group tmpfs that
+	// sharing containers bind-mount their /dev/shm onto. See the package
+	// doc comment for why it lives here.
+	TypeDevShm
 )
 
 // String implements fmt.Stringer.
 func (t Type) String() string {
 	switch t {
-	case TypeIPC:
+	case TypeNamespaceIPC:
 		return "ipc"
-	case TypePID:
+	case TypeNamespacePID:
 		return "pid"
-	case TypeNetwork:
+	case TypeNamespaceNetwork:
 		return "network"
+	case TypeDevShm:
+		return "devshm"
 	default:
 		return fmt.Sprintf("unknown(%d)", int(t))
 	}
 }
 
-// dir returns the directory namespaces of this type are pinned in. The
+// dir returns the directory resources of this type are pinned in. The
 // layout matches the convention used by iproute2 and containerd's CRI
 // plugin for named network namespaces (/run/netns/<name>), extended to the
 // other types.
 func (t Type) dir() (string, error) {
 	switch t {
-	case TypeIPC:
+	case TypeNamespaceIPC:
 		return "/run/ipcns", nil
-	case TypePID:
+	case TypeNamespacePID:
 		return "/run/pidns", nil
-	case TypeNetwork:
+	case TypeNamespaceNetwork:
 		return "/run/netns", nil
+	case TypeDevShm:
+		return "/run/devshm", nil
 	default:
-		return "", fmt.Errorf("unknown namespace type %d: %w", int(t), errdefsInvalidArgument)
+		return "", fmt.Errorf("unknown resource type %d: %w", int(t), errdefsInvalidArgument)
 	}
 }
 
@@ -102,32 +114,32 @@ func (t Type) dir() (string, error) {
 var errdefsInvalidArgument = errors.New("invalid argument")
 
 // ErrInvalidArgument is returned for a malformed group id or an unknown
-// namespace type.
+// resource type.
 var ErrInvalidArgument = errdefsInvalidArgument
 
-// key identifies one managed namespace.
+// key identifies one managed resource.
 type key struct {
 	id  string
 	typ Type
 }
 
-// entry is the state of one managed namespace. Once created, path is set and
+// entry is the state of one managed resource. Once created, path is set and
 // err is nil; if creation failed, err is set and is returned to every later
 // caller rather than silently retrying a broken setup.
 type entry struct {
 	path string
 	err  error
 	// anchor is the process holding a PID namespace open. Only set for
-	// TypePID; a PID namespace is destroyed by the kernel as soon as its
-	// PID 1 exits, so unlike the other types it cannot be kept alive by a
-	// bind mount alone.
+	// TypeNamespacePID; a PID namespace is destroyed by the kernel as soon
+	// as its PID 1 exits, so unlike the other types it cannot be kept
+	// alive by a bind mount alone.
 	anchor *os.Process
 }
 
-// Manager creates namespaces on demand and remembers them, so that repeated
-// requests for the same (id, type) return the same path without doing the
-// work again. A single Manager is meant to be shared for the lifetime of one
-// vminitd process.
+// Manager creates shared resources on demand and remembers them, so that
+// repeated requests for the same (id, type) return the same path without
+// doing the work again. A single Manager is meant to be shared for the
+// lifetime of one vminitd process.
 //
 // Safe for concurrent use.
 type Manager struct {
@@ -138,9 +150,14 @@ type Manager struct {
 // Create creates each of types for the group id that does not exist yet, and
 // returns the guest path of every requested type. Duplicate types in the
 // request are collapsed. On failure no partial result is returned, but any
-// namespaces created earlier in the call are kept and will be reused by a
+// resources created earlier in the call are kept and will be reused by a
 // later call.
-func (m *Manager) Create(ctx context.Context, id string, types []Type) (map[Type]string, error) {
+//
+// devShmSizeBytes is only consulted when types includes TypeDevShm and no
+// devshm resource exists yet for id; see createDevShm. It is ignored
+// otherwise, including when a devshm resource for id already exists — the
+// size the first caller supplied wins.
+func (m *Manager) Create(ctx context.Context, id string, types []Type, devShmSizeBytes int64) (map[Type]string, error) {
 	if err := validateID(id); err != nil {
 		return nil, err
 	}
@@ -154,7 +171,7 @@ func (m *Manager) Create(ctx context.Context, id string, types []Type) (map[Type
 
 	paths := make(map[Type]string, len(wanted))
 	for _, typ := range wanted {
-		e, err := m.ensureLocked(ctx, id, typ)
+		e, err := m.ensureLocked(ctx, id, typ, devShmSizeBytes)
 		if err != nil {
 			return nil, err
 		}
@@ -164,7 +181,7 @@ func (m *Manager) Create(ctx context.Context, id string, types []Type) (map[Type
 }
 
 // Delete removes each of types for the group id. An empty types list deletes
-// every namespace belonging to id. Deleting something that does not exist is
+// every resource belonging to id. Deleting something that does not exist is
 // not an error.
 func (m *Manager) Delete(ctx context.Context, id string, types []Type) error {
 	if err := validateID(id); err != nil {
@@ -189,15 +206,15 @@ func (m *Manager) Delete(ctx context.Context, id string, types []Type) error {
 	var errs []error
 	for _, typ := range wanted {
 		if err := m.deleteLocked(ctx, id, typ); err != nil {
-			errs = append(errs, fmt.Errorf("delete %s namespace: %w", typ, err))
+			errs = append(errs, fmt.Errorf("delete %s resource: %w", typ, err))
 		}
 	}
 	return errors.Join(errs...)
 }
 
-// ensureLocked returns the entry for (id, typ), creating the namespace if it
+// ensureLocked returns the entry for (id, typ), creating the resource if it
 // does not exist. m.mu must be held.
-func (m *Manager) ensureLocked(ctx context.Context, id string, typ Type) (*entry, error) {
+func (m *Manager) ensureLocked(ctx context.Context, id string, typ Type, devShmSizeBytes int64) (*entry, error) {
 	k := key{id: id, typ: typ}
 	if e, ok := m.ns[k]; ok {
 		if e.err != nil {
@@ -214,17 +231,19 @@ func (m *Manager) ensureLocked(ctx context.Context, id string, typ Type) (*entry
 
 	e := &entry{path: path}
 	switch typ {
-	case TypeNetwork:
+	case TypeNamespaceNetwork:
 		e.err = createNetwork(ctx, id, path)
-	case TypeIPC:
+	case TypeNamespaceIPC:
 		e.err = createIPC(ctx, path)
-	case TypePID:
+	case TypeNamespacePID:
 		e.anchor, e.err = createPID(ctx, path)
+	case TypeDevShm:
+		e.err = createDevShm(path, devShmSizeBytes)
 	default:
-		return nil, fmt.Errorf("unknown namespace type %d: %w", int(typ), ErrInvalidArgument)
+		return nil, fmt.Errorf("unknown resource type %d: %w", int(typ), ErrInvalidArgument)
 	}
 	if e.err != nil {
-		e.err = fmt.Errorf("create %s namespace %q: %w", typ, path, e.err)
+		e.err = fmt.Errorf("create %s resource %q: %w", typ, path, e.err)
 	}
 
 	if m.ns == nil {
@@ -239,11 +258,11 @@ func (m *Manager) ensureLocked(ctx context.Context, id string, typ Type) (*entry
 		"id":   id,
 		"type": typ.String(),
 		"path": path,
-	}).Debug("created namespace")
+	}).Debug("created shared resource")
 	return e, nil
 }
 
-// deleteLocked tears down the namespace for (id, typ). m.mu must be held.
+// deleteLocked tears down the resource for (id, typ). m.mu must be held.
 func (m *Manager) deleteLocked(ctx context.Context, id string, typ Type) error {
 	k := key{id: id, typ: typ}
 	e, ok := m.ns[k]
@@ -277,7 +296,7 @@ func (m *Manager) deleteLocked(ctx context.Context, id string, typ Type) error {
 // locked does not poison the thread pool.
 //
 // netns.NewNamed pins at /run/netns/<name>, which is exactly the layout
-// Type.dir uses for TypeNetwork, so id is passed as the name.
+// Type.dir uses for TypeNamespaceNetwork, so id is passed as the name.
 func createNetwork(ctx context.Context, id, path string) error {
 	errCh := make(chan error, 1)
 	go func() {
@@ -401,6 +420,50 @@ func createPID(ctx context.Context, path string) (*os.Process, error) {
 	return cmd.Process, nil
 }
 
+// defaultDevShmSizeBytes is used when devShmSizeBytes is not positive. The
+// host-side caller always computes a real size from the sharing container's
+// own CRI-provided /dev/shm mount options (falling back to its own default
+// of the same value if unspecified), so this should not normally be
+// reached; it exists purely as a defensive floor so a tmpfs is never
+// created with a nonsensical size (in particular, "size=0" would make the
+// tmpfs unusable — every write to it would fail with ENOSPC).
+const defaultDevShmSizeBytes = 64 * 1024 * 1024
+
+// devShmMountFlags matches the nosuid/noexec/nodev flags CRI itself
+// requests on a container's own (unshared) /dev/shm tmpfs mount, so sharing
+// does not weaken those properties.
+const devShmMountFlags = unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV
+
+// createDevShm creates a real, sized tmpfs pinned at path, for sharing
+// containers to bind-mount their /dev/shm onto.
+//
+// Unlike the namespace types, this needs no bind-mount-of-a-namespace-file
+// trick and no anchor process: it is a plain tmpfs mount, and the mount
+// itself is what needs to stay alive, which the kernel already guarantees
+// for as long as anything references it. It is mounted here, in the
+// guest's own root mount namespace under /run, rather than inside the
+// virtiofs-backed "containers" tree used for rootfs/volumes: that keeps
+// this tmpfs real guest RAM with a real, kernel-enforced size limit,
+// rather than something backed by host disk and reached over virtiofs. A
+// member container's own crun bind-mounts this path directly, the same
+// way it already joins /run/netns/<id> and /run/ipcns/<id>.
+func createDevShm(path string, sizeBytes int64) error {
+	if sizeBytes <= 0 {
+		sizeBytes = defaultDevShmSizeBytes
+	}
+
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return fmt.Errorf("create mount point: %w", err)
+	}
+
+	data := fmt.Sprintf("size=%d,mode=1777", sizeBytes)
+	if err := unix.Mount("tmpfs", path, "tmpfs", devShmMountFlags, data); err != nil {
+		_ = os.Remove(path)
+		return fmt.Errorf("mount tmpfs: %w", err)
+	}
+	return nil
+}
+
 // pin creates the empty file a namespace is bind-mounted onto, along with its
 // parent directory.
 func pin(path string) error {
@@ -414,14 +477,14 @@ func pin(path string) error {
 	return f.Close()
 }
 
-// unpin unmounts a pinned namespace and removes its bind-mount target. It is
+// unpin unmounts a pinned resource and removes its bind-mount target. It is
 // idempotent: an already-unmounted or already-removed path is not an error.
 func unpin(path string) error {
 	// The unmount result is deliberately ignored. There are several benign
 	// reasons it fails — the path was pinned but never mounted onto (EINVAL,
 	// or EPERM for an unprivileged caller), or it is already gone (ENOENT) —
 	// and distinguishing them from a real failure by errno alone is not
-	// reliable. The removal below is the actual check: if the namespace is
+	// reliable. The removal below is the actual check: if the resource is
 	// still mounted here, it fails with EBUSY and that is reported.
 	_ = unix.Unmount(path, 0)
 
@@ -436,10 +499,10 @@ func unpin(path string) error {
 // used to build a filesystem path, so it is never trusted.
 func validateID(id string) error {
 	if id == "" {
-		return fmt.Errorf("namespace group id is required: %w", ErrInvalidArgument)
+		return fmt.Errorf("resource group id is required: %w", ErrInvalidArgument)
 	}
 	if id == "." || id == ".." || strings.ContainsRune(id, os.PathSeparator) || strings.ContainsRune(id, 0) {
-		return fmt.Errorf("invalid namespace group id %q: %w", id, ErrInvalidArgument)
+		return fmt.Errorf("invalid resource group id %q: %w", id, ErrInvalidArgument)
 	}
 	return nil
 }

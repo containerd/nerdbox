@@ -24,7 +24,7 @@ import (
 
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
-	nsAPI "github.com/containerd/nerdbox/api/services/namespaces/v1"
+	srAPI "github.com/containerd/nerdbox/api/services/sharedresources/v1"
 	"github.com/containerd/nerdbox/internal/shim/task/bundle"
 )
 
@@ -37,24 +37,24 @@ const (
 	fakePIDPath = "/run/pidns/test-sandbox"
 )
 
-// recorder is a sharedNamespacesFunc that serves fixed paths and records
+// recorder is a sharedResourceFunc that serves fixed paths and records
 // every request made through it, so tests can assert not just the resulting
 // spec but which namespace types were actually asked of the guest.
 type recorder struct {
-	calls [][]nsAPI.NamespaceType
+	calls [][]srAPI.Type
 }
 
-func (r *recorder) fn() sharedNamespacesFunc {
-	return func(_ context.Context, types []nsAPI.NamespaceType) (map[nsAPI.NamespaceType]string, error) {
+func (r *recorder) fn() sharedResourceFunc {
+	return func(_ context.Context, types []srAPI.Type) (map[srAPI.Type]string, error) {
 		r.calls = append(r.calls, types)
-		out := make(map[nsAPI.NamespaceType]string, len(types))
+		out := make(map[srAPI.Type]string, len(types))
 		for _, t := range types {
 			switch t {
-			case nsAPI.NamespaceType_NAMESPACE_TYPE_NETWORK:
+			case srAPI.Type_TYPE_NAMESPACE_NETWORK:
 				out[t] = fakeNetPath
-			case nsAPI.NamespaceType_NAMESPACE_TYPE_IPC:
+			case srAPI.Type_TYPE_NAMESPACE_IPC:
 				out[t] = fakeIPCPath
-			case nsAPI.NamespaceType_NAMESPACE_TYPE_PID:
+			case srAPI.Type_TYPE_NAMESPACE_PID:
 				out[t] = fakePIDPath
 			}
 		}
@@ -65,10 +65,10 @@ func (r *recorder) fn() sharedNamespacesFunc {
 // requested flattens every recorded call into the list of types asked for. It
 // also asserts the guest was called at most once, since sanitizeNamespaces is
 // meant to batch its needs into a single request.
-func (r *recorder) requested(t *testing.T) []nsAPI.NamespaceType {
+func (r *recorder) requested(t *testing.T) []srAPI.Type {
 	t.Helper()
 	if len(r.calls) > 1 {
-		t.Errorf("getSharedNS called %d times, want at most 1: %v", len(r.calls), r.calls)
+		t.Errorf("getSharedResources called %d times, want at most 1: %v", len(r.calls), r.calls)
 	}
 	if len(r.calls) == 0 {
 		return nil
@@ -90,7 +90,7 @@ func TestSanitizeNamespaces(t *testing.T) {
 		want          []specs.LinuxNamespace
 		// wantRequested is the exact set of namespace types the guest must be
 		// asked for, in order. Nil means the guest must not be called at all.
-		wantRequested []nsAPI.NamespaceType
+		wantRequested []srAPI.Type
 	}{
 		{
 			name:  "nil Linux is a no-op",
@@ -104,7 +104,7 @@ func TestSanitizeNamespaces(t *testing.T) {
 			want: []specs.LinuxNamespace{
 				{Type: specs.NetworkNamespace, Path: fakeNetPath},
 			},
-			wantRequested: []nsAPI.NamespaceType{nsAPI.NamespaceType_NAMESPACE_TYPE_NETWORK},
+			wantRequested: []srAPI.Type{srAPI.Type_TYPE_NAMESPACE_NETWORK},
 		},
 		{
 			name:            "container NIC: nothing added, guest not called",
@@ -126,7 +126,7 @@ func TestSanitizeNamespaces(t *testing.T) {
 				{Type: specs.MountNamespace},
 				{Type: specs.NetworkNamespace, Path: fakeNetPath},
 			},
-			wantRequested: []nsAPI.NamespaceType{nsAPI.NamespaceType_NAMESPACE_TYPE_NETWORK},
+			wantRequested: []srAPI.Type{srAPI.Type_TYPE_NAMESPACE_NETWORK},
 		},
 		{
 			name: "container NIC: existing network namespace path stripped (crun creates a fresh one)",
@@ -167,7 +167,7 @@ func TestSanitizeNamespaces(t *testing.T) {
 			want: []specs.LinuxNamespace{
 				{Type: specs.NetworkNamespace, Path: fakeNetPath},
 			},
-			wantRequested: []nsAPI.NamespaceType{nsAPI.NamespaceType_NAMESPACE_TYPE_NETWORK},
+			wantRequested: []srAPI.Type{srAPI.Type_TYPE_NAMESPACE_NETWORK},
 		},
 		{
 			name: "host IPC namespace path redirected to the shared IPC namespace",
@@ -181,7 +181,7 @@ func TestSanitizeNamespaces(t *testing.T) {
 			want: []specs.LinuxNamespace{
 				{Type: specs.IPCNamespace, Path: fakeIPCPath},
 			},
-			wantRequested: []nsAPI.NamespaceType{nsAPI.NamespaceType_NAMESPACE_TYPE_IPC},
+			wantRequested: []srAPI.Type{srAPI.Type_TYPE_NAMESPACE_IPC},
 		},
 		{
 			name: "host PID namespace path redirected to the shared PID namespace (covers both pod-level and node-level sharing)",
@@ -195,7 +195,7 @@ func TestSanitizeNamespaces(t *testing.T) {
 			want: []specs.LinuxNamespace{
 				{Type: specs.PIDNamespace, Path: fakePIDPath},
 			},
-			wantRequested: []nsAPI.NamespaceType{nsAPI.NamespaceType_NAMESPACE_TYPE_PID},
+			wantRequested: []srAPI.Type{srAPI.Type_TYPE_NAMESPACE_PID},
 		},
 		{
 			name: "empty-Path IPC/PID namespaces (per-container mode) are left alone, guest not called",
@@ -230,7 +230,7 @@ func TestSanitizeNamespaces(t *testing.T) {
 				{Type: specs.IPCNamespace, Path: fakeIPCPath},
 				{Type: specs.PIDNamespace},
 			},
-			wantRequested: []nsAPI.NamespaceType{nsAPI.NamespaceType_NAMESPACE_TYPE_IPC},
+			wantRequested: []srAPI.Type{srAPI.Type_TYPE_NAMESPACE_IPC},
 		},
 		{
 			name:          "every shared namespace is requested in a single call",
@@ -247,10 +247,10 @@ func TestSanitizeNamespaces(t *testing.T) {
 				{Type: specs.IPCNamespace, Path: fakeIPCPath},
 				{Type: specs.PIDNamespace, Path: fakePIDPath},
 			},
-			wantRequested: []nsAPI.NamespaceType{
-				nsAPI.NamespaceType_NAMESPACE_TYPE_NETWORK,
-				nsAPI.NamespaceType_NAMESPACE_TYPE_IPC,
-				nsAPI.NamespaceType_NAMESPACE_TYPE_PID,
+			wantRequested: []srAPI.Type{
+				srAPI.Type_TYPE_NAMESPACE_NETWORK,
+				srAPI.Type_TYPE_NAMESPACE_IPC,
+				srAPI.Type_TYPE_NAMESPACE_PID,
 			},
 		},
 
@@ -299,7 +299,7 @@ func TestSanitizeNamespaces(t *testing.T) {
 			want: []specs.LinuxNamespace{
 				{Type: specs.IPCNamespace, Path: fakeIPCPath},
 			},
-			wantRequested: []nsAPI.NamespaceType{nsAPI.NamespaceType_NAMESPACE_TYPE_IPC},
+			wantRequested: []srAPI.Type{srAPI.Type_TYPE_NAMESPACE_IPC},
 		},
 		{
 			// A container with its own interface has in-guest networking
@@ -342,10 +342,10 @@ func TestSanitizeNamespaces(t *testing.T) {
 	}
 }
 
-// TestSanitizeNamespacesPropagatesSharedNSError verifies that a failure to
-// obtain the shared namespaces (e.g. the guest RPC failing) is surfaced as an
-// error, not silently ignored.
-func TestSanitizeNamespacesPropagatesSharedNSError(t *testing.T) {
+// TestSanitizeNamespacesPropagatesSharedResourcesError verifies that a
+// failure to obtain the shared namespaces (e.g. the guest RPC failing) is
+// surfaced as an error, not silently ignored.
+func TestSanitizeNamespacesPropagatesSharedResourcesError(t *testing.T) {
 	b := &bundle.Bundle{Spec: specs.Spec{Linux: &specs.Linux{
 		Namespaces: []specs.LinuxNamespace{
 			{Type: specs.IPCNamespace, Path: "/proc/12345/ns/ipc"},
@@ -353,7 +353,7 @@ func TestSanitizeNamespacesPropagatesSharedNSError(t *testing.T) {
 	}}}
 	wantErr := errors.New("guest unreachable")
 	err := sanitizeNamespaces(context.Background(), b, true, true,
-		func(context.Context, []nsAPI.NamespaceType) (map[nsAPI.NamespaceType]string, error) {
+		func(context.Context, []srAPI.Type) (map[srAPI.Type]string, error) {
 			return nil, wantErr
 		})
 	if err == nil || !errors.Is(err, wantErr) {

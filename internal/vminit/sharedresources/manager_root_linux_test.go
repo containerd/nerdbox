@@ -16,12 +16,13 @@
    limitations under the License.
 */
 
-package namespaces
+package sharedresources
 
 import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -86,7 +87,8 @@ func TestManagerCreateDeleteRoundTrip(t *testing.T) {
 
 	ctx := context.Background()
 	id := "nerdbox-test-" + randomSuffix(t)
-	types := []Type{TypeNetwork, TypeIPC, TypePID}
+	types := []Type{TypeNamespaceNetwork, TypeNamespaceIPC, TypeNamespacePID, TypeDevShm}
+	const devShmSize = 4 * 1024 * 1024
 
 	var m Manager
 	t.Cleanup(func() {
@@ -94,7 +96,7 @@ func TestManagerCreateDeleteRoundTrip(t *testing.T) {
 		_ = m.Delete(ctx, id, nil)
 	})
 
-	paths, err := m.Create(ctx, id, types)
+	paths, err := m.Create(ctx, id, types, devShmSize)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -112,8 +114,10 @@ func TestManagerCreateDeleteRoundTrip(t *testing.T) {
 	}
 
 	// A repeat request must reuse what already exists rather than creating
-	// anything new, and must report the same paths.
-	again, err := m.Create(ctx, id, types)
+	// anything new, and must report the same paths. A different size is
+	// passed here specifically to confirm it is ignored for an
+	// already-created devshm resource, per Create's doc comment.
+	again, err := m.Create(ctx, id, types, devShmSize*2)
 	if err != nil {
 		t.Fatalf("second Create: %v", err)
 	}
@@ -124,12 +128,12 @@ func TestManagerCreateDeleteRoundTrip(t *testing.T) {
 	}
 
 	// Requesting a subset must not disturb the rest.
-	subset, err := m.Create(ctx, id, []Type{TypeIPC})
+	subset, err := m.Create(ctx, id, []Type{TypeNamespaceIPC}, 0)
 	if err != nil {
 		t.Fatalf("subset Create: %v", err)
 	}
-	if len(subset) != 1 || subset[TypeIPC] != paths[TypeIPC] {
-		t.Errorf("subset Create = %v, want just the IPC path %q", subset, paths[TypeIPC])
+	if len(subset) != 1 || subset[TypeNamespaceIPC] != paths[TypeNamespaceIPC] {
+		t.Errorf("subset Create = %v, want just the IPC path %q", subset, paths[TypeNamespaceIPC])
 	}
 
 	// The PID namespace is only usable for as long as its anchor lives, so the
@@ -174,7 +178,7 @@ func anchorPID(t *testing.T, m *Manager, id string) int {
 	t.Helper()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	e, ok := m.ns[key{id: id, typ: TypePID}]
+	e, ok := m.ns[key{id: id, typ: TypeNamespacePID}]
 	if !ok || e.anchor == nil {
 		t.Fatalf("no PID namespace anchor recorded for %q", id)
 	}
@@ -199,11 +203,11 @@ func TestManagerCreateOnlyRequestedTypes(t *testing.T) {
 	var m Manager
 	t.Cleanup(func() { _ = m.Delete(ctx, id, nil) })
 
-	if _, err := m.Create(ctx, id, []Type{TypeIPC}); err != nil {
+	if _, err := m.Create(ctx, id, []Type{TypeNamespaceIPC}, 0); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
-	for _, typ := range []Type{TypeNetwork, TypePID} {
+	for _, typ := range []Type{TypeNamespaceNetwork, TypeNamespacePID, TypeDevShm} {
 		dir, err := typ.dir()
 		if err != nil {
 			t.Fatal(err)
@@ -212,6 +216,49 @@ func TestManagerCreateOnlyRequestedTypes(t *testing.T) {
 		if _, err := os.Lstat(path); !os.IsNotExist(err) {
 			t.Errorf("%s namespace at %s was created without being requested (err=%v)", typ, path, err)
 		}
+	}
+}
+
+// TestManagerDevShmSizeEnforced verifies that the devshm resource is a real,
+// size-limited tmpfs — not just a directory — by writing past the requested
+// size and confirming the kernel itself rejects it with ENOSPC.
+func TestManagerDevShmSizeEnforced(t *testing.T) {
+	requireNamespacePrivileges(t)
+
+	ctx := context.Background()
+	id := "nerdbox-test-" + randomSuffix(t)
+	const size = 1 * 1024 * 1024 // 1MiB
+
+	var m Manager
+	t.Cleanup(func() { _ = m.Delete(ctx, id, nil) })
+
+	paths, err := m.Create(ctx, id, []Type{TypeDevShm}, size)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	path := paths[TypeDevShm]
+
+	var st unix.Statfs_t
+	if err := unix.Statfs(path, &st); err != nil {
+		t.Fatalf("statfs %s: %v", path, err)
+	}
+	gotSize := int64(st.Blocks) * st.Bsize //nolint:unconvert // Bsize is int64 on some arches, int32 on others
+	if gotSize != size {
+		t.Errorf("tmpfs total size = %d bytes, want %d", gotSize, size)
+	}
+
+	f, err := os.Create(filepath.Join(path, "toobig"))
+	if err != nil {
+		t.Fatalf("create file in devshm: %v", err)
+	}
+	defer f.Close()
+
+	// Writing past the tmpfs's size must fail with ENOSPC. A plain
+	// directory (no size limit at all) would happily accept this.
+	buf := make([]byte, size*2)
+	_, err = f.Write(buf)
+	if !errors.Is(err, unix.ENOSPC) {
+		t.Errorf("write past tmpfs size = %v, want ENOSPC", err)
 	}
 }
 

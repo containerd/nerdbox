@@ -356,17 +356,18 @@ func (s *service) createSandboxedContainer(ctx context.Context, r *taskAPI.Creat
 
 	// Fetched here (rather than where the VM client is otherwise obtained
 	// further below) because sanitizeNamespaces, run as part of bundle.Load
-	// next, may need it to call the guest's NamespaceManager service if this
+	// next, may need it to call the guest's SharedResources service if this
 	// container's spec asks to share any namespace.
 	vmc, err := s.sb.Client()
 	if err != nil {
 		return nil, errgrpc.ToGRPC(err)
 	}
-	sharedNS := &sharedNamespaces{client: vmc, sandboxID: s.svc.SandboxID()}
+	sharedRes := &sharedResources{client: vmc, sandboxID: s.svc.SandboxID()}
 
 	// Load the OCI bundle and apply per-container transformers.
 	var (
 		ctrNetCfg ctrNetConfig
+		devShm    = shareDevShmMounter{containerID: r.ID, getDevShmFn: sharedRes.getDevShm}
 		svm       = sandboxVolumeMounter{fs: fs, containerID: r.ID}
 		blockM    blockMounter
 		sfpr      = socketForwardsProvider{containerID: r.ID}
@@ -379,6 +380,10 @@ func (s *service) createSandboxedContainer(ctx context.Context, r *taskAPI.Creat
 
 	b, err := bundle.Load(ctx, r.Bundle,
 		svm.FromBundle,
+		// Must run after svm.FromBundle: svm only rewrites mounts that
+		// already have Type "bind", and a /dev/shm mount is still "tmpfs"
+		// until this runs, so the two never touch the same mount.
+		devShm.FromBundle,
 		ctrNetCfg.fromBundle,
 		sfpr.FromBundle,
 		func(ctx context.Context, b *bundle.Bundle) error {
@@ -398,7 +403,7 @@ func (s *service) createSandboxedContainer(ctx context.Context, r *taskAPI.Creat
 			return addSysctls(ctx, b, podCfg.GetLinux().GetSysctls())
 		},
 		func(ctx context.Context, b *bundle.Bundle) error {
-			return sanitizeNamespaces(ctx, b, len(ctrNetCfg.Networks) > 0, s.svc.HasNIC(), sharedNS.get)
+			return sanitizeNamespaces(ctx, b, len(ctrNetCfg.Networks) > 0, s.svc.HasNIC(), sharedRes.get)
 		},
 		clearApparmorProfile,
 	)
@@ -447,7 +452,7 @@ func (s *service) createSandboxedContainer(ctx context.Context, r *taskAPI.Creat
 		return nil, errgrpc.ToGRPC(err)
 	}
 
-	// vmc was already fetched above (sharedNS needs it before bundle.Load
+	// vmc was already fetched above (sharedRes needs it before bundle.Load
 	// runs).
 
 	// Start the VM event stream exactly once for this sandbox (subsequent

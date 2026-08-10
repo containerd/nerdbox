@@ -16,7 +16,7 @@
    limitations under the License.
 */
 
-package namespaces
+package sharedresources
 
 import (
 	"context"
@@ -73,7 +73,7 @@ func TestValidateID(t *testing.T) {
 // id validateID accepts stays inside its type directory once joined.
 func TestCreateRejectsInvalidID(t *testing.T) {
 	var m Manager
-	if _, err := m.Create(context.Background(), "../escape", []Type{TypeIPC}); err == nil {
+	if _, err := m.Create(context.Background(), "../escape", []Type{TypeNamespaceIPC}, 0); err == nil {
 		t.Fatal("Create with a traversing id = nil error, want failure")
 	} else if !errors.Is(err, ErrInvalidArgument) {
 		t.Errorf("Create error = %v, want it to wrap ErrInvalidArgument", err)
@@ -81,7 +81,7 @@ func TestCreateRejectsInvalidID(t *testing.T) {
 
 	// Nothing may have been recorded for a rejected request.
 	if len(m.ns) != 0 {
-		t.Errorf("manager recorded %d namespaces after a rejected request, want 0", len(m.ns))
+		t.Errorf("manager recorded %d resources after a rejected request, want 0", len(m.ns))
 	}
 }
 
@@ -99,17 +99,17 @@ func TestDedupe(t *testing.T) {
 		},
 		{
 			name: "order preserved",
-			in:   []Type{TypeNetwork, TypeIPC, TypePID},
-			want: []Type{TypeNetwork, TypeIPC, TypePID},
+			in:   []Type{TypeNamespaceNetwork, TypeNamespaceIPC, TypeNamespacePID},
+			want: []Type{TypeNamespaceNetwork, TypeNamespaceIPC, TypeNamespacePID},
 		},
 		{
 			name: "duplicates collapsed, first-seen order kept",
-			in:   []Type{TypePID, TypeIPC, TypePID, TypeIPC, TypePID},
-			want: []Type{TypePID, TypeIPC},
+			in:   []Type{TypeNamespacePID, TypeNamespaceIPC, TypeNamespacePID, TypeNamespaceIPC, TypeNamespacePID},
+			want: []Type{TypeNamespacePID, TypeNamespaceIPC},
 		},
 		{
 			name:    "unknown type rejected",
-			in:      []Type{TypeIPC, Type(99)},
+			in:      []Type{TypeNamespaceIPC, Type(99)},
 			wantErr: true,
 		},
 		{
@@ -148,9 +148,9 @@ func TestTypeDir(t *testing.T) {
 		typ  Type
 		want string
 	}{
-		{typ: TypeNetwork, want: "/run/netns"},
-		{typ: TypeIPC, want: "/run/ipcns"},
-		{typ: TypePID, want: "/run/pidns"},
+		{typ: TypeNamespaceNetwork, want: "/run/netns"},
+		{typ: TypeNamespaceIPC, want: "/run/ipcns"},
+		{typ: TypeNamespacePID, want: "/run/pidns"},
 	}
 	for _, tc := range testcases {
 		t.Run(tc.typ.String(), func(t *testing.T) {
@@ -169,7 +169,7 @@ func TestTypeDir(t *testing.T) {
 	}
 }
 
-// TestUnpinIsIdempotent verifies deleting a namespace that was never created,
+// TestUnpinIsIdempotent verifies deleting a resource that was never created,
 // or was already cleaned up, is not an error: Delete is documented as
 // tolerating both.
 func TestUnpinIsIdempotent(t *testing.T) {
@@ -193,11 +193,11 @@ func TestUnpinIsIdempotent(t *testing.T) {
 }
 
 // TestDeleteUnknownIsNoop verifies Delete on a manager that never created
-// anything succeeds rather than reporting a missing namespace.
+// anything succeeds rather than reporting a missing resource.
 func TestDeleteUnknownIsNoop(t *testing.T) {
 	var m Manager
-	if err := m.Delete(context.Background(), "sandbox", []Type{TypeIPC, TypePID, TypeNetwork}); err != nil {
-		t.Errorf("Delete of unknown namespaces = %v, want nil", err)
+	if err := m.Delete(context.Background(), "sandbox", []Type{TypeNamespaceIPC, TypeNamespacePID, TypeNamespaceNetwork}); err != nil {
+		t.Errorf("Delete of unknown resources = %v, want nil", err)
 	}
 	if err := m.Delete(context.Background(), "sandbox", nil); err != nil {
 		t.Errorf("Delete of an unknown group = %v, want nil", err)

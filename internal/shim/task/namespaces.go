@@ -19,75 +19,12 @@ package task
 import (
 	"context"
 	"fmt"
-	"sync"
 
-	"github.com/containerd/ttrpc"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
-	nsAPI "github.com/containerd/nerdbox/api/services/namespaces/v1"
+	srAPI "github.com/containerd/nerdbox/api/services/sharedresources/v1"
 	"github.com/containerd/nerdbox/internal/shim/task/bundle"
 )
-
-// sharedNamespacesFunc returns the guest paths of the sandbox's shared
-// namespaces of the requested types, creating them on first use. It is called
-// by sanitizeNamespaces at most once per container, and only if that
-// container's spec actually asks to share something.
-type sharedNamespacesFunc func(ctx context.Context, types []nsAPI.NamespaceType) (map[nsAPI.NamespaceType]string, error)
-
-// sharedNamespaces calls the guest's NamespaceManager.Create the first time
-// it is needed and memoizes the result per namespace type. A value is created
-// fresh per Task.Create call (see createSandboxedContainer), so a container
-// that shares nothing never triggers the guest RPC at all — and therefore
-// never causes the guest to create a namespace, or to spawn the PID
-// namespace's anchor process, on its behalf.
-type sharedNamespaces struct {
-	client    *ttrpc.Client // vminitd's TTRPC connection
-	sandboxID string        // namespace group id
-
-	mu    sync.Mutex
-	paths map[nsAPI.NamespaceType]string
-}
-
-// get implements sharedNamespacesFunc. Types already fetched are served from
-// the memo; only the remainder is requested from the guest.
-func (n *sharedNamespaces) get(ctx context.Context, types []nsAPI.NamespaceType) (map[nsAPI.NamespaceType]string, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
-	var missing []nsAPI.NamespaceType
-	for _, t := range types {
-		if _, ok := n.paths[t]; !ok {
-			missing = append(missing, t)
-		}
-	}
-
-	if len(missing) > 0 {
-		c := nsAPI.NewTTRPCNamespaceManagerClient(n.client)
-		resp, err := c.Create(ctx, &nsAPI.CreateRequest{
-			ID:    n.sandboxID,
-			Types: missing,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("guest namespace create: %w", err)
-		}
-		if n.paths == nil {
-			n.paths = make(map[nsAPI.NamespaceType]string, len(missing))
-		}
-		for _, ns := range resp.GetNamespaces() {
-			n.paths[ns.GetType()] = ns.GetPath()
-		}
-	}
-
-	out := make(map[nsAPI.NamespaceType]string, len(types))
-	for _, t := range types {
-		path, ok := n.paths[t]
-		if !ok {
-			return nil, fmt.Errorf("guest did not return a path for namespace type %q", t)
-		}
-		out[t] = path
-	}
-	return out, nil
-}
 
 // sanitizeNamespaces is a bundle.Transformer for sandbox member containers.
 // It has two jobs:
@@ -104,7 +41,7 @@ func (n *sharedNamespaces) get(ctx context.Context, types []nsAPI.NamespaceType)
 //
 //  2. Ensure member containers of the same sandbox share the namespaces CRI
 //     actually asked them to share, by substituting guest-side equivalents
-//     obtained from getSharedNS.
+//     obtained from getSharedResources.
 //
 // CRI's WithPodNamespaces sets a host Path on the IPC namespace entry
 // unconditionally (Kubernetes shares pod IPC by default), and on the PID
@@ -141,7 +78,7 @@ func (n *sharedNamespaces) get(ctx context.Context, types []nsAPI.NamespaceType)
 //     isolation it does not provide. Container traffic in this configuration
 //     reaches the host by other means (the guest kernel proxying its IP
 //     sockets), which no network namespace can scope in any case.
-func sanitizeNamespaces(ctx context.Context, b *bundle.Bundle, hasContainerNIC, hasSandboxNIC bool, getSharedNS sharedNamespacesFunc) error {
+func sanitizeNamespaces(ctx context.Context, b *bundle.Bundle, hasContainerNIC, hasSandboxNIC bool, getSharedResources sharedResourceFunc) error {
 	if b.Spec.Linux == nil {
 		return nil
 	}
@@ -168,21 +105,21 @@ func sanitizeNamespaces(ctx context.Context, b *bundle.Bundle, hasContainerNIC, 
 		}
 	}
 
-	var types []nsAPI.NamespaceType
+	var types []srAPI.Type
 	if wantNetwork {
-		types = append(types, nsAPI.NamespaceType_NAMESPACE_TYPE_NETWORK)
+		types = append(types, srAPI.Type_TYPE_NAMESPACE_NETWORK)
 	}
 	if wantIPC {
-		types = append(types, nsAPI.NamespaceType_NAMESPACE_TYPE_IPC)
+		types = append(types, srAPI.Type_TYPE_NAMESPACE_IPC)
 	}
 	if wantPID {
-		types = append(types, nsAPI.NamespaceType_NAMESPACE_TYPE_PID)
+		types = append(types, srAPI.Type_TYPE_NAMESPACE_PID)
 	}
 
-	var paths map[nsAPI.NamespaceType]string
+	var paths map[srAPI.Type]string
 	if len(types) > 0 {
 		var err error
-		if paths, err = getSharedNS(ctx, types); err != nil {
+		if paths, err = getSharedResources(ctx, types); err != nil {
 			return fmt.Errorf("get shared namespaces: %w", err)
 		}
 	}
@@ -197,17 +134,17 @@ func sanitizeNamespaces(ctx context.Context, b *bundle.Bundle, hasContainerNIC, 
 			case dropNetwork:
 				continue
 			case shareNetwork:
-				ns.Path = paths[nsAPI.NamespaceType_NAMESPACE_TYPE_NETWORK]
+				ns.Path = paths[srAPI.Type_TYPE_NAMESPACE_NETWORK]
 			default:
 				ns.Path = ""
 			}
 		case specs.IPCNamespace:
 			if ns.Path != "" {
-				ns.Path = paths[nsAPI.NamespaceType_NAMESPACE_TYPE_IPC]
+				ns.Path = paths[srAPI.Type_TYPE_NAMESPACE_IPC]
 			}
 		case specs.PIDNamespace:
 			if ns.Path != "" {
-				ns.Path = paths[nsAPI.NamespaceType_NAMESPACE_TYPE_PID]
+				ns.Path = paths[srAPI.Type_TYPE_NAMESPACE_PID]
 			}
 		default:
 			// No other namespace type ever has a valid host Path in the
@@ -220,7 +157,7 @@ func sanitizeNamespaces(ctx context.Context, b *bundle.Bundle, hasContainerNIC, 
 	if !foundNetworkNS && shareNetwork {
 		out = append(out, specs.LinuxNamespace{
 			Type: specs.NetworkNamespace,
-			Path: paths[nsAPI.NamespaceType_NAMESPACE_TYPE_NETWORK],
+			Path: paths[srAPI.Type_TYPE_NAMESPACE_NETWORK],
 		})
 	}
 

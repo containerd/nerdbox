@@ -16,7 +16,7 @@
    limitations under the License.
 */
 
-package namespaces
+package sharedresources
 
 import (
 	"context"
@@ -29,17 +29,17 @@ import (
 	"github.com/containerd/plugin/registry"
 	"github.com/containerd/ttrpc"
 
-	api "github.com/containerd/nerdbox/api/services/namespaces/v1"
-	"github.com/containerd/nerdbox/internal/vminit/namespaces"
+	api "github.com/containerd/nerdbox/api/services/sharedresources/v1"
+	"github.com/containerd/nerdbox/internal/vminit/sharedresources"
 	"github.com/containerd/nerdbox/plugins"
 )
 
-var _ api.TTRPCNamespaceManagerService = &service{}
+var _ api.TTRPCSharedResourcesService = &service{}
 
 func init() {
 	registry.Register(&plugin.Registration{
 		Type:   plugins.TTRPCPlugin,
-		ID:     "namespaces",
+		ID:     "sharedresources",
 		InitFn: initFunc,
 	})
 }
@@ -48,15 +48,15 @@ func initFunc(ic *plugin.InitContext) (interface{}, error) {
 	return &service{}, nil
 }
 
-// service implements the NamespaceManager TTRPC service by delegating to a
-// namespaces.Manager, translating the generated protobuf types to and from
-// that package's own domain types.
+// service implements the SharedResources TTRPC service by delegating to a
+// sharedresources.Manager, translating the generated protobuf types to and
+// from that package's own domain types.
 type service struct {
-	mgr namespaces.Manager
+	mgr sharedresources.Manager
 }
 
 func (s *service) RegisterTTRPC(server *ttrpc.Server) error {
-	api.RegisterTTRPCNamespaceManagerService(server, s)
+	api.RegisterTTRPCSharedResourcesService(server, s)
 	return nil
 }
 
@@ -66,19 +66,19 @@ func (s *service) Create(ctx context.Context, r *api.CreateRequest) (*api.Create
 		return nil, errgrpc.ToGRPC(err)
 	}
 
-	paths, err := s.mgr.Create(ctx, r.GetID(), types)
+	paths, err := s.mgr.Create(ctx, r.GetID(), types, r.GetDevShmSizeBytes())
 	if err != nil {
 		return nil, errgrpc.ToGRPC(toErrdefs(err))
 	}
 
 	// One entry per requested type, in request order.
-	resp := &api.CreateResponse{Namespaces: make([]*api.Namespace, 0, len(types))}
+	resp := &api.CreateResponse{Resources: make([]*api.SharedResource, 0, len(types))}
 	for _, typ := range types {
 		path, ok := paths[typ]
 		if !ok {
-			return nil, errgrpc.ToGRPC(fmt.Errorf("no path for %s namespace: %w", typ, errdefs.ErrFailedPrecondition))
+			return nil, errgrpc.ToGRPC(fmt.Errorf("no path for %s resource: %w", typ, errdefs.ErrFailedPrecondition))
 		}
-		resp.Namespaces = append(resp.Namespaces, &api.Namespace{
+		resp.Resources = append(resp.Resources, &api.SharedResource{
 			Type: toAPIType(typ),
 			Path: path,
 		})
@@ -99,40 +99,44 @@ func (s *service) Delete(ctx context.Context, r *api.DeleteRequest) (*api.Delete
 
 // fromAPITypes converts requested wire types to domain types, rejecting
 // unspecified or unrecognized values.
-func fromAPITypes(in []api.NamespaceType) ([]namespaces.Type, error) {
-	out := make([]namespaces.Type, 0, len(in))
+func fromAPITypes(in []api.Type) ([]sharedresources.Type, error) {
+	out := make([]sharedresources.Type, 0, len(in))
 	for _, t := range in {
 		switch t {
-		case api.NamespaceType_NAMESPACE_TYPE_IPC:
-			out = append(out, namespaces.TypeIPC)
-		case api.NamespaceType_NAMESPACE_TYPE_PID:
-			out = append(out, namespaces.TypePID)
-		case api.NamespaceType_NAMESPACE_TYPE_NETWORK:
-			out = append(out, namespaces.TypeNetwork)
+		case api.Type_TYPE_NAMESPACE_IPC:
+			out = append(out, sharedresources.TypeNamespaceIPC)
+		case api.Type_TYPE_NAMESPACE_PID:
+			out = append(out, sharedresources.TypeNamespacePID)
+		case api.Type_TYPE_NAMESPACE_NETWORK:
+			out = append(out, sharedresources.TypeNamespaceNetwork)
+		case api.Type_TYPE_DEVSHM:
+			out = append(out, sharedresources.TypeDevShm)
 		default:
-			return nil, fmt.Errorf("unsupported namespace type %q: %w", t, errdefs.ErrInvalidArgument)
+			return nil, fmt.Errorf("unsupported resource type %q: %w", t, errdefs.ErrInvalidArgument)
 		}
 	}
 	return out, nil
 }
 
-func toAPIType(t namespaces.Type) api.NamespaceType {
+func toAPIType(t sharedresources.Type) api.Type {
 	switch t {
-	case namespaces.TypeIPC:
-		return api.NamespaceType_NAMESPACE_TYPE_IPC
-	case namespaces.TypePID:
-		return api.NamespaceType_NAMESPACE_TYPE_PID
-	case namespaces.TypeNetwork:
-		return api.NamespaceType_NAMESPACE_TYPE_NETWORK
+	case sharedresources.TypeNamespaceIPC:
+		return api.Type_TYPE_NAMESPACE_IPC
+	case sharedresources.TypeNamespacePID:
+		return api.Type_TYPE_NAMESPACE_PID
+	case sharedresources.TypeNamespaceNetwork:
+		return api.Type_TYPE_NAMESPACE_NETWORK
+	case sharedresources.TypeDevShm:
+		return api.Type_TYPE_DEVSHM
 	default:
-		return api.NamespaceType_NAMESPACE_TYPE_UNSPECIFIED
+		return api.Type_TYPE_UNSPECIFIED
 	}
 }
 
 // toErrdefs maps the Manager's validation failures onto an errdefs error so
 // the caller sees InvalidArgument rather than Unknown.
 func toErrdefs(err error) error {
-	if errors.Is(err, namespaces.ErrInvalidArgument) {
+	if errors.Is(err, sharedresources.ErrInvalidArgument) {
 		return fmt.Errorf("%s: %w", err.Error(), errdefs.ErrInvalidArgument)
 	}
 	return err

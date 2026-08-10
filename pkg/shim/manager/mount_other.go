@@ -24,3 +24,9 @@ import (
 )
 
 func cloneMntNs(_ context.Context, _ *exec.Cmd) bool { return false }
+
+// IsolateMountPropagation is a no-op on this platform: MountNSIsolatedEnv
+// is never set here, since cloneMntNs never sets CLONE_NEWNS, so nothing
+// ever calls this. It exists so callers can build without a platform
+// check.
+func IsolateMountPropagation() error { return nil }

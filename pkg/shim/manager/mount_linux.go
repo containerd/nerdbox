@@ -23,6 +23,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // cloneMntNs configures the child command to start in a new mount
@@ -92,12 +94,21 @@ import (
 // unprivileged user namespaces), the shim runs without mount isolation
 // and this function returns false.
 // cloneMntNs returns true if user namespace clone flags were set.
+//
+// Whenever CLONE_NEWNS is set (every case below except the AppArmor
+// restriction), MountNSIsolatedEnv is also added to the child's
+// environment, so the child itself knows to call IsolateMountPropagation
+// early in its own startup — see that function's doc comment for why a
+// new mount namespace alone does not stop mounts from leaking to the
+// host, and MountNSIsolatedEnv's for why the child needs an explicit
+// signal to know it should.
 func cloneMntNs(_ context.Context, cmd *exec.Cmd) bool {
 	if os.Geteuid() == 0 {
 		// Already real root: a plain mount namespace is enough, and
 		// avoids demoting into a non-initial user namespace (which would
 		// break mounts of real block-device filesystems).
 		cmd.SysProcAttr.Cloneflags |= syscall.CLONE_NEWNS
+		cmd.Env = append(cmd.Env, MountNSIsolatedEnv+"=1")
 		return false
 	}
 
@@ -120,7 +131,30 @@ func cloneMntNs(_ context.Context, cmd *exec.Cmd) bool {
 	cmd.SysProcAttr.GidMappings = []syscall.SysProcIDMap{
 		{ContainerID: 0, HostID: gid, Size: 1},
 	}
+	cmd.Env = append(cmd.Env, MountNSIsolatedEnv+"=1")
 	return true
+}
+
+// IsolateMountPropagation detaches the calling process's entire mount tree
+// from whatever propagation peer group it inherited.
+//
+// CLONE_NEWNS alone is not enough to stop the mounts cloneMntNs's child
+// makes (container rootfs assembly: overlay/bind mounts under its
+// bundle-specific state directory) from leaking to the host. The new
+// namespace starts as a copy of the parent's mount table with each
+// mount's propagation setting preserved, so a mount that was "shared" in
+// the parent (the default on most systemd-managed hosts, including for
+// "/") is still shared, in the same peer group, in the copy — meaning any
+// submount made later inside the new namespace still propagates out to
+// every other member of that peer group, including the host's own
+// namespace. This must run before any such mount is made.
+//
+// MS_SLAVE (rather than MS_PRIVATE) is deliberate: it stops propagation
+// in the leak-prone direction (out to the host) while leaving the
+// process's own view still receiving mount/unmount events made by the
+// host afterward, which nothing here needs to give up.
+func IsolateMountPropagation() error {
+	return unix.Mount("", "/", "", unix.MS_REC|unix.MS_SLAVE, "")
 }
 
 // apparmorRestrictsUserns checks if the kernel sysctl

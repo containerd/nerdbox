@@ -18,8 +18,10 @@ package main
 
 import (
 	"context"
+	"os"
 
 	"github.com/containerd/containerd/v2/pkg/shim"
+	"github.com/containerd/log"
 
 	"github.com/containerd/nerdbox/pkg/logging"
 	"github.com/containerd/nerdbox/pkg/shim/manager"
@@ -38,6 +40,18 @@ func init() {
 }
 
 func main() {
+	// Only ever set on the shim server child cloneMntNs itself launched
+	// (see manager.MountNSIsolatedEnv), so this never runs for containerd's
+	// own separate, direct "start"/"delete" invocations of this same
+	// binary. Must happen before any container-related mount, so as early
+	// in startup as possible.
+	if os.Getenv(manager.MountNSIsolatedEnv) == "1" {
+		if err := manager.IsolateMountPropagation(); err != nil {
+			log.G(context.Background()).WithError(err).Warn(
+				"failed to isolate shim mount namespace propagation; container rootfs mounts may leak into the host")
+		}
+	}
+
 	shim.RunShim(context.Background(), manager.New("io.containerd.nerdbox.v1"),
 		func(c *shim.Config) {
 			c.NoSetupLogger = true

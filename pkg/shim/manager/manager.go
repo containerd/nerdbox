@@ -26,6 +26,21 @@ import (
 	"github.com/containerd/containerd/v2/pkg/shim"
 )
 
+// MountNSIsolatedEnv is set (to "1") on the shim server child's own
+// environment whenever cloneMntNs actually isolated its mount namespace
+// (CLONE_NEWNS). The shim's own main, once running as that child, checks
+// for this and calls IsolateMountPropagation if it's set — see that
+// function's doc comment for why the isolation itself isn't enough
+// without it.
+//
+// An env var rather than, say, a CLI flag or cloneMntNs's own return value:
+// it needs to reach the child process specifically (not whichever
+// invocation of the shim binary containerd made directly, e.g. its
+// separate "start"/"delete" actions, which never go through cloneMntNs at
+// all), and cloneMntNs's boolean return is already used by its caller for
+// an unrelated purpose (whether to retry without a user namespace).
+const MountNSIsolatedEnv = "NERDBOX_MOUNT_NS_ISOLATED"
+
 // New returns a shim manager implementation that launches the nerdbox shim
 // process. The name is the runtime identifier reported to containerd (for
 // example "io.containerd.nerdbox.v1"). External callers building variants

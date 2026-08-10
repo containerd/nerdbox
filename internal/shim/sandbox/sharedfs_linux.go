@@ -218,6 +218,7 @@ func (s *SharedFS) unshareAll(ctx context.Context) error {
 			errs = append(errs, err)
 		}
 	}
+
 	if len(errs) > 0 {
 		return fmt.Errorf("unshare all: %v", errs)
 	}

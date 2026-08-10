@@ -35,7 +35,7 @@ facilities.
 │  │  │  ┌──────┐       ┌──────┐       ┌──────┐            │  │    │
 │  │  │  │  /   │       │  /   │       │  /   │            │  │    │
 │  │  │  └──────┘       └──────┘       └──────┘            │  │    │
-│  │  │  shared: network, IPC, /dev/shm (kernel)            │  │    │
+│  │  │  shared, on demand: network, IPC, PID, /dev/shm    │  │    │
 │  │  └─────────────────────────────────────────────────────┘  │    │
 │  └────────────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────────────┘
@@ -73,9 +73,11 @@ namespace setup, cgroup accounting, syscall filtering — is managed
 | Mount namespaces | VM kernel | Each container gets its own mount namespace; rootfs is bind-mounted from the virtiofs share |
 | cgroups (v2 unified) | VM kernel | One cgroup per container, under vminitd's cgroup tree |
 | Network namespaces | VM kernel | Containers share the VM init namespace when the sandbox has no NIC (nothing for a namespace to scope); a shared per-sandbox namespace is created on demand when it does (see [Sandbox networking summary](#sandbox-networking-summary)); per-container isolation is supported via OCI spec |
-| IPC / /dev/shm | VM kernel | Shared IPC namespace, created on demand, when CRI's pod-level IPC sharing is requested (see [Shared guest namespaces](#shared-guest-namespaces)); otherwise each container gets its own |
+| IPC namespace | VM kernel | Shared, created on demand, when CRI's pod-level IPC sharing is requested (see [Shared guest namespaces](#shared-guest-namespaces)); otherwise each container gets its own |
 | PID namespace | VM kernel | Own PID namespace by default; joins a shared, on-demand PID namespace when CRI's pod-level PID sharing is requested (see [Shared guest namespaces](#shared-guest-namespaces)) |
-| Hostname / UTS | VM kernel | Inherited from the VM init namespace unless overridden by the container OCI spec |
+| /dev/shm | VM kernel | A container sharing IPC bind-mounts a shared, size-limited guest tmpfs; otherwise its own private one — see [Shared `/dev/shm`](#shared-devshm) |
+| UTS namespace | VM kernel | Always its own, fresh namespace — there is no sharing mechanism for this type, unlike network/IPC/PID |
+| Hostname | Host shim, pushed to guest | Set from the pod's CRI config on every member container's own UTS namespace — enough to give them all the same observable hostname without actually sharing the namespace |
 
 ## Container filesystem
 
@@ -93,8 +95,11 @@ Per-container tree:
   /run/containers/<container-id>/volumes/0 ← first extra volume (if any)
 ```
 
-The host-side assembly **mounts the rootfs at the correct path or fails**.
-The mount type is determined by the snapshotter and containerd:
+The host-side assembly mounts the rootfs at the correct path, or fails the
+container run if a required mount cannot be established. (An empty mount
+list — legal for a from-scratch container with no image content — is not an
+error: it simply leaves an empty directory in place.) The mount type is
+determined by the snapshotter and containerd:
 
 - **Overlay mount** — overlayfs over multiple layer directories (the common
   case with the native overlayfs snapshotter).
@@ -153,6 +158,45 @@ containers in one pod — kubelet provisions a single host directory per
 spec that references it, so all of them end up bind-mounting identical
 content, with no sandbox-specific "shared volume" logic required.
 
+### Shared `/dev/shm`
+
+CRI sends `/dev/shm` as an ordinary, independent tmpfs mount
+(`{Type: "tmpfs", Source: "shm", Options: [..., "size=<n>k"]}`) on **every**
+container's spec — the mount itself carries no signal about whether the pod
+actually wants it shared. That signal instead comes from the same place
+namespace sharing does: `containerSharesIPC` (`internal/shim/task/devshm.go`)
+checks for a non-empty-`Path` IPC namespace entry, the identical condition
+[`sanitizeNamespaces`](#mechanism) uses to decide whether a container joins
+the shared guest IPC namespace.
+
+When that signal is present, `shareDevShmMounter.FromBundle` rewrites the
+`/dev/shm` mount from `tmpfs` to a `bind` mount pointing at a per-sandbox
+tmpfs created on demand in the **guest**, by the same `SharedResources`
+mechanism [Shared guest namespaces](#shared-guest-namespaces) uses for
+network/IPC/PID (`internal/vminit/sharedresources.TypeDevShm`) — a real,
+`size=`-limited tmpfs mounted once per sandbox under `/run/devshm/<id>` in
+vminitd's own root mount namespace, whose size comes from `devShmSize`
+parsing the container's own CRI-provided `size=` option (64MiB fallback).
+Every member container that shares IPC bind-mounts the *same* guest path
+onto its own `/dev/shm`, so it is real, size-enforced guest RAM shared
+across containers — not a host-backed directory standing in for one. When
+the signal is absent, the mount is left untouched and each container keeps
+its own independent, private tmpfs, matching CRI's non-shared default.
+
+This tmpfs is mounted **outside** the `containers` virtiofs tree entirely,
+in vminitd's own root mount namespace, rather than living inside the
+directory `ShareRootfs`/`ShareVolume` expose via virtiofs: a member
+container's own crun bind-mounts `/run/devshm/<id>` directly, the same way
+it already joins `/run/netns/<id>` and `/run/ipcns/<id>` for shared
+network/IPC namespaces, with no virtiofs involved at any point. This also
+means it is real guest RAM with a real, kernel-enforced size limit, rather
+than something backed by host disk and reached over virtiofs.
+`mmap(MAP_SHARED)` writes from one container are visible to
+`mmap(MAP_SHARED)` reads from another through ordinary Linux page-cache
+coherence on the shared inode — since every sharing container's bind mount
+ultimately resolves to the same tmpfs inode in the same guest kernel, this
+holds regardless of virtiofs's own cache behavior.
+
 ## Networking
 
 Networking involves two independent layers that are often confused:
@@ -173,8 +217,8 @@ involved. The mechanism is the long-standing CNI "persistent netns" technique:
 1. A dedicated goroutine calls `runtime.LockOSThread()` and never unlocks,
    so Go retires the underlying OS thread when the goroutine exits (Go 1.10+).
 2. On that locked thread, `unshare(CLONE_NEWNET)` creates a new, empty
-   network namespace for that thread only
-   (`pkg/netns/netns_linux.go:116` in containerd).
+   network namespace for that thread only (containerd's `pkg/netns`
+   package).
 3. The thread's netns is bind-mounted to a file under `/var/run/netns/`
    (or the configured state dir) via `mount("/proc/<containerd-pid>/task/<tid>/ns/net",
    "/var/run/netns/cni-<random>", MS_BIND)`.
@@ -215,14 +259,15 @@ For host-network pods (`NamespaceMode_NODE`), no netns is created and
 **At `CreateSandbox` time** the shim opens the path `O_RDONLY|O_CLOEXEC` and
 holds the FD open. This second reference to the netns (alongside the
 bind-mount) keeps it alive even if the bind-mount were removed prematurely,
-and satisfies the CRI contract. The shim releases this FD after `StopSandbox`.
+and satisfies the CRI contract. The shim releases this FD as part of
+handling `StopSandbox`, not afterward.
 
 ```
 CRI layer                        nerdbox shim
     │                                │
     │── CreateSandbox(netns_path) ──►│  opens FD to netns_path
     │                                │  (secondary pin on the bind-mount)
-    │── StartSandbox ───────────────►│  libkrun FFI thread enters netns
+    │── StartSandbox ───────────────►│  setns into netns, just before boot
     │                                │  VM boots
     │                                │  FD remains open
     │   [ pod running ]              │
@@ -233,46 +278,43 @@ CRI layer                        nerdbox shim
     │── ShutdownSandbox ────────────►│  final cleanup
 ```
 
-**At `StartSandbox` time** the netns path is passed to the libkrun FFI
-executor thread (see [Layer 2](#layer-2--vm-network-stack) below), which
-enters the pod netns before any libkrun calls open host resources.
+**At `StartSandbox` time** the netns path is stored on the `vmInstance` and
+used just before boot (see [Layer 2](#layer-2--vm-network-stack) below):
+`setns(2)` runs immediately before `krun_start_enter`, the last libkrun call
+made on the boot path, so it takes effect right before libkrun opens any
+host-side network resources.
 
 ### Layer 2 — VM network stack
 
-#### The libkrun FFI executor
+#### Entering the pod netns before boot
 
-All libkrun FFI calls for a VM context (`krun_create_ctx` through
-`krun_start_enter`) run on a **single dedicated OS thread** (the "executor
-thread") that holds `runtime.LockOSThread()` for its entire lifetime. This is
-necessary because:
+Configuring a VM context (`krun_create_ctx` through the calls that add
+disks, filesystems, NICs, and CPU/memory) does not itself open any
+network-namespace-sensitive host resources, and can run on any goroutine —
+Go's scheduler is free to migrate it across OS threads. Only the final step,
+`krun_start_enter`, matters for namespace placement:
 
-- libkrun opens host-side resources (NIC AF_UNIX sockets, TSI host sockets)
-  on the calling thread.
-- libkrun's internal worker threads (vCPU, virtio backends, TSI net workers)
-  are spawned as children of the thread that calls `krun_start_enter` and
-  inherit its network namespace.
-- Go's scheduler may migrate goroutines across OS threads; without pinning,
-  each `krun_*` call could run in a different namespace.
+- `krun_start_enter` is what actually opens libkrun's host-side network
+  resources (NIC AF_UNIX sockets, TSI host sockets) and spawns libkrun's
+  internal worker threads (vCPU, virtio backends, TSI net workers) — those
+  workers inherit the network namespace of the thread that called it.
+- So the calling thread's network namespace at the moment of that one call
+  is what determines which namespace all of libkrun's networking ends up in.
 
-When `netns_path` is non-empty, the executor thread calls `setns(2)` into the
-pod netns **before** `krun_create_ctx`. Every subsequent libkrun call and
-every thread libkrun spawns thereafter is automatically inside the pod netns.
+`vmInstance.Start` accounts for this by running `krun_start_enter` inside a
+dedicated goroutine that calls `runtime.LockOSThread()` and, when a
+`netns_path` was configured, calls `setns(2)` into the pod netns
+**immediately before** `krun_start_enter` — as the last thing that happens
+before boot, not the first:
 
 ```
-localsandbox.Start()
+vmInstance.Start()
     │
-    ├── vmm.NewInstance()
-    │       └── [executor goroutine: LockOSThread, stays alive]
-    │
-    ├── vmi.SetNetnsPath(netns_path)        ← setns on executor thread
-    │
-    ├── vmi.AddDisk(...)                    ← all on executor thread
-    ├── vmi.AddFS(...)                      ← all on executor thread
-    ├── vmi.AddNIC(...)                     ← NIC AF_UNIX socket opened in pod netns
-    ├── vmi.SetCPUAndMemory(...)
-    │
-    └── vmi.Start()
-            └── krun_start_enter            ← blocks on executor thread
+    └── goroutine: runtime.LockOSThread()
+            │
+            ├── setns(pod netns)            ← only if netns_path was set
+            │
+            └── krun_start_enter            ← blocks on this thread
                     │
                     ├── vCPU thread         ← inherits pod netns
                     ├── virtio workers      ← inherits pod netns
@@ -281,18 +323,24 @@ localsandbox.Start()
                             └── host connect(AF_INET, ...) ← in pod netns
 ```
 
-Control-plane goroutines (the shim TTRPC listener, vsock accept, vminitd
-connection) operate over FD-based UDS/vsock connections established before
-`setns` and are unaffected by the namespace change.
+`AddNIC` itself only registers the NIC's socket path with libkrun (the FD
+field is left at -1); libkrun opens the actual AF_UNIX socket to that path
+itself, from inside `krun_start_enter`, so it too lands in the pod netns by
+the same mechanism.
 
-The executor's in-process `setns` is sufficient on its own: a member
-container's outbound traffic originates from the pinned pod netns, with
-no re-exec or trampoline process required.
+Control-plane goroutines (the shim TTRPC listener, vsock accept, vminitd
+connection) operate over FD-based UDS/vsock connections established
+independently of this goroutine and are unaffected by the namespace change.
+
+The in-process `setns` is sufficient on its own: a member container's
+outbound traffic originates from the pinned pod netns, with no re-exec or
+trampoline process required.
 
 #### TSI (Transparent Socket Impersonation)
 
 TSI is a compiled-in feature of the guest kernel (`CONFIG_TSI=y`, patches
-`0009`–`0012` in `kernel/patches/`), gated at runtime by the `tsi_hijack`
+`0011`–`0012` in `kernel/patches/`; `0009`–`0010` are generic vsock support
+patches, not TSI-specific), gated at runtime by the `tsi_hijack`
 kernel parameter, which defaults to **off**. The shim does not set it: libkrun
 does, and only when no virtio-net interface has been attached. TSI and a NIC
 are alternative ways to provide the same connectivity, so libkrun enables TSI
@@ -303,16 +351,17 @@ rejecting proxy requests when the hijack is disabled.
 Inside the VM, the patched kernel intercepts `AF_INET` and `AF_INET6` socket
 calls (`SOCK_STREAM`/`SOCK_DGRAM`, i.e. TCP/UDP). When a container opens a TCP connection, the kernel transparently
 rewrites it to `AF_TSI` and proxies it over vsock to libkrun, which performs
-the real `connect()` on the host — now inside the pod netns (after the
-executor thread's `setns`).
+the real `connect()` on the host — now inside the pod netns, since the
+worker performing it descends from the `krun_start_enter` call made just
+after `setns` (see [Layer 2](#layer-2--vm-network-stack)).
 
 ```
 Container (guest)                    Host (pod netns)
                                      ┌──────────────────────┐
  connect(AF_INET, 1.2.3.4:80)        │  libkrun TSI worker  │
-       │                             │  (executor thread     │
-  TSI kernel intercept               │   lineage, pod netns) │
-       │                             │                       │
+       │                             │  (descends from the   │
+  TSI kernel intercept               │   krun_start_enter    │
+       │                             │   thread, pod netns)  │
        │ ── vsock ──────────────────►│  connect(1.2.3.4:80)  │
                                      │  source: pod IP        │
                                      └──────────────────────┘
@@ -329,11 +378,13 @@ existing bundle mount, a per-container DNS annotation
 (`io.containerd.nerdbox.ctr.dns`), the pod's CRI `DNSConfig`, and finally a
 copy of the host's own resolv.conf. When falling back to the host's
 resolv.conf, `addResolvConf` (`internal/shim/task/ctrnetworking.go`)
-prefers systemd-resolved's "full" resolv.conf
-(`/run/systemd/resolve/resolv.conf`, listing the real upstream
-nameservers) over the stub file systemd-resolved normally publishes at
-`/etc/resolv.conf` (a loopback address, unreachable from inside the guest
-in the default no-NIC/TSI configuration).
+inspects the nameserver entries: only if **every** nameserver in
+`/etc/resolv.conf` is a loopback address (the systemd-resolved stub
+configuration, unreachable from inside the guest in the default
+no-NIC/TSI configuration) does it substitute systemd-resolved's "full"
+resolv.conf (`/run/systemd/resolve/resolv.conf`, listing the real upstream
+nameservers) instead. A host not using systemd-resolved, or one with a mix
+of loopback and real nameservers, is left as-is.
 
 #### TSI and guest network namespaces
 
@@ -342,9 +393,10 @@ namespace-aware routing decision, and the resulting vsock channel to
 `VMADDR_CID_HOST` is not real IP routing — so it is not scoped by, and
 cannot be filtered via, guest-internal network namespaces. The
 host-reachability boundary is established entirely on the host side: the pod
-netns the shim pins and the executor thread enters via `setns` (see
-[Layer 1](#layer-1--host-network-sandbox-linux-netns) above) determines which
-host network TSI's proxied connections land in.
+netns the shim pins and enters via `setns` just before boot (see
+[Layer 1](#layer-1--host-network-sandbox-linux-netns) and
+[Layer 2](#layer-2--vm-network-stack) above) determines which host network
+TSI's proxied connections land in.
 
 Because of this, the shim does not create a guest network namespace at all
 when TSI is carrying container traffic: one would be created, joined, and then
@@ -370,9 +422,9 @@ virtio-net NIC is attached to the VM. The NIC is backed by an AF_UNIX socket
 (`krun_add_net_unixgram` or `krun_add_net_unixstream`) that connects libkrun
 to an **externally-run** L2 network provider.
 
-This AF_UNIX socket is opened on the executor thread (already in the pod
-netns), so the connection to the external provider originates from the pod
-netns.
+Like the TSI host sockets, this AF_UNIX socket is opened by libkrun from
+inside `krun_start_enter` (already in the pod netns by then), so the
+connection to the external provider originates from the pod netns.
 
 Supported external providers:
 - **passt** (unixgram mode) — passt-style helpers that exchange complete L2
@@ -408,8 +460,12 @@ The NIC is configured before VM boot and cannot be changed while the VM runs
 
 ### What socketforward is not
 
-The socketforward service (vsock port 1026) forwards **AF_UNIX domain sockets**
-host↔guest over vsock streams. It is not IP networking: both ends are
+The socketforward service is a TTRPC service reached over the same control
+channel as everything else (vsock port 1025 — see
+[TTRPC communication](#ttrpc-communication)); it forwards **AF_UNIX domain
+sockets** host↔guest. Only the forwarded payload itself — the data read from
+and written to the forwarded UNIX sockets — is what rides the separate
+streaming channel on port 1026. It is not IP networking: both ends are
 `net.Listen("unix", ...)` / `net.Dial("unix", ...)`. AF_INET/TCP
 networking is handled exclusively by TSI (default) or the virtio-net NIC
 (opt-in). These three mechanisms are independent and must not be conflated.
@@ -418,8 +474,8 @@ networking is handled exclusively by TSI (default) or the virtio-net NIC
 
 | Scenario | Host netns | VM network | Guest netns |
 |---|---|---|---|
-| No annotation (default) | Pinned (FD + entered by executor thread) | TSI — TCP/UDP through pod netns | None; containers share the VM's own |
-| `io.containerd.nerdbox.network.*` | Pinned (FD + entered by executor thread) | virtio-net NIC; AF_UNIX to external provider from pod netns | Shared per-sandbox namespace |
+| No annotation (default) | Pinned (FD); entered via `setns` just before boot | TSI — TCP/UDP through pod netns | None; containers share the VM's own |
+| `io.containerd.nerdbox.network.*` | Pinned (FD); entered via `setns` just before boot | virtio-net NIC; AF_UNIX to external provider from pod netns | Shared per-sandbox namespace |
 | Kubernetes CRI pod | Created by containerd CRI (`unshare` + bind-mount); CNI ADD before sandbox | Either of the above, with full pod netns integration | As above |
 | `ctr run` (no sandbox) | No netns (legacy single-container path) | TSI or virtio in shim's own netns | n/a (legacy path) |
 | Host-network pod (`NamespaceMode_NODE`) | Not created; `netns_path` is empty | TSI or virtio in shim's own netns | As above |
@@ -446,11 +502,18 @@ copying the host path verbatim.
 ### Mechanism
 
 Guest namespaces are created **on demand** by a guest-side TTRPC service,
-`NamespaceManager` (`internal/vminit/namespaces`, registered as plugin
-`namespaces`). Namespaces are addressed by a group id — the sandbox ID — plus
-a type, and are created once per `(id, type)` and reused thereafter. The guest
-returns the path each namespace is pinned at, so the host never hardcodes a
-guest path.
+`SharedResources` (`internal/vminit/sharedresources`, registered as plugin
+`sharedresources`). Resources are addressed by a group id — the sandbox ID —
+plus a type, and are created once per `(id, type)` and reused thereafter.
+The guest returns the path each resource is pinned at, so the host never
+hardcodes a guest path.
+
+The same service also manages one resource that is not actually an OCI
+namespace: the tmpfs backing a sandbox's shared `/dev/shm` (`TypeDevShm`;
+see [Shared `/dev/shm`](#shared-devshm)). It is addressed, created, and
+reused the same way — "create once per group id, return a guest path" is
+the same problem either way — so `SharedResources` covers namespaces and
+this kind of resource together rather than needing a separate service.
 
 Crucially, a caller requests **only the types it needs**, because the cost is
 not uniform:
@@ -460,7 +523,11 @@ not uniform:
   `CLONE_NEWPID`, take effect on the calling thread immediately), and
   bind-mounting the thread's namespace file to `/run/netns/<id>` or
   `/run/ipcns/<id>`. The bind mount alone keeps the namespace alive, so the
-  creating goroutine does not need to stay running. Cheap.
+  creating goroutine does not need to stay running. Cheap. For network
+  specifically, the fresh namespace also has its loopback interface (`lo`)
+  brought up before the bind-mount step — a new network namespace's `lo`
+  starts administratively down, and without this step, container-to-container
+  loopback traffic within the shared namespace would fail.
 - **PID**: cannot work that way. `unshare(CLONE_NEWPID)` does not move the
   caller into the new namespace — only the caller's *next child* becomes its
   PID 1 — so a thread can never itself be PID 1, and
@@ -468,26 +535,46 @@ not uniform:
   first child exists. The kernel also destroys a PID namespace the instant
   its PID 1 exits, after which no further process can be created in it, so a
   bind mount cannot substitute for a live process the way it can for the
-  other types. The guest therefore starts a real anchor process with
-  `SysProcAttr.Cloneflags: CLONE_NEWPID` and bind-mounts
-  `/proc/<anchor-pid>/ns/pid` to `/run/pidns/<id>`. The anchor ignores every
-  signal except SIGKILL and reaps any process reparented to it (a
-  PID-1-of-namespace duty).
+  other types. The guest therefore starts a real anchor process,
+  `/sbin/nerdbox-pause` (a small `no_std` Rust binary, `crates/pause`), with
+  `SysProcAttr.Cloneflags: CLONE_NEWPID`, and bind-mounts
+  `/proc/<anchor-pid>/ns/pid` to `/run/pidns/<id>`. The anchor ignores
+  SIGINT and SIGTERM (`SIG_IGN`) so it cannot be torn down by a stray signal
+  delivered inside the shared namespace, and reaps reparented children via
+  `SA_NOCLDWAIT` (a PID-1-of-namespace duty) rather than an explicit
+  `wait()` loop.
+- **DevShm**: like network/IPC, needs no anchor process — a plain
+  `mount("tmpfs", ...)` at `/run/devshm/<id>` persists on its own for as
+  long as anything references it, with no separate process or bind-mount
+  step required to keep it alive. Cheap, and the same "only if actually
+  requested" reasoning applies: a pod that never shares IPC never causes
+  this tmpfs to be created either, since `shareDevShmMounter` only asks for
+  it when `containerSharesIPC` is true.
 
 Requesting only what is needed matters most for the PID namespace: Kubernetes
 shares pod IPC by default but shares PID only when explicitly asked, so a
 service that created both together would spawn an anchor process for
 effectively every pod, whether or not anything used it.
 
+Sharing a PID namespace only changes what a container's processes can *see*
+via `/proc` — it does not change what the shim's `Kill`/`Pids` TTRPC
+handlers can *target*. Those requests identify a process by container ID
+and exec ID, never by raw PID, and are resolved against that specific
+container's own process table (`Kill`) or by running `crun ps
+<container-id>` scoped to that container's own cgroup (`Pids`). A signal
+sent to one container therefore cannot land on a PID-namespace peer's
+process, even though that peer's processes are visible to it.
+
 On the host side, `internal/shim/task/namespaces.go`'s `sanitizeNamespaces`
 bundle transformer determines which namespaces a container needs, fetches
-them from the guest in a single `NamespaceManager.Create` call (memoized per
-`Task.Create` via `sharedNamespaces`), and rewrites the spec's namespace
-paths to the returned guest paths. Any IPC or PID namespace entry with a
-non-empty incoming `Path` is treated as "share within this sandbox". A
-container whose spec has no such entry at all (the common case: no
-pod-level sharing requested) never triggers the guest RPC for that type, and
-therefore never causes the guest to create the namespace on its behalf.
+them from the guest in a single `SharedResources.Create` call (memoized per
+`Task.Create` via `sharedResources`, in `internal/shim/task/sharedresources.go`),
+and rewrites the spec's namespace paths to the returned guest paths. Any IPC
+or PID namespace entry with a non-empty incoming `Path` is treated as
+"share within this sandbox". A container whose spec has no such entry at
+all (the common case: no pod-level sharing requested) never triggers the
+guest RPC for that type, and therefore never causes the guest to create the
+namespace on its behalf.
 
 ### HostPID / HostIPC vs. PodPID
 
@@ -508,10 +595,12 @@ containerd                      nerdbox shim                  VM
     │   (netns_path)                 │  create shared fs root
     │                                │  open netns FD (pin)
     │
-    │── StartSandbox ───────────────►│  parse bundle for resources/NICs
-    │                                │  start executor thread (LockOSThread)
-    │                                │  setns into pod netns (if set)
-    │                                │  add virtiofs "containers" share
+    │── StartSandbox ───────────────►│  add virtiofs "containers" share
+    │                                │  parse bundle for resources/NICs
+    │                                │  configure VM context (disks, FS, NICs)
+    │                                │  [goroutine: LockOSThread,
+    │                                │   setns into pod netns (if set),
+    │                                │   krun_start_enter]
     │                                │  start VM ────────────────────►│ boot
     │                                │                                 │ vminitd starts
     │                                │◄── TTRPC connect (vsock 1025) ──│
@@ -554,7 +643,8 @@ Host shim                           vminitd (guest)
     │◄── vsock port 1025 (TTRPC) ──────►│
     │    Task, Bundle, Mount,            │
     │    System, SocketForward,          │
-    │    Events services                 │
+    │    Events, SharedResources,        │
+    │    Transfer services               │
     │                                   │
     │◄── vsock port 1026 (streams) ────►│
     │    stdio (stdout/stderr/stdin)     │
@@ -576,17 +666,68 @@ guest CID in advance.
   namespace, and the kernel restricts mounting real block-device-backed
   filesystems (ext4, used for the sandbox scratch/overlay mounts) to the
   initial user namespace regardless of capabilities held within a descendant
-  one. Either way, mounts created for container rootfs assembly are isolated
-  from the host and cleaned up automatically when the shim exits.
+  one. Whenever `CLONE_NEWNS` is actually applied (both the real-root branch
+  and a successful userns branch — not the apparmor-restricted fallback
+  described below, which sets no clone flags at all and shares the host's
+  mount namespace directly), the shim's new mount namespace is also remounted
+  `MS_REC | MS_SLAVE` on `/` before use. Without this, a mount namespace
+  created under a host root whose own `/` has `shared` propagation (the
+  common default) leaks every mount the shim makes back out into the host's
+  mount table; `MS_SLAVE` stops that leak in the host-visible direction while
+  still letting the shim's namespace receive host-side mount/unmount events.
+  Mounts made for container rootfs assembly are explicitly torn down by
+  `SharedFS.Unshare`/`UnshareAll` on `Task.Delete`/`StopSandbox` — nothing
+  relies on process exit to clean them up. This also holds when the shim
+  exits *without* running that cleanup — e.g. `SIGKILL`, a panic, or an OOM
+  kill — because `MS_SLAVE` means the host's mount table never had a copy of
+  the shim's mounts in the first place; the kernel discards them
+  unconditionally the moment the shim's mount namespace has no more
+  references, regardless of how the shim exited. (Confirmed directly:
+  killing a running shim with `SIGKILL` left zero entries for its bundle in
+  the host's own mount table, and the kernel promptly reused the freed mount
+  namespace's inode number for the next sandbox — evidence the namespace and
+  everything in it was fully reclaimed, not merely orphaned.) The one case
+  this doesn't cover is the apparmor-restricted fallback mentioned above: it
+  runs the shim directly in the host's own mount namespace, so a crash there
+  leaves real host mounts behind exactly as it would for any ordinary
+  process — see [Known limitations](#known-limitations).
 - Container processes run inside the VM guest kernel. The guest kernel is a
   different kernel instance from the host, providing strong isolation.
 - The virtiofs share is writable (host-to-guest) but each container's subtree
   is isolated: one container cannot see or modify another container's files
   within the shared tree.
-- The network sandbox FD is opened `O_RDONLY | O_CLOEXEC`. The FD is used
-  only to pin the bind-mount and (via `SetNetnsPath`) to enter the pod netns
-  on the executor thread. The shim's control-plane goroutines remain in the
-  shim's original network namespace.
+- The network sandbox FD is opened `O_RDONLY | O_CLOEXEC`. It exists solely
+  to pin the bind-mount for the CRI-managed netns lifetime; entering that
+  netns for VM boot (see [Layer 2](#layer-2--vm-network-stack)) opens its own,
+  separate FD on the `netns_path` rather than reusing this one. The shim's
+  control-plane goroutines remain in the shim's original network namespace.
+
+## Known limitations
+
+- **Shared `/dev/shm`'s size is set once, by whichever container asks
+  first.** The shared tmpfs (see [Shared `/dev/shm`](#shared-devshm)) is
+  created the first time any member container needing it is set up, sized
+  from that container's own CRI-provided `size=` mount option; a
+  later-created sibling with a *different* requested size does not resize
+  it, or even surface a warning that its request was ignored — the guest's
+  `SharedResources.Create` silently reuses the existing tmpfs (matching
+  every other resource type's "created once per id, reused thereafter"
+  contract). In practice this is not expected to matter: CRI sends every
+  member container of a pod the same `/dev/shm` size, so there is normally
+  nothing to disagree about.
+- **Mount-namespace crash safety does not cover the apparmor-restricted
+  fallback path.** As described in
+  [Security properties](#security-properties), a shim that cannot create a
+  user namespace due to `apparmor_restrict_unprivileged_userns=1` (and is
+  not already real root) runs with no mount namespace isolation at all —
+  its mounts are ordinary host mounts from the start. A crash in that
+  specific configuration leaves real, host-visible mounts behind, the same
+  as it would for any process outside of nerdbox; nothing currently scans
+  for and cleans up dangling mounts of this kind on shim startup. In
+  practice this only affects unprivileged shim invocations on
+  apparmor-restricted hosts — the shim is already skipping mount namespace
+  isolation entirely in that case, which is itself an existing, narrower
+  gap this doesn't change.
 
 ## Future work
 
@@ -595,8 +736,6 @@ The following capabilities are planned but not yet implemented:
 - **Turnkey virtio networking** — have the shim spawn and manage a passt or
   gvproxy process (inside the pod netns) rather than requiring a user-supplied
   socket path via annotation.
-- **Shared `/dev/shm`** — a per-sandbox tmpfs shared across all containers in
-  the VM, matching the Kubernetes pod `shm` mount contract.
 - **Single ext4 upper layer** — a forthcoming containerd change will support
   placing multiple container upper filesystems in one ext4 image, which can be
   mounted upfront and eliminate per-container mount overhead on non-root hosts.

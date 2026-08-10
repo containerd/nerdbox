@@ -153,7 +153,7 @@ sysctls (see git history for `internal/shim/sandbox/sharedfs.go`'s
 `ShareVolume`, `internal/shim/task/sandboxvolumes.go`, and
 `internal/shim/task/podconfig.go`), then a further round added pod-level
 PID and IPC namespace sharing between member containers (see git history
-for `internal/vminit/namespaces` and `internal/shim/task/namespaces.go`'s
+for `internal/vminit/sharedresources` and `internal/shim/task/namespaces.go`'s
 `sanitizeNamespaces`).
 
 **Current status (`--no-skip`, the full unfiltered suite): 85 passed / 4

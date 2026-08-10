@@ -32,6 +32,7 @@ import (
 
 	"github.com/containerd/containerd/v2/pkg/stdio"
 	"github.com/containerd/errdefs"
+	"github.com/containerd/log"
 )
 
 type streamCreator interface {
@@ -105,11 +106,25 @@ func (s *service) forwardIO(ctx context.Context, ss streamCreator, idPrefix stri
 		}
 	}()
 	ioDone := make(chan struct{})
-	stdinEOF, err := copyStreams(ctx, streams, sio.Stdin, sio.Stdout, sio.Stderr, ioDone)
+	stdinEOF, stdinDone, err := copyStreams(ctx, streams, sio.Stdin, sio.Stdout, sio.Stderr, ioDone)
 	if err != nil {
 		return stdio.Stdio{}, nil, nil, nil, err
 	}
 	return pio, func(ctx context.Context) error {
+		// Release our stdin FIFO write reference (if any) unconditionally,
+		// as a safety net for callers that tear down the process without
+		// ever issuing CloseIO (e.g. Kill+Delete). This is idempotent: it
+		// is a no-op if CloseIO already released it. Dropping the
+		// reference here only allows the host-side stdin copy to reach a
+		// real EOF once the external client has also closed its own
+		// write end; it does not force-close anything the client still
+		// holds open.
+		if stdinEOF != nil {
+			if err := stdinEOF(); err != nil {
+				log.G(ctx).WithError(err).Warn("error releasing stdin during io shutdown")
+			}
+		}
+
 		// ioDone is expected to already be closed by the time ioShutdown
 		// is called: the host Wait handler blocks until ioDone fires before
 		// returning to the caller, ensuring all buffered bytes have been
@@ -126,6 +141,21 @@ func (s *service) forwardIO(ctx context.Context, ss streamCreator, idPrefix stri
 		case <-ioDone:
 		case <-ctx.Done():
 			err = ctx.Err()
+		}
+		// Wait for the stdin copy goroutine to finish draining and send
+		// its in-band CloseWrite before we close the underlying stream
+		// connection out from under it. Bounded by the same deadline as
+		// ioDone above; if the external client never closes its own FIFO
+		// write end, this times out and we force-close everything below,
+		// same as the ioDone safety net.
+		if stdinDone != nil {
+			select {
+			case <-stdinDone:
+			case <-ctx.Done():
+				if err == nil {
+					err = ctx.Err()
+				}
+			}
 		}
 		for i, c := range streams {
 			if c != nil && (i != 2 || c != streams[1]) {

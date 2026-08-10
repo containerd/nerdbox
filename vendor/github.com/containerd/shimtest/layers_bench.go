@@ -115,7 +115,7 @@ func (s *LayersSuite) benchThirtyLayers(b *testing.B) {
 		params := startShim(b, shimBin, bundleDir, cid, ns, s.cfg)
 		conn := connectShim(b, params.Address)
 		client := ttrpc.NewClient(conn)
-		tc := taskAPI.NewTTRPCTaskClient(client)
+		tc := newTaskClient(client, params.Version)
 		tShimStart := time.Since(t0)
 
 		t1 := time.Now()

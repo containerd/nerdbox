@@ -98,7 +98,7 @@ func (s *RunSuite) benchLifecycle(b *testing.B) {
 		params := startShim(b, shimBin, bundleDir, cid, ns, s.cfg)
 		conn := connectShim(b, params.Address)
 		client := ttrpc.NewClient(conn)
-		tc := taskAPI.NewTTRPCTaskClient(client)
+		tc := newTaskClient(client, params.Version)
 		sumShim += time.Since(t)
 
 		t = time.Now()
@@ -194,7 +194,7 @@ func (s *RunSuite) benchStartup(b *testing.B) {
 		params := startShim(b, shimBin, bundleDir, cid, ns, s.cfg)
 		conn := connectShim(b, params.Address)
 		client := ttrpc.NewClient(conn)
-		tc := taskAPI.NewTTRPCTaskClient(client)
+		tc := newTaskClient(client, params.Version)
 
 		if _, err := tc.Create(ctx, newCreateTaskRequest(b, cid, bundleDir, stdoutPath, stderrPath, rootfsMounts)); err != nil {
 			b.Fatal("create failed:", err)
@@ -279,7 +279,7 @@ func (s *RunSuite) benchStartupPhases(b *testing.B) {
 		t1 := time.Now()
 		conn := connectShim(b, params.Address)
 		client := ttrpc.NewClient(conn)
-		tc := taskAPI.NewTTRPCTaskClient(client)
+		tc := newTaskClient(client, params.Version)
 		tConnect := time.Since(t1)
 
 		t2 := time.Now()
@@ -383,7 +383,7 @@ func (s *RunSuite) benchStart(b *testing.B) {
 
 		conn := connectShim(b, params.Address)
 		client := ttrpc.NewClient(conn)
-		tc := taskAPI.NewTTRPCTaskClient(client)
+		tc := newTaskClient(client, params.Version)
 		tc.Shutdown(ctx, &taskAPI.ShutdownRequest{ID: cid})
 		client.Close()
 	}

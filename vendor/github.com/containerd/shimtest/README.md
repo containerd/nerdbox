@@ -95,6 +95,7 @@ config, the tree is `TestShim/<config-name>/<test-name>`.
 | `Exec` | exec | Exec a process inside a running container |
 | `StdioRoundTrip` | exec | Write to stdin, read from stdout via exec |
 | `LargeStdioRoundTrip` | exec | Pipe 20 MiB through stdin→`cat`→stdout via exec; verify full byte count and CRC-32. Catches truncation in the exec stdio pipeline under sustained load |
+| `StdinDetachReattach` | exec | Write to an exec's stdin, close the local write end without CloseIO (detach), then open a new writer on the same stdin path (re-attach) and write again; verify both writes reach stdout. Only an explicit CloseIO may deliver stdin EOF |
 | `Clock` | exec | Verify VM clock is synchronized with host |
 | `ExitCodes` | exec | Exec processes that exit with a range of status codes and verify propagation |
 | `InitExitCodes` | — | Run the container's init process with `/bin/exit N` and verify task-level exit status propagation |

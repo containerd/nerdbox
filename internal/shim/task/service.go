@@ -152,10 +152,15 @@ type container struct {
 	// ioDone is closed when the host-side copy goroutines for the init
 	// process have fully drained output to the destination FIFO.
 	ioDone <-chan struct{}
-	// stdinEOF, when non-nil, signals the host stdin goroutine to stop
-	// reading the FIFO and send OP_SHUTDOWN(SEND) in-order on the stdin
-	// stream. Called by CloseIO instead of forwarding the RPC out-of-band,
-	// guaranteeing the EOF arrives after all in-flight stdin bytes.
+	// stdinEOF, when non-nil, releases the host's own write reference on
+	// the process' stdin (the O_WRONLY FIFO handle on Unix; the
+	// reconnect-on-detach loop on Windows). It does not stop or truncate
+	// the copy: the host stdin goroutine keeps draining until stdin
+	// reaches a real EOF, and only then sends OP_SHUTDOWN(SEND) in-order
+	// on the stdin stream. Called by CloseIO instead of forwarding the RPC
+	// out-of-band, guaranteeing the EOF arrives after all in-flight stdin
+	// bytes, and by container teardown as a safety net for callers that
+	// never issue CloseIO.
 	stdinEOF func() error
 
 	// forwarder is the UNIX socket forwarder for this specific container.
@@ -217,11 +222,19 @@ func (s *service) RegisterTTRPC(server *ttrpc.Server) error {
 }
 
 func (s *service) shutdown(ctx context.Context) error {
+	// Detach all containers from tracking under the lock, then shut them down
+	// outside of it. Each container shutdown can block until its host-side
+	// copy goroutines drain and stdin reaches a real EOF (up to a 30 s ceiling
+	// per process), so holding s.mu across them would stall every concurrent
+	// RPC. Clearing the map first means no other RPC can reach a container we
+	// are tearing down.
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	var errs []error
+	containers := s.containers
+	s.containers = make(map[string]*container)
+	s.mu.Unlock()
 
-	for id, c := range s.containers {
+	var errs []error
+	for id, c := range containers {
 		if err := c.shutdown(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("container %q shutdown: %w", id, err))
 		}
@@ -575,7 +588,41 @@ func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.
 		return nil, errgrpc.ToGRPC(err)
 	}
 	tc := taskAPI.NewTTRPCTaskClient(vmc)
-	return tc.Start(ctx, r)
+	resp, err := tc.Start(ctx, r)
+	if err != nil && r.ExecID != "" {
+		// On exec start failure the VM side did not launch the process, so it
+		// will not close the exec's vsock streams on its own. The host-side
+		// copy goroutines (stdout/stderr) are therefore blocked indefinitely,
+		// which means the ioShutdown triggered by a subsequent Delete call
+		// would block for its full 30 s timeout before closing the streams.
+		//
+		// To prevent that, remove the exec's IO shutdown from the container's
+		// tracking and initiate it asynchronously here with a short timeout.
+		// After the timeout ioShutdown closes the vsock connections, the copy
+		// goroutines see a read error and exit, and the subsequent Delete call
+		// finds no pending ioShutdown and returns promptly.
+		s.mu.Lock()
+		var execShutdown func(context.Context) error
+		if c, ok := s.containers[r.ID]; ok {
+			if f, ok := c.execShutdowns[r.ExecID]; ok {
+				execShutdown = f
+				delete(c.execShutdowns, r.ExecID)
+				delete(c.execIODone, r.ExecID)
+				delete(c.execStdinEOF, r.ExecID)
+			}
+		}
+		s.mu.Unlock()
+		if execShutdown != nil {
+			go func() {
+				shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if serr := execShutdown(shutCtx); serr != nil && !errors.Is(serr, context.DeadlineExceeded) {
+					log.G(ctx).WithError(serr).WithField("exec", r.ExecID).Error("failed to shutdown exec io after start failure")
+				}
+			}()
+		}
+	}
+	return resp, err
 }
 
 // Delete the initial process and container
@@ -589,26 +636,38 @@ func (s *service) Delete(ctx context.Context, r *taskAPI.DeleteRequest) (*taskAP
 	tc := taskAPI.NewTTRPCTaskClient(vmc)
 	resp, err := tc.Delete(ctx, r)
 	if err == nil {
+		// Detach the IO shutdown from the service's tracking under the lock,
+		// then run it *outside* the lock. ioShutdown can block until the
+		// host-side copy goroutines drain and the stdin FIFO reaches a real
+		// EOF (up to its 30 s ceiling), so holding s.mu across it would stall
+		// every other RPC -- including the CloseIO that releases stdin.
+		// Removing the entry first means no concurrent RPC can observe or
+		// re-run the shutdown we are about to perform.
 		s.mu.Lock()
+		var shutdown func(context.Context) error
 		if c, ok := s.containers[r.ID]; ok {
 			if r.ExecID != "" {
 				if ioShutdown, ok := c.execShutdowns[r.ExecID]; ok {
-					if err := ioShutdown(ctx); err != nil {
-						log.G(ctx).WithError(err).WithField("exec_id", r.ExecID).Error("failed to shutdown exec io after delete")
-					}
+					shutdown = ioShutdown
 					delete(c.execShutdowns, r.ExecID)
 					delete(c.execIODone, r.ExecID)
 					delete(c.execStdinEOF, r.ExecID)
 				}
 			} else {
-				if err := c.shutdown(ctx); err != nil {
-					log.G(ctx).WithError(err).Error("failed to shutdown container after delete")
-				}
+				shutdown = c.shutdown
 				delete(s.containers, r.ID)
 			}
 		}
 		s.mu.Unlock()
 
+		if shutdown != nil {
+			if err := shutdown(ctx); err != nil {
+				log.G(ctx).WithError(err).WithFields(log.Fields{
+					"container_id": r.ID,
+					"exec_id":      r.ExecID,
+				}).Error("failed to shutdown io after delete")
+			}
+		}
 	}
 	return resp, err
 }
@@ -767,10 +826,16 @@ func (s *service) CloseIO(ctx context.Context, r *taskAPI.CloseIORequest) (*ptyp
 	log.G(ctx).WithFields(log.Fields{"container_id": r.ID, "exec_id": r.ExecID, "stdin": r.Stdin}).Info("close io")
 	if r.Stdin {
 		// Deliver stdin EOF in-band on the stream connection rather than
-		// forwarding the RPC out-of-band. The in-band CloseWrite sends
-		// OP_SHUTDOWN(SEND) ordered after all data already written to the
-		// stream, preventing truncation caused by an out-of-band RPC on a
-		// separate vsock connection racing in-flight stdin bytes.
+		// forwarding the RPC out-of-band. stdinEOF drops the host's own
+		// write reference on the stdin FIFO (mirroring the reference
+		// containerd runc shim), which lets the host's stdin copy
+		// goroutine drain to a real FIFO EOF and then send an in-band
+		// CloseWrite (OP_SHUTDOWN(SEND)) ordered after all buffered data.
+		// This avoids the truncation an out-of-band RPC on a separate
+		// vsock connection could cause by racing in-flight stdin bytes,
+		// and it preserves the client-detach/re-attach semantics the FIFO
+		// write reference is meant to provide: closing the client's own
+		// FIFO write end alone (without CloseIO) does not deliver EOF.
 		s.mu.Lock()
 		var stdinEOF func() error
 		if c, ok := s.containers[r.ID]; ok {

@@ -63,7 +63,7 @@ jobs:
           echo "Verifying build artifacts:"
           ls -lh _output/
           file _output/nerdbox-kernel-${{ matrix.arch }}
-          file _output/nerdbox-initrd
+          file _output/nerdbox-rootfs.erofs
           file _output/containerd-shim-nerdbox-v1
           file _output/libkrun.so
 
@@ -73,7 +73,7 @@ jobs:
           mkdir -p "${ARCHIVE_DIR}"
 
           cp _output/containerd-shim-nerdbox-v1 "${ARCHIVE_DIR}/"
-          cp _output/nerdbox-initrd "${ARCHIVE_DIR}/"
+          cp _output/nerdbox-rootfs.erofs "${ARCHIVE_DIR}/"
           cp _output/nerdbox-kernel-${{ matrix.arch }} "${ARCHIVE_DIR}/"
           cp _output/libkrun.so "${ARCHIVE_DIR}/libkrun-nerdbox.so"
 

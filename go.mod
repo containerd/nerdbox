@@ -20,7 +20,7 @@ require (
 	github.com/containerd/typeurl/v2 v2.3.0
 	github.com/docker/go-events v0.0.0-20190806004212-e31b211e4f1c
 	github.com/ebitengine/purego v0.10.1
-	github.com/insomniacslk/dhcp v0.0.0-20250919081422-f80a1952f48e
+	github.com/insomniacslk/dhcp v0.0.0-20260719225207-c76316d4aa82
 	github.com/mdlayher/vsock v1.3.0
 	github.com/moby/sys/userns v0.1.0
 	github.com/opencontainers/runtime-spec v1.3.0

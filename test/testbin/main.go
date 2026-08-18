@@ -1,3 +1,5 @@
+//go:build linux
+
 /*
    Copyright The containerd Authors.
 
@@ -21,7 +23,11 @@
 //
 // This main is intentionally a one-liner: all logic lives in the importable
 // github.com/containerd/shimtest/testbin package so it is covered by
-// go mod vendor and stays in sync with the vendored shimtest version.
+// go mod vendor and stays in sync with the vendored shimtest version. That
+// package is itself linux-only (it exercises linux-specific syscalls with
+// no portable equivalents), so this file must be restricted to linux too --
+// otherwise cross-platform builds and lint runs that typecheck the whole
+// module fail trying to compile it for other GOOS values.
 package main
 
 import "github.com/containerd/shimtest/testbin"

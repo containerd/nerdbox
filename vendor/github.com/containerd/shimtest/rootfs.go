@@ -125,7 +125,7 @@ func testbinAssetName(goarch string) string {
 // testbinCommands lists the commands provided by the testbin binary.
 // Symlinks are created in /bin for each command in the embedded
 // rootfs.
-var testbinCommands = []string{"forever", "burstexit", "cat", "date", "echo", "exit", "hashverify", "host", "layercheck", "ls", "memhog", "nc", "tickexit"}
+var testbinCommands = []string{"forever", "burstexit", "cat", "date", "echo", "echosrv", "exit", "hashverify", "host", "hostname", "layercheck", "looptest", "ls", "memhog", "nc", "pidscan", "shmread", "shmwrite", "shmmapread", "shmmapwrite", "tickexit"}
 
 // bigFileSize is the size of the IO benchmark fixture file. Large
 // enough to swamp small per-call overheads while still building /

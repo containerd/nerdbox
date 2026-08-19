@@ -400,9 +400,23 @@ TSI's proxied connections land in.
 
 Because of this, the shim does not create a guest network namespace at all
 when TSI is carrying container traffic: one would be created, joined, and then
-ignored. Containers instead stay in the VM's own network namespace, which —
-since the VM is per-sandbox — still gives the containers of one sandbox a
-shared view of each other, including loopback.
+ignored. Containers instead stay in the VM's own network namespace, but that
+sharing is largely incidental to cross-container connectivity: TSI hijacks
+each `socket()` call before any netns-scoped routing decision is ever made,
+so two sibling containers reaching each other over loopback are not really
+using guest-kernel loopback routing at all — each side's hijacked socket is
+proxied independently to the host, and they only rendezvous because both
+proxied operations resolve to the same concrete host-side port. This
+requires the guest and the host to agree on that port: an inbound bind on an
+ephemeral port (`bind()`/`listen()` on port `0`) must forward the guest
+kernel's *resolved* port to the host, not the literal `0` the application
+requested — otherwise the host independently picks its own, unrelated
+ephemeral port, and nothing is reachable at the port the application
+believes it bound (see kernel patch
+`0013-tsi-forward-the-resolved-port-for-ephemeral-binds.patch`). This in
+turn means the guest's resolved port can now collide with something
+already bound on the host — see
+[Known limitations](#known-limitations) for what happens then.
 
 The decision needs nothing driver-specific. A network namespace exists to
 scope in-guest networking, and a virtio-net interface is what creates that, so
@@ -728,6 +742,38 @@ guest CID in advance.
   apparmor-restricted hosts — the shim is already skipping mount namespace
   isolation entirely in that case, which is itself an existing, narrower
   gap this doesn't change.
+- **An inbound TSI ephemeral bind's resolved port can collide with something
+  already bound on the host.** Kernel patch
+  `0013-tsi-forward-the-resolved-port-for-ephemeral-binds.patch` (see
+  [TSI and guest network namespaces](#tsi-and-guest-network-namespaces))
+  makes the guest forward its own resolved port to the host instead of the
+  literal `0` requested, so the host now attempts to bind that *specific*
+  port rather than picking its own free one. Two outcomes if it's already
+  taken, depending on how it's taken:
+  - **A normal bind held by something else on the host**: libkrun's TSI
+    proxy returns `EADDRINUSE`, and the guest kernel's own `tsi_listen`
+    fallback (pre-existing, previously essentially unreachable since a
+    host-side `bind(0)` could not fail) transparently switches to a real
+    in-guest `listen()` on the same socket. Host-external reachability at
+    that port is lost, but the application still gets a working listener,
+    and cross-container connectivity within the same VM is unaffected
+    (`tsi_connect` tries the in-guest socket first).
+  - **A listener from an unrelated VM's own TSI proxy on the same host
+    netns**: libkrun sets `SO_REUSEPORT` on TSI's host-side listening
+    sockets, so two different VMs' guest kernels — which cannot see each
+    other's port allocations and so can genuinely resolve the same
+    ephemeral port — both bind successfully, and the host kernel silently
+    load-balances inbound connections between two unrelated pods' listeners
+    with no error and no fallback triggered. This is only reachable when
+    multiple VMs' shims share a host network namespace (e.g. `ctr run`
+    without a CNI/pod netns); under CRI/Kubernetes each pod gets its own
+    netns containing only that pod's own shim, so this cannot occur in
+    practice today. Closing this properly means the host, not the guest,
+    should own ephemeral port allocation for TSI listeners — e.g. by
+    extending TSI's `tsi_listen_rsp` to report back the port the host
+    actually bound, and having the guest adopt it — which needs coordinated
+    kernel and libkrun changes; tracked as future work below rather than
+    attempted alongside the kernel-only kernel patch `0013` above.
 
 ## Future work
 
@@ -739,3 +785,11 @@ The following capabilities are planned but not yet implemented:
 - **Single ext4 upper layer** — a forthcoming containerd change will support
   placing multiple container upper filesystems in one ext4 image, which can be
   mounted upfront and eliminate per-container mount overhead on non-root hosts.
+- **Host-authoritative TSI ephemeral port allocation** — extend libkrun's
+  `tsi_listen_rsp` to report back the concrete port the host actually bound
+  an inbound listener to, and have the guest kernel adopt it, rather than
+  the guest resolving its own ephemeral port and the host attempting to
+  match it (see [Known limitations](#known-limitations) for the
+  same-host-netns collision this can hit today). A libkrun bump is expected
+  soon regardless of this, which is the natural point to carry the
+  corresponding host-side change.

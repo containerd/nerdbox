@@ -1,0 +1,90 @@
+From 5cee2292685440f69a2d3373cb9348b818577e9a Mon Sep 17 00:00:00 2001
+From: Derek McGowan <derek@mcg.dev>
+Date: Wed, 19 Aug 2026 00:44:13 -0700
+Subject: [PATCH] tsi: forward the resolved port for ephemeral bind()s
+
+tsi_bind() stored the caller's original sockaddr (e.g. port 0 for an
+ephemeral bind) in tsk->bound_addr instead of the concrete port the
+guest kernel's isocket->ops->bind() actually resolved it to.
+tsi_listen() forwards tsk->bound_addr to the host over vsock, so with
+an ephemeral bind the host picked its own independent ephemeral port
+-- unrelated to the one tsi_getname() reports back to the application
+(via the guest isocket, which does reflect the real resolved port).
+Nothing ever listened on the application-visible port: not really
+listening in the guest (tsi_listen only falls back to a real in-guest
+listen on EPERM/EADDRINUSE/EADDRNOTAVAIL) and not the port the host
+proxy actually bound either. A peer connecting to that port got
+ECONNREFUSED.
+
+Fix: after the isocket bind succeeds, read back the resolved address
+via getname and store that in tsk->bound_addr instead of the original
+request, so the port forwarded to the host and the port reported to
+the application always agree. Also switch tsk->bound_addr's allocation
+to a fixed sizeof(struct sockaddr_storage) rather than the first
+call's own addr_len, closing a latent overflow on rebind with a larger
+address.
+
+Signed-off-by: Derek McGowan <derek@mcg.dev>
+---
+ net/tsi/af_tsi.c | 31 +++++++++++++++++++++++++++----
+ 1 file changed, 27 insertions(+), 4 deletions(-)
+
+diff --git a/net/tsi/af_tsi.c b/net/tsi/af_tsi.c
+index bd3dc75b3..6ebe25cce 100644
+--- a/net/tsi/af_tsi.c
++++ b/net/tsi/af_tsi.c
+@@ -10,6 +10,7 @@
+ 
+ #include <linux/types.h>
+ #include <linux/poll.h>
++#include <linux/socket.h>
+ #include <net/sock.h>
+ #include <net/af_unix.h>
+ #include <net/af_vsock.h>
+@@ -198,6 +199,8 @@ static int tsi_bind(struct socket *sock, struct sockaddr *addr, int addr_len)
+ 	struct socket *isocket;
+ 	struct socket *vsocket;
+ 	struct sockaddr_vm addr_vsock;
++	struct sockaddr_storage resolved_addr;
++	int resolved_len;
+ 	int err;
+ 
+ 	lock_sock(sk);
+@@ -245,10 +248,30 @@ static int tsi_bind(struct socket *sock, struct sockaddr *addr, int addr_len)
+ 		goto release;
+ 	}
+ 
+-	if (!tsk->bound_addr) {
+-		tsk->bound_addr = kmalloc(addr_len, GFP_KERNEL);
+-		tsk->bound_addr_len = addr_len;
+-	}
++	/*
++	 * addr may request an ephemeral port (port 0); isocket->ops->bind()
++	 * above resolves that to a concrete port in the guest kernel, but
++	 * does not mutate addr to reflect it. Read back the resolved
++	 * address via getname so that what we forward to the host in
++	 * tsi_listen() -- and what tsi_getname() reports back to the
++	 * application -- agree on the same concrete port. Without this, the
++	 * host independently resolves its own ephemeral port (there is no
++	 * field in tsi_listen_rsp to report it back), so the
++	 * application-visible port ends up bound and reachable nowhere: not
++	 * really listening in the guest (tsi_listen only falls back to a
++	 * real guest-side listen on EPERM/EADDRINUSE/EADDRNOTAVAIL), and not
++	 * the port the host proxy actually bound either.
++	 */
++	resolved_len = isocket->ops->getname(isocket,
++					      (struct sockaddr *)&resolved_addr, 0);
++	if (resolved_len > 0) {
++		addr = (struct sockaddr *)&resolved_addr;
++		addr_len = resolved_len;
++	}
++
++	if (!tsk->bound_addr)
++		tsk->bound_addr = kmalloc(sizeof(struct sockaddr_storage), GFP_KERNEL);
++	tsk->bound_addr_len = addr_len;
+ 	memcpy(tsk->bound_addr, addr, addr_len);
+ 
+ release:
+-- 
+2.55.0
+

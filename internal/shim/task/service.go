@@ -27,6 +27,7 @@ import (
 	"sync"
 	"time"
 
+	eventstypes "github.com/containerd/containerd/api/events"
 	taskAPI "github.com/containerd/containerd/api/runtime/task/v3"
 	"github.com/containerd/containerd/api/types"
 	runcOptions "github.com/containerd/containerd/api/types/runc/options"
@@ -801,13 +802,30 @@ func (s *service) Resume(ctx context.Context, r *taskAPI.ResumeRequest) (*ptypes
 
 // Kill a process with the provided signal
 func (s *service) Kill(ctx context.Context, r *taskAPI.KillRequest) (*ptypes.Empty, error) {
-	log.G(ctx).WithFields(log.Fields{"container_id": r.ID, "exec_id": r.ExecID}).Info("kill")
+	started := time.Now()
+	fields := log.Fields{
+		"container_id": r.ID,
+		"exec_id":      r.ExecID,
+		"signal":       r.Signal,
+		"all":          r.All,
+	}
+	log.G(ctx).WithFields(fields).Info("kill requested")
 	vmc, err := s.sb.Client()
+	fields["duration_ms"] = time.Since(started).Milliseconds()
 	if err != nil {
+		log.G(ctx).WithError(err).WithFields(fields).Error("get VM client for kill")
 		return nil, errgrpc.ToGRPC(err)
 	}
 	tc := taskAPI.NewTTRPCTaskClient(vmc)
-	return tc.Kill(ctx, r)
+	log.G(ctx).WithFields(fields).Info("kill dispatching to VM")
+	resp, err := tc.Kill(ctx, r)
+	fields["duration_ms"] = time.Since(started).Milliseconds()
+	if err != nil {
+		log.G(ctx).WithError(err).WithFields(fields).Error("VM kill completed")
+		return nil, err
+	}
+	log.G(ctx).WithFields(fields).Info("VM kill completed")
+	return resp, nil
 }
 
 // Pids returns all pids inside the container
@@ -1005,6 +1023,25 @@ func (s *service) forward(ctx context.Context, publisher shim.Publisher) {
 			// TODO: Transform event fields?
 			if err := publisher.Publish(ctx, e.Topic, e.Event); err != nil {
 				log.G(ctx).WithError(err).Error("forward event")
+			} else if e.Topic == runtime.TaskExitEventTopic {
+				event, err := typeurl.UnmarshalAny(e.Event)
+				if err != nil {
+					log.G(ctx).WithError(err).Error("decode task exit event")
+					continue
+				}
+				exit, ok := event.(*eventstypes.TaskExit)
+				if !ok {
+					log.G(ctx).WithField("event", event).Error("unexpected task exit event type")
+					continue
+				}
+				fields := log.Fields{
+					"container_id": exit.ContainerID,
+					"exit_status":  exit.ExitStatus,
+				}
+				if exit.ID != "" {
+					fields["exec_id"] = exit.ID
+				}
+				log.G(ctx).WithFields(fields).Info("task exit forwarded")
 			}
 		default:
 			err := publisher.Publish(ctx, runtime.GetTopic(e), e)

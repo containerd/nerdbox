@@ -615,7 +615,7 @@ func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.
 		s.mu.Unlock()
 		if execShutdown != nil {
 			go func() {
-				shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				shutCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 				defer cancel()
 				if serr := execShutdown(shutCtx); serr != nil && !errors.Is(serr, context.DeadlineExceeded) {
 					log.G(ctx).WithError(serr).WithField("exec", r.ExecID).Error("failed to shutdown exec io after start failure")
@@ -1013,7 +1013,7 @@ func (s *service) send(evt interface{}) {
 
 func (s *service) forward(ctx context.Context, publisher shim.Publisher) {
 	ns, _ := namespaces.Namespace(ctx)
-	ctx = namespaces.WithNamespace(context.Background(), ns)
+	ctx = namespaces.WithNamespace(context.WithoutCancel(ctx), ns)
 	for e := range s.events {
 		if e == nil {
 			break

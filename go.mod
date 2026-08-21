@@ -23,6 +23,7 @@ require (
 	github.com/ebitengine/purego v0.10.1
 	github.com/insomniacslk/dhcp v0.0.0-20250919081422-f80a1952f48e
 	github.com/mdlayher/vsock v1.3.0
+	github.com/moby/sys/mountinfo v0.7.2
 	github.com/moby/sys/userns v0.1.0
 	github.com/opencontainers/runtime-spec v1.3.0
 	github.com/stretchr/testify v1.11.1
@@ -51,7 +52,6 @@ require (
 	github.com/klauspost/compress v1.18.5 // indirect
 	github.com/mdlayher/packet v1.1.2 // indirect
 	github.com/mdlayher/socket v0.6.0 // indirect
-	github.com/moby/sys/mountinfo v0.7.2 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/pierrec/lz4/v4 v4.1.14 // indirect

@@ -536,13 +536,27 @@ func (s *service) Resume(ctx context.Context, r *taskAPI.ResumeRequest) (*ptypes
 
 // Kill a process with the provided signal
 func (s *service) Kill(ctx context.Context, r *taskAPI.KillRequest) (*ptypes.Empty, error) {
+	started := time.Now()
+	fields := log.Fields{
+		"container_id": r.ID,
+		"exec_id":      r.ExecID,
+		"signal":       r.Signal,
+		"all":          r.All,
+	}
+	log.G(ctx).WithFields(fields).Info("VM kill received")
 	container, err := s.getContainer(r.ID)
+	fields["duration_ms"] = time.Since(started).Milliseconds()
 	if err != nil {
+		log.G(ctx).WithError(err).WithFields(fields).Error("VM kill completed")
 		return nil, err
 	}
 	if err := container.Kill(ctx, r); err != nil {
+		fields["duration_ms"] = time.Since(started).Milliseconds()
+		log.G(ctx).WithError(err).WithFields(fields).Error("VM kill completed")
 		return nil, errgrpc.ToGRPC(err)
 	}
+	fields["duration_ms"] = time.Since(started).Milliseconds()
+	log.G(ctx).WithFields(fields).Info("VM kill completed")
 	return empty, nil
 }
 
@@ -796,13 +810,22 @@ func (s *service) handleInitExit(e runcC.Exit, c *runc.Container, p *process.Ini
 
 func (s *service) handleProcessExit(e runcC.Exit, c *runc.Container, p process.Process) {
 	p.SetExited(e.Status)
-	s.send(&eventstypes.TaskExit{
+	event := &eventstypes.TaskExit{
 		ContainerID: c.ID,
 		ID:          p.ID(),
 		Pid:         uint32(e.Pid),
 		ExitStatus:  uint32(e.Status),
 		ExitedAt:    protobuf.ToTimestamp(p.ExitedAt()),
-	})
+	}
+	fields := log.Fields{
+		"container_id": event.ContainerID,
+		"exit_status":  event.ExitStatus,
+	}
+	if event.ID != "" {
+		fields["exec_id"] = event.ID
+	}
+	log.G(s.context).WithFields(fields).Info("task exit emitted")
+	s.send(event)
 	if _, init := p.(*process.Init); !init {
 		s.lifecycleMu.Lock()
 		s.runningExecs[c]--

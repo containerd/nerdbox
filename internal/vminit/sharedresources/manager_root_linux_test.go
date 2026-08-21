@@ -23,8 +23,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -87,7 +89,7 @@ func TestManagerCreateDeleteRoundTrip(t *testing.T) {
 
 	ctx := context.Background()
 	id := "nerdbox-test-" + randomSuffix(t)
-	types := []Type{TypeNamespaceNetwork, TypeNamespaceIPC, TypeNamespacePID, TypeDevShm}
+	types := []Type{TypeNamespaceNetwork, TypeNamespaceIPC, TypeNamespaceUTS, TypeNamespacePID, TypeDevShm}
 	const devShmSize = 4 * 1024 * 1024
 
 	var m Manager
@@ -207,7 +209,7 @@ func TestManagerCreateOnlyRequestedTypes(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	for _, typ := range []Type{TypeNamespaceNetwork, TypeNamespacePID, TypeDevShm} {
+	for _, typ := range []Type{TypeNamespaceNetwork, TypeNamespaceUTS, TypeNamespacePID, TypeDevShm} {
 		dir, err := typ.dir()
 		if err != nil {
 			t.Fatal(err)
@@ -259,6 +261,153 @@ func TestManagerDevShmSizeEnforced(t *testing.T) {
 	_, err = f.Write(buf)
 	if !errors.Is(err, unix.ENOSPC) {
 		t.Errorf("write past tmpfs size = %v, want ENOSPC", err)
+	}
+}
+
+// TestUTSNamespaceIsSharedAndHostnameIsLastWriterWins verifies the property
+// the host relies on instead of any explicit coordination (see createUTS's
+// doc comment and internal/shim/task/namespaces.go): joining the same
+// TypeNamespaceUTS resource from two independent threads gives them a
+// genuinely shared UTS namespace, and a hostname set from one is visible
+// from the other, exactly as it would be for two sibling containers'
+// crun-driven setns+sethostname sequences.
+func TestUTSNamespaceIsSharedAndHostnameIsLastWriterWins(t *testing.T) {
+	requireNamespacePrivileges(t)
+
+	ctx := context.Background()
+	id := "nerdbox-test-" + randomSuffix(t)
+
+	var m Manager
+	t.Cleanup(func() { _ = m.Delete(ctx, id, nil) })
+
+	paths, err := m.Create(ctx, id, []Type{TypeNamespaceUTS}, 0)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	path := paths[TypeNamespaceUTS]
+
+	setHostnameInNamespace(t, path, "from-first-joiner")
+	if got := hostnameInNamespace(t, path); got != "from-first-joiner" {
+		t.Fatalf("hostname after first join = %q, want %q", got, "from-first-joiner")
+	}
+
+	// A second, independent join must see the same namespace: setting the
+	// hostname again must overwrite what the first joiner set, and that
+	// change must in turn be visible through a third join. This is
+	// "joining", not "creating a similar but separate namespace" — if
+	// createUTS accidentally created a fresh namespace per bind mount
+	// reference this would not hold.
+	setHostnameInNamespace(t, path, "from-second-joiner")
+	if got := hostnameInNamespace(t, path); got != "from-second-joiner" {
+		t.Fatalf("hostname after second join = %q, want %q (namespace was not truly shared)", got, "from-second-joiner")
+	}
+}
+
+// setHostnameInNamespace joins the UTS namespace pinned at path on a
+// dedicated, locked OS thread and sets its hostname, mirroring what an OCI
+// runtime does when a container's spec has a non-empty Hostname and a uts
+// namespace entry with a non-empty Path.
+func setHostnameInNamespace(t *testing.T, path, hostname string) {
+	t.Helper()
+	errCh := make(chan error, 1)
+	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+
+		fd, err := unix.Open(path, unix.O_RDONLY, 0)
+		if err != nil {
+			errCh <- fmt.Errorf("open %s: %w", path, err)
+			return
+		}
+		defer unix.Close(fd)
+
+		if err := unix.Setns(fd, unix.CLONE_NEWUTS); err != nil {
+			errCh <- fmt.Errorf("setns: %w", err)
+			return
+		}
+		errCh <- unix.Sethostname([]byte(hostname))
+	}()
+	if err := <-errCh; err != nil {
+		t.Fatalf("setHostnameInNamespace(%q): %v", hostname, err)
+	}
+}
+
+// hostnameInNamespace joins the UTS namespace pinned at path on a dedicated,
+// locked OS thread and reads back its hostname.
+func hostnameInNamespace(t *testing.T, path string) string {
+	t.Helper()
+	type result struct {
+		hostname string
+		err      error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+
+		fd, err := unix.Open(path, unix.O_RDONLY, 0)
+		if err != nil {
+			ch <- result{err: fmt.Errorf("open %s: %w", path, err)}
+			return
+		}
+		defer unix.Close(fd)
+
+		if err := unix.Setns(fd, unix.CLONE_NEWUTS); err != nil {
+			ch <- result{err: fmt.Errorf("setns: %w", err)}
+			return
+		}
+		var uts unix.Utsname
+		if err := unix.Uname(&uts); err != nil {
+			ch <- result{err: fmt.Errorf("uname: %w", err)}
+			return
+		}
+		ch <- result{hostname: unix.ByteSliceToString(uts.Nodename[:])}
+	}()
+	r := <-ch
+	if r.err != nil {
+		t.Fatalf("hostnameInNamespace: %v", r.err)
+	}
+	return r.hostname
+}
+
+// TestManagerDevShmSizeMismatchKeepsFirstSize verifies that a later Create
+// call requesting a different devshm size than the one already in use does
+// not resize the tmpfs (Create's doc comment is explicit that the first
+// caller's size wins) and does not fail the call — it can only ever warn,
+// never error, since this is a best-effort diagnostic, not a correctness
+// requirement.
+func TestManagerDevShmSizeMismatchKeepsFirstSize(t *testing.T) {
+	requireNamespacePrivileges(t)
+
+	ctx := context.Background()
+	id := "nerdbox-test-" + randomSuffix(t)
+	const firstSize = 1 * 1024 * 1024
+	const secondSize = 2 * 1024 * 1024
+
+	var m Manager
+	t.Cleanup(func() { _ = m.Delete(ctx, id, nil) })
+
+	paths, err := m.Create(ctx, id, []Type{TypeDevShm}, firstSize)
+	if err != nil {
+		t.Fatalf("first Create: %v", err)
+	}
+	path := paths[TypeDevShm]
+
+	again, err := m.Create(ctx, id, []Type{TypeDevShm}, secondSize)
+	if err != nil {
+		t.Fatalf("second Create (different size): %v", err)
+	}
+	if again[TypeDevShm] != path {
+		t.Fatalf("path changed across calls: %q then %q", path, again[TypeDevShm])
+	}
+
+	var st unix.Statfs_t
+	if err := unix.Statfs(path, &st); err != nil {
+		t.Fatalf("statfs %s: %v", path, err)
+	}
+	gotSize := int64(st.Blocks) * st.Bsize //nolint:unconvert // Bsize is int64 on some arches, int32 on others
+	if gotSize != firstSize {
+		t.Errorf("tmpfs size after mismatched second Create = %d, want unchanged %d (first caller's size)", gotSize, firstSize)
 	}
 }
 

@@ -150,6 +150,7 @@ func TestTypeDir(t *testing.T) {
 	}{
 		{typ: TypeNamespaceNetwork, want: "/run/netns"},
 		{typ: TypeNamespaceIPC, want: "/run/ipcns"},
+		{typ: TypeNamespaceUTS, want: "/run/utsns"},
 		{typ: TypeNamespacePID, want: "/run/pidns"},
 	}
 	for _, tc := range testcases {

@@ -231,13 +231,6 @@ func (s *SandboxService) SandboxID() string {
 	return s.sandboxID
 }
 
-// HasNIC reports whether the VM was given a virtio-net interface. Only
-// meaningful after StartSandbox; see the Sandbox interface for the full
-// contract.
-func (s *SandboxService) HasNIC() bool {
-	return s.sb.HasNIC()
-}
-
 // NetworkSandboxPath returns the host-side network sandbox path (e.g. a Linux netns)
 func (s *SandboxService) NetworkSandboxPath() string {
 	s.mu.Lock()

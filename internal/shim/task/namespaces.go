@@ -43,16 +43,26 @@ import (
 //     actually asked them to share, by substituting guest-side equivalents
 //     obtained from getSharedResources.
 //
-// CRI's WithPodNamespaces sets a host Path on the IPC namespace entry
-// unconditionally (Kubernetes shares pod IPC by default), and on the PID
-// namespace entry whenever the pod's PID sharing mode isn't
-// NamespaceMode_CONTAINER (covering both NamespaceMode_POD, e.g.
-// shareProcessNamespace: true, and NamespaceMode_NODE, e.g. hostPID: true).
-// Since the shim reports its own host PID as the sandbox's PID for both of
-// those modes, there is no data in the request that would let it tell them
-// apart, so any non-empty incoming Path on either type is treated as "share
-// within this sandbox". A container with no such entry at all
-// (NamespaceMode_CONTAINER, the default) keeps its own independent namespace.
+// CRI's WithPodNamespaces sets a host Path on the IPC and UTS namespace
+// entries unconditionally (Kubernetes shares both by default, and does not
+// expose a per-pod option to turn either off), and on the PID namespace
+// entry whenever the pod's PID sharing mode isn't NamespaceMode_CONTAINER
+// (covering both NamespaceMode_POD, e.g. shareProcessNamespace: true, and
+// NamespaceMode_NODE, e.g. hostPID: true). Since the shim reports its own
+// host PID as the sandbox's PID for both of those modes, there is no data in
+// the request that would let it tell them apart, so any non-empty incoming
+// Path on any of these three types is treated as "share within this
+// sandbox". A container with no such entry at all (NamespaceMode_CONTAINER,
+// the default, applicable to PID only) keeps its own independent namespace.
+//
+// Sharing a UTS namespace needs no extra coordination for the hostname
+// itself: an OCI runtime setting Spec.Hostname while joining an existing
+// (rather than freshly created) UTS namespace calls sethostname(2) after
+// joining it — updating the namespace, and so every container sharing it,
+// rather than erroring — and leaves it alone when Hostname is empty. Every
+// member container of a pod already carries the same CRI-provided hostname
+// on its own spec, so this "last write wins, empty means no opinion"
+// behavior is exactly what is wanted, entirely for free.
 //
 // Namespaces are requested from the guest in a single call, and only the
 // types this container actually needs are asked for. That matters for the PID
@@ -68,49 +78,57 @@ import (
 //     per-container NIC/veth wiring in internal/vminit/ctrnetworking assumes
 //     each such container owns its namespace, so it must not be put in a
 //     shared one.
-//   - hasSandboxNIC: the VM has an interface, so containers join the
-//     sandbox's shared namespace to get a common view of it.
-//   - no NIC anywhere: there is no in-guest networking for a namespace to
+//   - no container NIC: there is no in-guest networking for a namespace to
 //     scope, so the entry is dropped entirely, leaving the container in the
-//     VM's own network namespace. Since the VM is per-sandbox that still gives
-//     the containers of one sandbox a shared view of each other, including
-//     loopback, but costs nothing to set up and cannot be mistaken for
-//     isolation it does not provide. Container traffic in this configuration
+//     VM's own network namespace. Container traffic in this configuration
 //     reaches the host by other means (the guest kernel proxying its IP
-//     sockets), which no network namespace can scope in any case.
-func sanitizeNamespaces(ctx context.Context, b *bundle.Bundle, hasContainerNIC, hasSandboxNIC bool, getSharedResources sharedResourceFunc) error {
+//     sockets, i.e. TSI), which no network namespace can scope in any case.
+//
+// A shared guest network namespace for the case where the sandbox itself has
+// a NIC but this container does not is deliberately not implemented: TSI
+// hijacks a socket() call on address family alone, before any namespace or
+// routing decision, so it is not scoped by a guest network namespace at all,
+// and a real virtio-net interface is only ever plumbed into the VM's own
+// initial network namespace (see internal/vminit/vmnetworking.SetupVM) — a
+// second, separate network namespace created for member containers would
+// contain nothing but loopback, cut those containers off from the sandbox's
+// actual NIC entirely, and is not exercised by any test. If per-container
+// sharing of a sandbox-level NIC is wanted in the future, the interface (or
+// a veth peer of it) needs to be plumbed into the shared namespace itself,
+// not just have containers join an empty one.
+func sanitizeNamespaces(ctx context.Context, b *bundle.Bundle, hasContainerNIC bool, getSharedResources sharedResourceFunc) error {
 	if b.Spec.Linux == nil {
 		return nil
 	}
 
-	shareNetwork := !hasContainerNIC && hasSandboxNIC
-	dropNetwork := !hasContainerNIC && !hasSandboxNIC
+	dropNetwork := !hasContainerNIC
 
 	// First pass: work out which shared namespaces this container needs, so
-	// they can all be requested from the guest in one call.
-	wantNetwork := shareNetwork
+	// they can all be requested from the guest in one call. The network
+	// namespace is never one of them — see the doc comment above for why
+	// there is no shared-network-namespace case at all.
 	var (
 		wantIPC bool
+		wantUTS bool
 		wantPID bool
 	)
-	foundNetworkNS := false
 	for _, ns := range b.Spec.Linux.Namespaces {
 		switch ns.Type {
-		case specs.NetworkNamespace:
-			foundNetworkNS = true
 		case specs.IPCNamespace:
 			wantIPC = wantIPC || ns.Path != ""
+		case specs.UTSNamespace:
+			wantUTS = wantUTS || ns.Path != ""
 		case specs.PIDNamespace:
 			wantPID = wantPID || ns.Path != ""
 		}
 	}
 
 	var types []srAPI.Type
-	if wantNetwork {
-		types = append(types, srAPI.Type_TYPE_NAMESPACE_NETWORK)
-	}
 	if wantIPC {
 		types = append(types, srAPI.Type_TYPE_NAMESPACE_IPC)
+	}
+	if wantUTS {
+		types = append(types, srAPI.Type_TYPE_NAMESPACE_UTS)
 	}
 	if wantPID {
 		types = append(types, srAPI.Type_TYPE_NAMESPACE_PID)
@@ -125,22 +143,27 @@ func sanitizeNamespaces(ctx context.Context, b *bundle.Bundle, hasContainerNIC, 
 	}
 
 	// Second pass: rewrite the spec. Built as a new slice because the network
-	// namespace entry is dropped outright in the no-guest-networking case.
-	out := make([]specs.LinuxNamespace, 0, len(b.Spec.Linux.Namespaces)+1)
+	// namespace entry is dropped outright when this container has no NIC of
+	// its own.
+	out := make([]specs.LinuxNamespace, 0, len(b.Spec.Linux.Namespaces))
 	for _, ns := range b.Spec.Linux.Namespaces {
 		switch ns.Type {
 		case specs.NetworkNamespace:
-			switch {
-			case dropNetwork:
+			if dropNetwork {
 				continue
-			case shareNetwork:
-				ns.Path = paths[srAPI.Type_TYPE_NAMESPACE_NETWORK]
-			default:
-				ns.Path = ""
 			}
+			// hasContainerNIC: keep the entry but clear any host Path, so
+			// the guest runtime creates this container a fresh namespace
+			// of its own for internal/vminit/ctrnetworking's veth wiring
+			// to attach to.
+			ns.Path = ""
 		case specs.IPCNamespace:
 			if ns.Path != "" {
 				ns.Path = paths[srAPI.Type_TYPE_NAMESPACE_IPC]
+			}
+		case specs.UTSNamespace:
+			if ns.Path != "" {
+				ns.Path = paths[srAPI.Type_TYPE_NAMESPACE_UTS]
 			}
 		case specs.PIDNamespace:
 			if ns.Path != "" {
@@ -152,13 +175,6 @@ func sanitizeNamespaces(ctx context.Context, b *bundle.Bundle, hasContainerNIC, 
 			ns.Path = ""
 		}
 		out = append(out, ns)
-	}
-
-	if !foundNetworkNS && shareNetwork {
-		out = append(out, specs.LinuxNamespace{
-			Type: specs.NetworkNamespace,
-			Path: paths[srAPI.Type_TYPE_NAMESPACE_NETWORK],
-		})
 	}
 
 	if len(out) == 0 {

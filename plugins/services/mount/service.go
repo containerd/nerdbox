@@ -34,6 +34,7 @@ import (
 	"github.com/containerd/plugin"
 	"github.com/containerd/plugin/registry"
 	"github.com/containerd/ttrpc"
+	"github.com/moby/sys/mountinfo"
 
 	api "github.com/containerd/nerdbox/api/services/mount/v1"
 )
@@ -43,7 +44,7 @@ func init() {
 		Type: cplugins.TTRPCPlugin,
 		ID:   "mount",
 		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
-			return &service{}, nil
+			return &service{mounted: mountinfo.Mounted, doMount: doMount}, nil
 		},
 	})
 }
@@ -51,6 +52,35 @@ func init() {
 type service struct {
 	mu     sync.Mutex
 	mounts []*api.MountSpec // in-VM mounts, in mount order
+
+	// mounted reports whether path is currently a real mount point. It is
+	// mountinfo.Mounted in production; tests substitute a fake to exercise
+	// the bookkeeping-reconcile logic in MountAll without needing a
+	// privileged real mount.
+	mounted func(path string) (bool, error)
+
+	// doMount creates m.Target and performs the real mount. It is doMount
+	// in production; tests substitute a fake for the same reason as
+	// mounted above.
+	doMount func(m *api.MountSpec) error
+}
+
+// doMount creates the mount point directory and performs the real mount
+// described by m.
+func doMount(m *api.MountSpec) error {
+	if err := os.MkdirAll(m.Target, 0700); err != nil {
+		return fmt.Errorf("failed to create mount target directory %s: %w", m.Target, err)
+	}
+
+	if err := ctrMount.All([]ctrMount.Mount{{
+		Type:    m.Type,
+		Source:  m.Source,
+		Target:  m.Target,
+		Options: m.Options,
+	}}, "/"); err != nil {
+		return fmt.Errorf("failed to mount %s at %s: %w", m.Source, m.Target, err)
+	}
+	return nil
 }
 
 func (s *service) RegisterTTRPC(server *ttrpc.Server) error {
@@ -72,24 +102,38 @@ func (s *service) MountAll(ctx context.Context, r *api.MountAllRequest) (*api.Mo
 
 		i := slices.IndexFunc(s.mounts, func(e *api.MountSpec) bool { return e.Target == m.Target })
 		if i >= 0 {
-			if mountSpecsEqual(s.mounts[i], m) {
-				log.G(ctx).WithField("target", m.Target).Debug("mount already exists with matching spec; skipping")
-				continue
+			// Bookkeeping alone is not enough to skip the mount: nothing
+			// prevents the target from having been unmounted by other
+			// means since it was recorded (e.g. a container's rootfs
+			// cleanup racing a reused container ID, or the guest mount
+			// service having restarted). Reconcile against the real
+			// mount table before trusting the record, so a stale entry
+			// cannot cause a container to silently start with the wrong
+			// (or no) filesystem mounted at its target.
+			mounted, err := s.mounted(m.Target)
+			if err != nil && !os.IsNotExist(err) {
+				return nil, errgrpc.ToGRPC(fmt.Errorf("check mount state of %s: %w", m.Target, err))
 			}
-			return nil, errgrpc.ToGRPC(fmt.Errorf("target %s already mounted with a different spec: %w", m.Target, errdefs.ErrAlreadyExists))
+			if mounted {
+				if mountSpecsEqual(s.mounts[i], m) {
+					log.G(ctx).WithField("target", m.Target).Debug("mount already exists with matching spec; skipping")
+					continue
+				}
+				return nil, errgrpc.ToGRPC(fmt.Errorf("target %s already mounted with a different spec: %w", m.Target, errdefs.ErrAlreadyExists))
+			}
+			// The bookkeeping entry is stale: the target is not actually
+			// mounted (or no longer exists) despite our record saying
+			// otherwise. Drop it and fall through to mount fresh below.
+			// This can never disturb another container's mounts: mount
+			// targets are per-container by construction, so reconciling
+			// this entry away never touches state any other container
+			// depends on, and nothing here ever issues an unmount.
+			log.G(ctx).WithField("target", m.Target).Warn("bookkeeping said this target was mounted, but it is not; remounting")
+			s.mounts = slices.Delete(s.mounts, i, i+1)
 		}
 
-		if err := os.MkdirAll(m.Target, 0700); err != nil {
-			return nil, errgrpc.ToGRPC(fmt.Errorf("failed to create mount target directory %s: %w", m.Target, err))
-		}
-
-		if err := ctrMount.All([]ctrMount.Mount{{
-			Type:    m.Type,
-			Source:  m.Source,
-			Target:  m.Target,
-			Options: m.Options,
-		}}, "/"); err != nil {
-			return nil, errgrpc.ToGRPC(fmt.Errorf("failed to mount %s at %s: %w", m.Source, m.Target, err))
+		if err := s.doMount(m); err != nil {
+			return nil, errgrpc.ToGRPC(err)
 		}
 
 		s.mounts = append(s.mounts, m)
@@ -107,7 +151,12 @@ func (s *service) Unmount(ctx context.Context, r *api.UnmountRequest) (*api.Unmo
 	if i < 0 {
 		return nil, errgrpc.ToGRPC(fmt.Errorf("cannot unmount %s: %w", r.Target, errdefs.ErrNotFound))
 	}
-	if err := ctrMount.Unmount(r.Target, 0); err != nil {
+	// ctrMount.Unmount already treats "not currently a mount point" as
+	// success; also tolerate the target directory itself having been
+	// removed already (e.g. by rootfs cleanup racing this call), so a
+	// caller retrying a partially-failed teardown does not get stuck on
+	// state that is already gone.
+	if err := ctrMount.Unmount(r.Target, 0); err != nil && !os.IsNotExist(err) {
 		return nil, errgrpc.ToGRPC(fmt.Errorf("failed to unmount %s: %w", r.Target, err))
 	}
 	s.mounts = slices.Delete(s.mounts, i, i+1)
@@ -124,7 +173,10 @@ func (s *service) UnmountAll(ctx context.Context, _ *api.UnmountAllRequest) (*ap
 	for i := len(s.mounts) - 1; i >= 0; i-- {
 		target := s.mounts[i].Target
 		log.G(ctx).WithField("target", target).Info("unmounting filesystem")
-		if err := ctrMount.Unmount(target, 0); err != nil {
+		// See the comment in Unmount: tolerate the target already being
+		// gone, on top of ctrMount.Unmount's own tolerance of "not
+		// currently a mount point".
+		if err := ctrMount.Unmount(target, 0); err != nil && !os.IsNotExist(err) {
 			log.G(ctx).WithError(err).WithField("target", target).Warn("failed to unmount")
 			errs = append(errs, fmt.Errorf("unmount %s: %w", target, err))
 			continue

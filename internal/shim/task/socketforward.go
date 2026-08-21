@@ -241,6 +241,21 @@ func bindSockets(ctx context.Context, sb sandbox.Sandbox, entries []socketForwar
 // socketForwarder manages active UDS socket forwarding for a single container.
 // It is started after the container is created and runs for the container
 // lifetime.
+//
+// TODO: the guest's Accept RPC this drives delivers connection
+// notifications from a single, process-wide (per-VM, not per-container)
+// channel (see the notify field on internal/vminit/socketforward.Service).
+// Since this type and startSocketForwarding below are per-container, two
+// sibling containers in the same VM that both use socket forwarding each
+// start their own concurrent Accept stream, and the guest's shared channel
+// can deliver a notification meant for one container's forward to the
+// other's stream — which then fails to find it in its own entries map (see
+// handleConnection's "unknown forward ID" case) and drops the connection.
+// This is pre-existing code, unchanged by multi-container-per-VM support,
+// but that support is what first makes more than one Accept stream possible
+// at once and so makes this reachable. Fixing it belongs on the guest side
+// (see the TODO there); nothing here can compensate for a misdelivered
+// notification once the guest has already sent it to the wrong stream.
 type socketForwarder struct {
 	sb          sandbox.Sandbox
 	containerID string

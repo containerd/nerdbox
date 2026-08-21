@@ -67,6 +67,20 @@ type Service struct {
 
 	// notify delivers ConnectRequest messages to the Accept stream so the
 	// host shim can set up the vsock relay for each new connection.
+	//
+	// TODO: this channel, like the rest of Service, is process-wide (one
+	// per VM), but Accept below is a per-container stream on the host
+	// side (see socketForwarder in internal/shim/task/socketforward.go,
+	// "for a single container"). If more than one container in this VM
+	// binds a socket forward, each runs its own concurrent Accept RPC,
+	// and every one of those RPCs reads from this same channel — so a
+	// ConnectRequest can be delivered to a different container's Accept
+	// stream than the one whose forward it actually belongs to, which
+	// that container's host-side handleConnection then rejects as an
+	// "unknown forward ID". This was never reachable before multiple
+	// containers could share one VM. Fixing it means keying notify (and
+	// pending) by forward ID or container ID so a request only ever
+	// reaches the Accept stream that owns it.
 	notify chan *socketforward.ConnectRequest
 }
 
@@ -136,6 +150,11 @@ func (s *Service) Accept(ctx context.Context, srv socketforward.TTRPCSocketForwa
 		}
 	}()
 
+	// TODO: see the TODO on the notify field. Every concurrent caller of
+	// Accept (one per container sharing this VM) races here for the next
+	// value off the single shared notify channel, so a request meant for
+	// one container's forward can be delivered to a different
+	// container's stream instead.
 	for {
 		select {
 		case req := <-s.notify:

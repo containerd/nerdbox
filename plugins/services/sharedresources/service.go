@@ -111,6 +111,8 @@ func fromAPITypes(in []api.Type) ([]sharedresources.Type, error) {
 			out = append(out, sharedresources.TypeNamespaceNetwork)
 		case api.Type_TYPE_DEVSHM:
 			out = append(out, sharedresources.TypeDevShm)
+		case api.Type_TYPE_NAMESPACE_UTS:
+			out = append(out, sharedresources.TypeNamespaceUTS)
 		default:
 			return nil, fmt.Errorf("unsupported resource type %q: %w", t, errdefs.ErrInvalidArgument)
 		}
@@ -128,6 +130,8 @@ func toAPIType(t sharedresources.Type) api.Type {
 		return api.Type_TYPE_NAMESPACE_NETWORK
 	case sharedresources.TypeDevShm:
 		return api.Type_TYPE_DEVSHM
+	case sharedresources.TypeNamespaceUTS:
+		return api.Type_TYPE_NAMESPACE_UTS
 	default:
 		return api.Type_TYPE_UNSPECIFIED
 	}

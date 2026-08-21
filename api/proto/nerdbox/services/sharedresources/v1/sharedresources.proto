@@ -64,6 +64,15 @@ enum Type {
 	// the problem — and the "only pay for it if actually requested"
 	// requirement — is identical to the namespace types.
 	TYPE_DEVSHM = 4;
+	// TYPE_NAMESPACE_UTS is created the same way as TYPE_NAMESPACE_IPC
+	// (unshare + bind-mount, no anchor process). Callers do not need to
+	// coordinate a hostname through this API: an OCI runtime setting
+	// Spec.Hostname while joining an existing (not freshly created) UTS
+	// namespace calls sethostname(2) after joining it, updating the
+	// namespace for every container sharing it, and leaves it alone when
+	// Hostname is empty — so ordinary per-container spec fields already
+	// give "last write wins, empty means no opinion" for free.
+	TYPE_NAMESPACE_UTS = 5;
 }
 
 // SharedResource is a created resource and the guest path it is pinned at.

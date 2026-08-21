@@ -403,7 +403,7 @@ func (s *service) createSandboxedContainer(ctx context.Context, r *taskAPI.Creat
 			return addSysctls(ctx, b, podCfg.GetLinux().GetSysctls())
 		},
 		func(ctx context.Context, b *bundle.Bundle) error {
-			return sanitizeNamespaces(ctx, b, len(ctrNetCfg.Networks) > 0, s.svc.HasNIC(), sharedRes.get)
+			return sanitizeNamespaces(ctx, b, len(ctrNetCfg.Networks) > 0, sharedRes.get)
 		},
 		clearApparmorProfile,
 	)

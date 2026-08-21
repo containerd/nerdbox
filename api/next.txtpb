@@ -1030,6 +1030,10 @@ file: {
       name: "TYPE_DEVSHM"
       number: 4
     }
+    value: {
+      name: "TYPE_NAMESPACE_UTS"
+      number: 5
+    }
   }
   service: {
     name: "SharedResources"
@@ -1051,7 +1055,7 @@ file: {
     location: {
       span: 16
       span: 0
-      span: 114
+      span: 123
       span: 25
     }
     location: {
@@ -1180,7 +1184,7 @@ file: {
       path: 0
       span: 53
       span: 0
-      span: 66
+      span: 75
       span: 1
       leading_comments: " Type identifies a kind of guest-side shared resource: created once per\n (group id, type) and addressed by a guest path thereafter. Most values are\n Linux namespace types; TYPE_DEVSHM is not — see its own comment.\n"
     }
@@ -1339,11 +1343,41 @@ file: {
       span: 19
     }
     location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 5
+      path: 1
+      span: 74
+      span: 4
+      span: 22
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 5
+      span: 74
+      span: 4
+      span: 27
+      leading_comments: " TYPE_NAMESPACE_UTS is created the same way as TYPE_NAMESPACE_IPC\n (unshare + bind-mount, no anchor process). Callers do not need to\n coordinate a hostname through this API: an OCI runtime setting\n Spec.Hostname while joining an existing (not freshly created) UTS\n namespace calls sethostname(2) after joining it, updating the\n namespace for every container sharing it, and leaves it alone when\n Hostname is empty — so ordinary per-container spec fields already\n give \"last write wins, empty means no opinion\" for free.\n"
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 5
+      path: 2
+      span: 74
+      span: 25
+      span: 26
+    }
+    location: {
       path: 4
       path: 0
-      span: 69
+      span: 78
       span: 0
-      span: 76
+      span: 85
       span: 1
       leading_comments: " SharedResource is a created resource and the guest path it is pinned at.\n"
     }
@@ -1351,7 +1385,7 @@ file: {
       path: 4
       path: 0
       path: 1
-      span: 69
+      span: 78
       span: 8
       span: 22
     }
@@ -1361,7 +1395,7 @@ file: {
       path: 2
       path: 0
       path: 6
-      span: 70
+      span: 79
       span: 4
       span: 8
     }
@@ -1370,7 +1404,7 @@ file: {
       path: 0
       path: 2
       path: 0
-      span: 70
+      span: 79
       span: 4
       span: 18
     }
@@ -1380,7 +1414,7 @@ file: {
       path: 2
       path: 0
       path: 1
-      span: 70
+      span: 79
       span: 9
       span: 13
     }
@@ -1390,7 +1424,7 @@ file: {
       path: 2
       path: 0
       path: 3
-      span: 70
+      span: 79
       span: 16
       span: 17
     }
@@ -1400,7 +1434,7 @@ file: {
       path: 2
       path: 1
       path: 5
-      span: 75
+      span: 84
       span: 4
       span: 10
     }
@@ -1409,7 +1443,7 @@ file: {
       path: 0
       path: 2
       path: 1
-      span: 75
+      span: 84
       span: 4
       span: 20
       leading_comments: " path is a guest-side path. For a namespace type, it is a bind-mount\n path suitable for use directly as an OCI runtime spec\n LinuxNamespace.Path. For TYPE_DEVSHM, it is a directory suitable for\n use as an OCI runtime spec Mount.Source with Type \"bind\".\n"
@@ -1420,7 +1454,7 @@ file: {
       path: 2
       path: 1
       path: 1
-      span: 75
+      span: 84
       span: 11
       span: 15
     }
@@ -1430,23 +1464,23 @@ file: {
       path: 2
       path: 1
       path: 3
-      span: 75
+      span: 84
       span: 18
       span: 19
     }
     location: {
       path: 4
       path: 1
-      span: 78
+      span: 87
       span: 0
-      span: 95
+      span: 104
       span: 1
     }
     location: {
       path: 4
       path: 1
       path: 1
-      span: 78
+      span: 87
       span: 8
       span: 21
     }
@@ -1456,7 +1490,7 @@ file: {
       path: 2
       path: 0
       path: 5
-      span: 82
+      span: 91
       span: 4
       span: 10
     }
@@ -1465,7 +1499,7 @@ file: {
       path: 1
       path: 2
       path: 0
-      span: 82
+      span: 91
       span: 4
       span: 18
       leading_comments: " id groups the resources being created. Resources are created once\n per (id, type) and reused, so repeating a request returns the paths\n of the resources already created rather than creating new ones.\n"
@@ -1476,7 +1510,7 @@ file: {
       path: 2
       path: 0
       path: 1
-      span: 82
+      span: 91
       span: 11
       span: 13
     }
@@ -1486,7 +1520,7 @@ file: {
       path: 2
       path: 0
       path: 3
-      span: 82
+      span: 91
       span: 16
       span: 17
     }
@@ -1496,7 +1530,7 @@ file: {
       path: 2
       path: 1
       path: 4
-      span: 85
+      span: 94
       span: 4
       span: 12
     }
@@ -1505,7 +1539,7 @@ file: {
       path: 1
       path: 2
       path: 1
-      span: 85
+      span: 94
       span: 4
       span: 28
       leading_comments: " types are the resource types to create. Types already created for\n id are returned without being recreated.\n"
@@ -1516,7 +1550,7 @@ file: {
       path: 2
       path: 1
       path: 6
-      span: 85
+      span: 94
       span: 13
       span: 17
     }
@@ -1526,7 +1560,7 @@ file: {
       path: 2
       path: 1
       path: 1
-      span: 85
+      span: 94
       span: 18
       span: 23
     }
@@ -1536,7 +1570,7 @@ file: {
       path: 2
       path: 1
       path: 3
-      span: 85
+      span: 94
       span: 26
       span: 27
     }
@@ -1546,7 +1580,7 @@ file: {
       path: 2
       path: 2
       path: 5
-      span: 94
+      span: 103
       span: 4
       span: 9
     }
@@ -1555,7 +1589,7 @@ file: {
       path: 1
       path: 2
       path: 2
-      span: 94
+      span: 103
       span: 4
       span: 33
       leading_comments: " dev_shm_size_bytes is the tmpfs size to use when creating a\n TYPE_DEVSHM resource for id for the first time. Ignored for every\n other type, and ignored if a TYPE_DEVSHM resource for id already\n exists (the size used by whichever caller created it first wins;\n callers within one sandbox are expected to agree on it, since\n containerd sends every member container of a pod the same /dev/shm\n size). A value that is zero or absent falls back to a guest-side\n default.\n"
@@ -1566,7 +1600,7 @@ file: {
       path: 2
       path: 2
       path: 1
-      span: 94
+      span: 103
       span: 10
       span: 28
     }
@@ -1576,23 +1610,23 @@ file: {
       path: 2
       path: 2
       path: 3
-      span: 94
+      span: 103
       span: 31
       span: 32
     }
     location: {
       path: 4
       path: 2
-      span: 97
+      span: 106
       span: 0
-      span: 100
+      span: 109
       span: 1
     }
     location: {
       path: 4
       path: 2
       path: 1
-      span: 97
+      span: 106
       span: 8
       span: 22
     }
@@ -1602,7 +1636,7 @@ file: {
       path: 2
       path: 0
       path: 4
-      span: 99
+      span: 108
       span: 4
       span: 12
     }
@@ -1611,7 +1645,7 @@ file: {
       path: 2
       path: 2
       path: 0
-      span: 99
+      span: 108
       span: 4
       span: 42
       leading_comments: " resources contains one entry per requested type.\n"
@@ -1622,7 +1656,7 @@ file: {
       path: 2
       path: 0
       path: 6
-      span: 99
+      span: 108
       span: 13
       span: 27
     }
@@ -1632,7 +1666,7 @@ file: {
       path: 2
       path: 0
       path: 1
-      span: 99
+      span: 108
       span: 28
       span: 37
     }
@@ -1642,23 +1676,23 @@ file: {
       path: 2
       path: 0
       path: 3
-      span: 99
+      span: 108
       span: 40
       span: 41
     }
     location: {
       path: 4
       path: 3
-      span: 102
+      span: 111
       span: 0
-      span: 112
+      span: 121
       span: 1
     }
     location: {
       path: 4
       path: 3
       path: 1
-      span: 102
+      span: 111
       span: 8
       span: 21
     }
@@ -1668,7 +1702,7 @@ file: {
       path: 2
       path: 0
       path: 5
-      span: 104
+      span: 113
       span: 4
       span: 10
     }
@@ -1677,7 +1711,7 @@ file: {
       path: 3
       path: 2
       path: 0
-      span: 104
+      span: 113
       span: 4
       span: 18
       leading_comments: " id is the group to delete resources from.\n"
@@ -1688,7 +1722,7 @@ file: {
       path: 2
       path: 0
       path: 1
-      span: 104
+      span: 113
       span: 11
       span: 13
     }
@@ -1698,7 +1732,7 @@ file: {
       path: 2
       path: 0
       path: 3
-      span: 104
+      span: 113
       span: 16
       span: 17
     }
@@ -1708,7 +1742,7 @@ file: {
       path: 2
       path: 1
       path: 4
-      span: 111
+      span: 120
       span: 4
       span: 12
     }
@@ -1717,7 +1751,7 @@ file: {
       path: 3
       path: 2
       path: 1
-      span: 111
+      span: 120
       span: 4
       span: 28
       leading_comments: " types are the resource types to delete. An empty list deletes every\n resource belonging to id.\n\n Deleting a namespace that containers are still using is a caller\n error: for a PID namespace it kills the anchor process, which makes\n the kernel tear the namespace down and kill everything in it.\n"
@@ -1728,7 +1762,7 @@ file: {
       path: 2
       path: 1
       path: 6
-      span: 111
+      span: 120
       span: 13
       span: 17
     }
@@ -1738,7 +1772,7 @@ file: {
       path: 2
       path: 1
       path: 1
-      span: 111
+      span: 120
       span: 18
       span: 23
     }
@@ -1748,14 +1782,14 @@ file: {
       path: 2
       path: 1
       path: 3
-      span: 111
+      span: 120
       span: 26
       span: 27
     }
     location: {
       path: 4
       path: 4
-      span: 114
+      span: 123
       span: 0
       span: 25
     }
@@ -1763,7 +1797,7 @@ file: {
       path: 4
       path: 4
       path: 1
-      span: 114
+      span: 123
       span: 8
       span: 22
     }

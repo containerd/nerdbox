@@ -38,11 +38,6 @@ type Sandbox interface {
 	// container-supplied disks. The disk allocator uses this value to
 	// start container disk letters after the reserved range.
 	ReservedDisks() int
-
-	// HasNIC reports whether the VM was given a virtio-net interface, and so
-	// whether there is any in-guest networking. It is only meaningful after
-	// Start, since NICs are attached as part of it.
-	HasNIC() bool
 }
 
 type Filesystem struct {

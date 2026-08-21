@@ -72,12 +72,12 @@ namespace setup, cgroup accounting, syscall filtering — is managed
 | Container process lifecycle | VM | runc creates/starts/stops containers |
 | Mount namespaces | VM kernel | Each container gets its own mount namespace; rootfs is bind-mounted from the virtiofs share |
 | cgroups (v2 unified) | VM kernel | One cgroup per container, under vminitd's cgroup tree |
-| Network namespaces | VM kernel | Containers share the VM init namespace when the sandbox has no NIC (nothing for a namespace to scope); a shared per-sandbox namespace is created on demand when it does (see [Sandbox networking summary](#sandbox-networking-summary)); per-container isolation is supported via OCI spec |
+| Network namespaces | VM kernel | A container with its own annotation-driven NIC gets a fresh namespace of its own; otherwise it stays in the VM's own network namespace, since that is the only one a real virtio-net interface is ever plumbed into (see [Sandbox networking summary](#sandbox-networking-summary)) |
 | IPC namespace | VM kernel | Shared, created on demand, when CRI's pod-level IPC sharing is requested (see [Shared guest namespaces](#shared-guest-namespaces)); otherwise each container gets its own |
 | PID namespace | VM kernel | Own PID namespace by default; joins a shared, on-demand PID namespace when CRI's pod-level PID sharing is requested (see [Shared guest namespaces](#shared-guest-namespaces)) |
 | /dev/shm | VM kernel | A container sharing IPC bind-mounts a shared, size-limited guest tmpfs; otherwise its own private one — see [Shared `/dev/shm`](#shared-devshm) |
-| UTS namespace | VM kernel | Always its own, fresh namespace — there is no sharing mechanism for this type, unlike network/IPC/PID |
-| Hostname | Host shim, pushed to guest | Set from the pod's CRI config on every member container's own UTS namespace — enough to give them all the same observable hostname without actually sharing the namespace |
+| UTS namespace | VM kernel | Shared, created on demand, when CRI's pod-level UTS sharing is requested (always, in practice — see [Shared guest namespaces](#shared-guest-namespaces)); otherwise each container gets its own |
+| Hostname | Guest kernel, via each container's own OCI spec | Not tracked or coordinated by nerdbox at all: an OCI runtime calls `sethostname(2)` after joining the (now shared) UTS namespace when a container's spec has a non-empty hostname, which updates it for every container sharing that namespace — see [Shared guest namespaces](#shared-guest-namespaces) |
 
 ## Container filesystem
 
@@ -187,8 +187,8 @@ This tmpfs is mounted **outside** the `containers` virtiofs tree entirely,
 in vminitd's own root mount namespace, rather than living inside the
 directory `ShareRootfs`/`ShareVolume` expose via virtiofs: a member
 container's own crun bind-mounts `/run/devshm/<id>` directly, the same way
-it already joins `/run/netns/<id>` and `/run/ipcns/<id>` for shared
-network/IPC namespaces, with no virtiofs involved at any point. This also
+it already joins `/run/ipcns/<id>` for a shared IPC namespace, with no
+virtiofs involved at any point. This also
 means it is real guest RAM with a real, kernel-enforced size limit, rather
 than something backed by host disk and reached over virtiofs.
 `mmap(MAP_SHARED)` writes from one container are visible to
@@ -419,10 +419,14 @@ already bound on the host — see
 [Known limitations](#known-limitations) for what happens then.
 
 The decision needs nothing driver-specific. A network namespace exists to
-scope in-guest networking, and a virtio-net interface is what creates that, so
-the presence of a NIC decides it: no NIC means nothing to scope. Where
-containers do have their own NICs, the veth/bridge mechanisms in
-`internal/vminit/ctrnetworking` provide container-to-container isolation.
+scope in-guest networking, and a virtio-net interface is what creates that,
+so the presence of a NIC *on this container* decides it: no NIC of its own
+means nothing for a namespace to scope, whether or not the sandbox itself has
+one, since a virtio-net interface is only ever plumbed into the VM's own
+initial network namespace and never into a separate namespace a member
+container without a NIC could meaningfully join. Where a container does have
+its own NIC, the veth/bridge mechanisms in `internal/vminit/ctrnetworking`
+provide container-to-container isolation.
 
 TSI proxies individual outbound `connect()`/`listen()` calls; it does not
 mirror the host's own socket table into the guest, so introspection tools
@@ -486,27 +490,33 @@ networking is handled exclusively by TSI (default) or the virtio-net NIC
 
 ### Sandbox networking summary
 
-| Scenario | Host netns | VM network | Guest netns |
+| Scenario | Host netns | VM network | Guest netns (per member container) |
 |---|---|---|---|
-| No annotation (default) | Pinned (FD); entered via `setns` just before boot | TSI — TCP/UDP through pod netns | None; containers share the VM's own |
-| `io.containerd.nerdbox.network.*` | Pinned (FD); entered via `setns` just before boot | virtio-net NIC; AF_UNIX to external provider from pod netns | Shared per-sandbox namespace |
-| Kubernetes CRI pod | Created by containerd CRI (`unshare` + bind-mount); CNI ADD before sandbox | Either of the above, with full pod netns integration | As above |
+| No annotation (default) | Pinned (FD); entered via `setns` just before boot | TSI — TCP/UDP through pod netns | None; container stays in the VM's own |
+| `io.containerd.nerdbox.network.*` (sandbox-level NIC) | Pinned (FD); entered via `setns` just before boot | virtio-net NIC; AF_UNIX to external provider from pod netns | None; container stays in the VM's own, which is where the NIC actually lives |
+| `io.containerd.nerdbox.ctr.network.*` (per-container NIC) | As above | As above, plus per-container veth/bridge wiring | Fresh namespace of its own |
+| Kubernetes CRI pod | Created by containerd CRI (`unshare` + bind-mount); CNI ADD before sandbox | Either of the above, with full pod netns integration | As above, depending on per-container NIC annotations |
 | `ctr run` (no sandbox) | No netns (legacy single-container path) | TSI or virtio in shim's own netns | n/a (legacy path) |
 | Host-network pod (`NamespaceMode_NODE`) | Not created; `netns_path` is empty | TSI or virtio in shim's own netns | As above |
 
-Guest network namespaces follow NIC presence alone, with no per-driver
-behaviour: a namespace is created when the sandbox has an interface for it to
-scope, and not otherwise. This holds regardless of how a driver provides
-connectivity without a NIC, since anything that bypasses in-guest IP routing
-(TSI being one example) is by definition not something a network namespace
-can scope.
+Guest network namespaces follow *per-container* NIC presence alone, with no
+per-driver behaviour: a container gets a fresh namespace of its own only when
+it has its own annotation-driven NIC (`io.containerd.nerdbox.ctr.network.*`);
+otherwise it stays in the VM's own network namespace. This is true whether or
+not the sandbox itself has a NIC, since a virtio-net interface is only ever
+plumbed into the VM's own initial network namespace, never into a separate
+namespace member containers could join — a container without a NIC of its
+own therefore has no in-guest networking for a namespace to scope in any
+case, and reaches the host by other means (TSI) that no network namespace
+can scope regardless.
 
 ## Shared guest namespaces
 
-Kubernetes pods share an IPC namespace by default, and can opt into sharing
-a PID namespace (`shareProcessNamespace: true`) or the node's PID/IPC
-namespaces (`hostPID`/`hostIPC: true`). containerd's `WithPodNamespaces`
-oci-spec opt expresses all of these the same way: it sets a host path (e.g.
+Kubernetes pods share an IPC namespace and a UTS namespace by default (there
+is no per-pod option to turn either off), and can opt into sharing a PID
+namespace (`shareProcessNamespace: true`) or the node's PID/IPC namespaces
+(`hostPID`/`hostIPC: true`). containerd's `WithPodNamespaces` oci-spec opt
+expresses all of these the same way: it sets a host path (e.g.
 `/proc/<sandboxPid>/ns/ipc`) on the relevant namespace entry of a member
 container's OCI spec. That host path is meaningless in the guest — the
 guest is a different kernel with its own, unrelated namespaces — so the shim
@@ -532,16 +542,23 @@ this kind of resource together rather than needing a separate service.
 Crucially, a caller requests **only the types it needs**, because the cost is
 not uniform:
 
-- **Network** and **IPC**: created by locking a goroutine to an OS thread,
-  calling `unshare(CLONE_NEWNET)` / `unshare(CLONE_NEWIPC)` (which, unlike
-  `CLONE_NEWPID`, take effect on the calling thread immediately), and
-  bind-mounting the thread's namespace file to `/run/netns/<id>` or
-  `/run/ipcns/<id>`. The bind mount alone keeps the namespace alive, so the
-  creating goroutine does not need to stay running. Cheap. For network
-  specifically, the fresh namespace also has its loopback interface (`lo`)
-  brought up before the bind-mount step — a new network namespace's `lo`
-  starts administratively down, and without this step, container-to-container
-  loopback traffic within the shared namespace would fail.
+- **Network**, **IPC**, and **UTS**: created by locking a goroutine to an OS
+  thread, calling `unshare(CLONE_NEWNET)` / `unshare(CLONE_NEWIPC)` /
+  `unshare(CLONE_NEWUTS)` (which, unlike `CLONE_NEWPID`, take effect on the
+  calling thread immediately), and bind-mounting the thread's namespace file
+  to `/run/netns/<id>`, `/run/ipcns/<id>`, or `/run/utsns/<id>`. The bind
+  mount alone keeps the namespace alive, so the creating goroutine does not
+  need to stay running. Cheap. For network specifically, the fresh namespace
+  also has its loopback interface (`lo`) brought up before the bind-mount
+  step — a new network namespace's `lo` starts administratively down, and
+  without this step, container-to-container loopback traffic within the
+  shared namespace would fail. In practice the host currently never
+  requests network through this mechanism at all — see [Sandbox networking
+  summary](#sandbox-networking-summary) for why a shared guest network
+  namespace is not implemented, and why a container with its own NIC gets a
+  namespace crun creates fresh rather than one obtained here — but the
+  guest-side mechanism (and its own tests) exist independently of whether
+  the host currently calls into it for this type.
 - **PID**: cannot work that way. `unshare(CLONE_NEWPID)` does not move the
   caller into the new namespace — only the caller's *next child* becomes its
   PID 1 — so a thread can never itself be PID 1, and
@@ -583,12 +600,28 @@ On the host side, `internal/shim/task/namespaces.go`'s `sanitizeNamespaces`
 bundle transformer determines which namespaces a container needs, fetches
 them from the guest in a single `SharedResources.Create` call (memoized per
 `Task.Create` via `sharedResources`, in `internal/shim/task/sharedresources.go`),
-and rewrites the spec's namespace paths to the returned guest paths. Any IPC
-or PID namespace entry with a non-empty incoming `Path` is treated as
+and rewrites the spec's namespace paths to the returned guest paths. Any IPC,
+UTS, or PID namespace entry with a non-empty incoming `Path` is treated as
 "share within this sandbox". A container whose spec has no such entry at
-all (the common case: no pod-level sharing requested) never triggers the
+all (the common case for PID: no pod-level sharing requested — IPC and UTS
+always have one, per CRI's own defaults described above) never triggers the
 guest RPC for that type, and therefore never causes the guest to create the
 namespace on its behalf.
+
+Sharing a UTS namespace needs no extra coordination for the hostname value
+itself, unlike IPC/PID which have no comparable per-container spec field
+that could conflict. An OCI runtime setting a container's `Hostname` while
+joining an existing (rather than freshly created) UTS namespace calls
+`sethostname(2)` *after* joining it, which updates the namespace — and so
+every container sharing it — rather than erroring; and leaves the namespace
+alone when `Hostname` is empty. Since every member container of a pod
+already carries the same CRI-provided hostname on its own spec, whichever
+container's runtime happens to start last simply (re-)applies the same
+value, giving "last write wins, empty means no opinion" behavior for free,
+entirely through each container's own ordinary spec field — with nothing
+for the shim or the guest's `SharedResources` service to track or
+reconcile. (Verified directly against a real `crun`, not assumed from
+reading the OCI runtime-spec.)
 
 ### HostPID / HostIPC vs. PodPID
 
@@ -723,12 +756,13 @@ guest CID in advance.
   created the first time any member container needing it is set up, sized
   from that container's own CRI-provided `size=` mount option; a
   later-created sibling with a *different* requested size does not resize
-  it, or even surface a warning that its request was ignored — the guest's
-  `SharedResources.Create` silently reuses the existing tmpfs (matching
-  every other resource type's "created once per id, reused thereafter"
-  contract). In practice this is not expected to matter: CRI sends every
-  member container of a pod the same `/dev/shm` size, so there is normally
-  nothing to disagree about.
+  it — the guest's `SharedResources.Create` reuses the existing tmpfs
+  (matching every other resource type's "created once per id, reused
+  thereafter" contract) and logs a warning naming both sizes, but the call
+  itself still succeeds with the original size rather than failing. In
+  practice this is not expected to matter: CRI sends every member container
+  of a pod the same `/dev/shm` size, so there is normally nothing to
+  disagree about.
 - **Mount-namespace crash safety does not cover the apparmor-restricted
   fallback path.** As described in
   [Security properties](#security-properties), a shim that cannot create a

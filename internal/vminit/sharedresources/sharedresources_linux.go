@@ -72,6 +72,9 @@ const (
 	// sharing containers bind-mount their /dev/shm onto. See the package
 	// doc comment for why it lives here.
 	TypeDevShm
+	// TypeNamespaceUTS is a UTS namespace. See createUTS for how a shared
+	// hostname falls out of this without any extra coordination here.
+	TypeNamespaceUTS
 )
 
 // String implements fmt.Stringer.
@@ -85,6 +88,8 @@ func (t Type) String() string {
 		return "network"
 	case TypeDevShm:
 		return "devshm"
+	case TypeNamespaceUTS:
+		return "uts"
 	default:
 		return fmt.Sprintf("unknown(%d)", int(t))
 	}
@@ -104,6 +109,8 @@ func (t Type) dir() (string, error) {
 		return "/run/netns", nil
 	case TypeDevShm:
 		return "/run/devshm", nil
+	case TypeNamespaceUTS:
+		return "/run/utsns", nil
 	default:
 		return "", fmt.Errorf("unknown resource type %d: %w", int(t), errdefsInvalidArgument)
 	}
@@ -134,6 +141,12 @@ type entry struct {
 	// as its PID 1 exits, so unlike the other types it cannot be kept
 	// alive by a bind mount alone.
 	anchor *os.Process
+	// sizeBytes is the effective tmpfs size a TypeDevShm resource was
+	// created with (after createDevShm's own <=0 fallback has already
+	// been applied). Only set for TypeDevShm; used purely to detect and
+	// warn about a later caller requesting a different size, not to
+	// change behavior — the first caller's size always wins.
+	sizeBytes int64
 }
 
 // Manager creates shared resources on demand and remembers them, so that
@@ -220,6 +233,17 @@ func (m *Manager) ensureLocked(ctx context.Context, id string, typ Type, devShmS
 		if e.err != nil {
 			return nil, e.err
 		}
+		// The tmpfs itself is never resized here — Create's own doc
+		// comment is explicit that the first caller's size wins — but a
+		// later caller silently getting a different size than it asked
+		// for is worth surfacing, since nothing else would ever tell it.
+		if typ == TypeDevShm && devShmSizeBytes > 0 && devShmSizeBytes != e.sizeBytes {
+			log.G(ctx).WithFields(log.Fields{
+				"id":             id,
+				"existing_size":  e.sizeBytes,
+				"requested_size": devShmSizeBytes,
+			}).Warn("devshm resource already exists with a different size; keeping the existing size")
+		}
 		return e, nil
 	}
 
@@ -235,10 +259,13 @@ func (m *Manager) ensureLocked(ctx context.Context, id string, typ Type, devShmS
 		e.err = createNetwork(ctx, id, path)
 	case TypeNamespaceIPC:
 		e.err = createIPC(ctx, path)
+	case TypeNamespaceUTS:
+		e.err = createUTS(ctx, path)
 	case TypeNamespacePID:
 		e.anchor, e.err = createPID(ctx, path)
 	case TypeDevShm:
-		e.err = createDevShm(path, devShmSizeBytes)
+		e.sizeBytes = effectiveDevShmSize(devShmSizeBytes)
+		e.err = createDevShm(path, e.sizeBytes)
 	default:
 		return nil, fmt.Errorf("unknown resource type %d: %w", int(typ), ErrInvalidArgument)
 	}
@@ -369,6 +396,46 @@ func createIPC(_ context.Context, path string) error {
 	return nil
 }
 
+// createUTS creates a UTS namespace pinned at path, using the same
+// locked-thread bind-mount technique as createIPC.
+//
+// Unlike the other namespace types, this package needs no extra
+// coordination for the resource sharing containers actually care about:
+// crun's own handling of a spec's Hostname field, applied after it joins
+// this namespace via setns(2), calls sethostname(2) on it — which changes
+// the hostname for every container sharing it — when Hostname is non-empty,
+// and leaves it alone when Hostname is empty. So "last container to start
+// with a non-empty hostname wins, empty means no opinion" already falls out
+// of each container's own ordinary per-container spec field, with nothing
+// for this API to track or reconcile.
+func createUTS(_ context.Context, path string) error {
+	if err := pin(path); err != nil {
+		return err
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		runtime.LockOSThread()
+		// Intentionally no UnlockOSThread: see createNetwork.
+
+		if err := unix.Unshare(unix.CLONE_NEWUTS); err != nil {
+			errCh <- fmt.Errorf("unshare CLONE_NEWUTS: %w", err)
+			return
+		}
+		src := fmt.Sprintf("/proc/self/task/%d/ns/uts", unix.Gettid())
+		if err := unix.Mount(src, path, "", unix.MS_BIND, ""); err != nil {
+			errCh <- fmt.Errorf("bind mount %s: %w", src, err)
+			return
+		}
+		errCh <- nil
+	}()
+	if err := <-errCh; err != nil {
+		_ = unpin(path)
+		return err
+	}
+	return nil
+}
+
 // createPID creates a PID namespace pinned at path and returns the anchor
 // process holding it open.
 //
@@ -429,6 +496,17 @@ func createPID(ctx context.Context, path string) (*os.Process, error) {
 // tmpfs unusable — every write to it would fail with ENOSPC).
 const defaultDevShmSizeBytes = 64 * 1024 * 1024
 
+// effectiveDevShmSize applies the same non-positive-size fallback
+// createDevShm itself applies, so ensureLocked can record the size a
+// TypeDevShm entry was actually created with (for later mismatch warnings)
+// before calling createDevShm.
+func effectiveDevShmSize(sizeBytes int64) int64 {
+	if sizeBytes <= 0 {
+		return defaultDevShmSizeBytes
+	}
+	return sizeBytes
+}
+
 // devShmMountFlags matches the nosuid/noexec/nodev flags CRI itself
 // requests on a container's own (unshared) /dev/shm tmpfs mount, so sharing
 // does not weaken those properties.
@@ -446,7 +524,7 @@ const devShmMountFlags = unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV
 // this tmpfs real guest RAM with a real, kernel-enforced size limit,
 // rather than something backed by host disk and reached over virtiofs. A
 // member container's own crun bind-mounts this path directly, the same
-// way it already joins /run/netns/<id> and /run/ipcns/<id>.
+// way it already joins /run/ipcns/<id> for a shared IPC namespace.
 func createDevShm(path string, sizeBytes int64) error {
 	if sizeBytes <= 0 {
 		sizeBytes = defaultDevShmSizeBytes

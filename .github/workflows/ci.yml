@@ -37,7 +37,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - uses: go-task/setup-task@01a4adf9db2d14c1de7a560f09170b6e0df736aa  # v2.1.0
+      - uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e  # v2.2.0
         with:
           version: 3.x
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
@@ -61,7 +61,7 @@ jobs:
         with:
           go-version-file: 'src/github.com/containerd/nerdbox/.github/.tool-versions'
 
-      - uses: go-task/setup-task@01a4adf9db2d14c1de7a560f09170b6e0df736aa  # v2.1.0
+      - uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e  # v2.2.0
         with:
           version: 3.x
 
@@ -95,7 +95,7 @@ jobs:
         with:
           go-version-file: '.github/.tool-versions'
 
-      - uses: go-task/setup-task@01a4adf9db2d14c1de7a560f09170b6e0df736aa  # v2.1.0
+      - uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e  # v2.2.0
         with:
           version: 3.x
 
@@ -135,7 +135,7 @@ jobs:
           echo "GOPATH=${{ github.workspace }}" >> $GITHUB_ENV
           echo "${{ github.workspace }}/bin" >> $GITHUB_PATH
 
-      - uses: go-task/setup-task@01a4adf9db2d14c1de7a560f09170b6e0df736aa  # v2.1.0
+      - uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e  # v2.2.0
         with:
           version: 3.x
 
@@ -157,7 +157,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
           go-version-file: '.github/.tool-versions'
-      - uses: go-task/setup-task@01a4adf9db2d14c1de7a560f09170b6e0df736aa  # v2.1.0
+      - uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e  # v2.2.0
         with:
           version: 3.x
       - name: Run all fuzz tests
@@ -292,7 +292,7 @@ jobs:
         with:
           go-version-file: '.github/.tool-versions'
 
-      - uses: go-task/setup-task@01a4adf9db2d14c1de7a560f09170b6e0df736aa  # v2.1.0
+      - uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e  # v2.2.0
         with:
           version: 3.x
 

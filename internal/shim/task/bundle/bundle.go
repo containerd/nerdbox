@@ -41,9 +41,26 @@ type Bundle struct {
 
 type Transformer func(ctx context.Context, b *Bundle) error
 
-// Load loads an OCI bundle from the given path and apply a series of transformers
-// to turn the host-side bundle into a VM-side bundle.
+// Load loads a container's OCI bundle from the given path and applies a
+// series of transformers to turn the host-side bundle into a VM-side
+// bundle. A container bundle always has a Root, so its absence is an error;
+// see LoadSandboxConfig for the sandbox-bundle case, which has no rootfs of
+// its own.
 func Load(ctx context.Context, path string, transformers ...Transformer) (*Bundle, error) {
+	return load(ctx, path, true, transformers...)
+}
+
+// LoadSandboxConfig loads the sandbox-level bundle at path — the one
+// containerd's sandbox controller passes in CreateSandboxRequest.BundlePath,
+// used only to derive VM start options (resources, networking) ahead of any
+// container running in it — and applies transformers the same way Load
+// does. Unlike a container bundle, a sandbox bundle has no rootfs of its
+// own, so a missing Root in its config.json is expected, not an error.
+func LoadSandboxConfig(ctx context.Context, path string, transformers ...Transformer) (*Bundle, error) {
+	return load(ctx, path, false, transformers...)
+}
+
+func load(ctx context.Context, path string, rootRequired bool, transformers ...Transformer) (*Bundle, error) {
 	specBytes, err := os.ReadFile(filepath.Join(path, "config.json"))
 	if err != nil {
 		return nil, err
@@ -57,7 +74,7 @@ func Load(ctx context.Context, path string, transformers ...Transformer) (*Bundl
 		return nil, err
 	}
 
-	if err := resolveRootfsPath(ctx, &b); err != nil {
+	if err := resolveRootfsPath(ctx, &b, rootRequired); err != nil {
 		return nil, err
 	}
 
@@ -87,9 +104,12 @@ func (b *Bundle) Files() (map[string][]byte, error) {
 	return files, nil
 }
 
-func resolveRootfsPath(ctx context.Context, b *Bundle) error {
+func resolveRootfsPath(ctx context.Context, b *Bundle, required bool) error {
 	if b.Spec.Root == nil {
-		return fmt.Errorf("root path not specified: %w", errdefs.ErrInvalidArgument)
+		if required {
+			return fmt.Errorf("root path not specified: %w", errdefs.ErrInvalidArgument)
+		}
+		return nil
 	}
 
 	if filepath.IsAbs(b.Spec.Root.Path) {

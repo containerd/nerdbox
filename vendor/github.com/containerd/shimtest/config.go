@@ -59,4 +59,21 @@ type Config struct {
 
 	// Debug enables verbose logging from the shim.
 	Debug bool
+
+	// ProvideNetwork tells NetworkSuite to set up a container's
+	// network connectivity itself (a dedicated network namespace plus
+	// a slirp4netns process attached to it; see attachContainerNetwork
+	// in helpers_netns_linux.go) rather than assuming the shim already
+	// provides a working default network path.
+	//
+	// Leave this false for any shim that already gives containers real
+	// networking on its own (e.g. a VM-based shim bridging guest
+	// traffic to the host) — NetworkSuite then tests that default path
+	// directly, exactly as it always has. Set it true only for shims
+	// with no network setup of their own, which otherwise leave a
+	// container in an empty, unconfigured network namespace: the
+	// suite's tests would otherwise be unsatisfiable through no fault
+	// of the shim, since providing container networking isn't part of
+	// the shim v2 API contract at all.
+	ProvideNetwork bool
 }

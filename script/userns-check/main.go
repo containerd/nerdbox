@@ -20,11 +20,15 @@
 // getsockopt(SO_TYPE) returns EACCES when a unix socket fd is inherited
 // by a child spawned with CLONE_NEWUSER + a UID mapping + exec.
 //
-// This reproduces the exact failure path in the nerdbox shim where
+// This reproduces the failure path in the nerdbox shim where
 // net.FileListener calls getsockopt(fd, SOL_SOCKET, SO_TYPE) and gets EACCES.
 //
 // The exec is critical: it triggers capability recomputation. With euid != 0
-// in the new userns, caps drop to zero, and cross-userns socket access fails.
+// in the new userns, caps drop to zero, and cross-userns socket access
+// fails. This script maps container UID 0 to the host UID, the same
+// mapping pkg/shim/manager.cloneMntNs uses (see that function's doc
+// comment for the full explanation), to test whether user namespaces
+// work at all in the current environment.
 //
 // Exit codes:
 //
@@ -109,7 +113,8 @@ func parentMain() int {
 	// Re-exec ourselves as "--child" with CLONE_NEWUSER|CLONE_NEWNS.
 	// This is the same clone+exec pattern Go's ForkExec uses when
 	// SysProcAttr.Cloneflags is set — which triggers cap recomputation.
-	// The UID/GID mappings mirror the shim's cloneMntNs implementation.
+	// The UID/GID mappings mirror the shim's cloneMntNs implementation
+	// (container UID/GID 0 mapped to the real host UID/GID).
 	cmd := exec.Command("/proc/self/exe", "--child")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -117,10 +122,10 @@ func parentMain() int {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
 		UidMappings: []syscall.SysProcIDMap{
-			{ContainerID: uid, HostID: uid, Size: 1},
+			{ContainerID: 0, HostID: uid, Size: 1},
 		},
 		GidMappings: []syscall.SysProcIDMap{
-			{ContainerID: gid, HostID: gid, Size: 1},
+			{ContainerID: 0, HostID: gid, Size: 1},
 		},
 	}
 

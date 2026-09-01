@@ -1158,6 +1158,36 @@ func TestReadPathImportDirectoryOverFileFails(t *testing.T) {
 	}
 }
 
+// TestReadPathImportEmptyArchiveOverFileFails rejects an archive with no
+// entries at a file destination: the file's bytes were not replaced, and
+// reporting success would mask a truncated stream.
+func TestReadPathImportEmptyArchiveOverFileFails(t *testing.T) {
+	bundle, _, _ := makeRootfs(t)
+	source := filepath.Join(bundle, "resolv.conf")
+	if err := os.WriteFile(source, []byte("nameserver 10.0.0.1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	writeBundleSpec(t, bundle, map[string]string{"/etc/resolv.conf": source})
+
+	root, rel, _, err := resolveMountRoot(bundle, "/etc/resolv.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	buf := writeTar(t, func(tw *tar.Writer) {})
+
+	if err := readPath(buf, root, rel, mediaTypeTar, false); err == nil {
+		t.Fatal("expected error extracting an empty archive over a file destination")
+	}
+	got, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "nameserver 10.0.0.1\n" {
+		t.Fatalf("source was modified by a failed import: %q", got)
+	}
+}
+
 // TestWritePathExportDirMountExactKeepsName pins the naming contract when the
 // requested path is exactly a directory mount's destination: the walk anchors
 // at the mount source, but the archive's top-level name is the destination's

@@ -413,18 +413,23 @@ func readPath(r io.Reader, rootfs, dstPath, mediaType string, preserveOwnership 
 
 // extractOverFile extracts an archive onto a destination that is an
 // existing file rather than a directory, replacing its contents with
-// the archived bytes. Only an archive carrying a single regular file
-// makes sense here; a directory or any other entry type cannot be
-// extracted over a file and is rejected. The file is truncated in
-// place rather than recreated, so it keeps its mode and, when it is a
-// bind-mount source, its inode — a mounted file replaced by a new
-// inode would leave the container reading the stale one.
+// the archived bytes. Only an archive carrying exactly one regular
+// file makes sense here; a directory or any other entry type cannot
+// be extracted over a file and is rejected, and an empty archive is
+// too — reporting success while the file keeps its old bytes would
+// mask a truncated stream. The file is truncated in place rather than
+// recreated, so it keeps its mode and, when it is a bind-mount
+// source, its inode — a mounted file replaced by a new inode would
+// leave the container reading the stale one.
 func extractOverFile(dst *os.Root, target string, r io.Reader, preserveOwnership bool) error {
 	tr := tar.NewReader(r)
 	written := false
 	for {
 		header, err := tr.Next()
 		if err == io.EOF {
+			if !written {
+				return fmt.Errorf("cannot extract empty archive over file %s", target)
+			}
 			return nil
 		}
 		if err != nil {

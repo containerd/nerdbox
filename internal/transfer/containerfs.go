@@ -99,10 +99,8 @@ func (t *containerFSTransferrer) Transfer(ctx context.Context, src, dst any, opt
 //
 // The longest matching destination wins, so a mount nested inside another
 // resolves against the innermost one. A bundle with no config.json, or one
-// that does not parse as a spec, resolves to the rootfs: absent mount
-// information there is nothing to redirect. A config that exists but cannot
-// be read is an error — resolving blind could land a transfer on a shadowed
-// path or bypass a read-only mount.
+// that does not parse as a spec, resolves to the rootfs; a config that
+// exists but cannot be read is an error rather than a blind fallback.
 //
 // A relative source is interpreted against the bundle directory, as the
 // runtime does (nerdbox itself declares such mounts for bundle extra files
@@ -110,12 +108,10 @@ func (t *containerFSTransferrer) Transfer(ctx context.Context, src, dst any, opt
 // mount — cannot anchor an *os.Root, so it resolves to the file's parent
 // directory with the file's name as the relative path.
 //
-// The returned readonly flag reports that the container's view of the path is
-// write-protected: the matched mount carries a read-only option, or no mount
-// covers the path and the spec declares the root filesystem read-only.
-// Resolution operates on the backing directory, outside the mount namespace
-// where MS_RDONLY is enforced, so a writer must honor the flag rather than
-// rely on the write failing.
+// The readonly result reports that the container sees the path as read-only:
+// the matched mount carries a read-only option, or no mount covers the path
+// and the spec's root is read-only. Writers must honor it — resolution
+// bypasses the mount namespace where MS_RDONLY is enforced.
 //
 // Known limitations, tracked by issue #164: a path whose subtree contains a
 // mount deeper inside (e.g. archiving /etc when /etc/resolv.conf is a mount)
@@ -192,10 +188,8 @@ func resolveMountRoot(bundleContainerDir, containerPath string) (root, rel strin
 	return bestSrc, rel, bestReadonly, nil
 }
 
-// readOnlyMount reports whether the option list marks a mount read-only.
-// All options are scanned without short-circuiting so a later "rw"
-// overrides an earlier "ro" and vice versa, matching typical
-// mount-option semantics.
+// readOnlyMount reports whether the options mark a mount read-only; a later
+// "rw" or "ro" overrides an earlier one, as in mount(8) semantics.
 func readOnlyMount(options []string) bool {
 	readonly := false
 	for _, opt := range options {
@@ -413,17 +407,11 @@ func readPath(r io.Reader, rootfs, dstPath, mediaType string, preserveOwnership 
 	}
 }
 
-// extractOverFile extracts an archive onto a destination that is an
-// existing file rather than a directory, replacing its contents with
-// the archived bytes. Only an archive carrying exactly one regular
-// file makes sense here; anything else — an empty archive, a
-// directory or other entry type, a second entry, a truncated payload
-// — is rejected. The payload is staged in a temporary sibling first,
-// so a rejected archive leaves the destination untouched, and the
-// destination is then truncated in place rather than recreated, so it
-// keeps its mode and, when it is a bind-mount source, its inode — a
-// mounted file replaced by a new inode would leave the container
-// reading the stale one.
+// extractOverFile extracts an archive that must carry exactly one regular
+// file over an existing file destination. The payload is staged in a sibling
+// first so a rejected archive leaves the destination untouched, then the
+// destination is truncated in place: a new inode would leave a container
+// whose mount binds this file reading the stale one.
 func extractOverFile(dst *os.Root, target string, r io.Reader, preserveOwnership bool) error {
 	tr := tar.NewReader(r)
 	header, err := tr.Next()
@@ -437,8 +425,7 @@ func extractOverFile(dst *os.Root, target string, r io.Reader, preserveOwnership
 		return fmt.Errorf("cannot extract %q over file %s: not a regular file", header.Name, target)
 	}
 
-	// A fixed staging name self-heals: debris from an interrupted
-	// transfer is overwritten rather than blocking the next one.
+	// A fixed name overwrites debris from an interrupted transfer.
 	tmp := target + ".transfer-tmp"
 	f, err := dst.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {

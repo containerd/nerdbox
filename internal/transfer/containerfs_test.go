@@ -1158,10 +1158,9 @@ func TestReadPathImportDirectoryOverFileFails(t *testing.T) {
 	}
 }
 
-// TestReadPathImportMultipleEntriesOverFileLeavesTargetUntouched rejects an
-// archive carrying more than one entry at a file destination — and, because
-// the payload is staged before the destination is touched, the failed import
-// leaves the file's original bytes in place and no staging debris behind.
+// TestReadPathImportMultipleEntriesOverFileLeavesTargetUntouched rejects a
+// multi-entry archive at a file destination, leaving the file's bytes intact
+// and no staging debris behind.
 func TestReadPathImportMultipleEntriesOverFileLeavesTargetUntouched(t *testing.T) {
 	bundle, _, _ := makeRootfs(t)
 	source := filepath.Join(bundle, "resolv.conf")
@@ -1203,9 +1202,8 @@ func TestReadPathImportMultipleEntriesOverFileLeavesTargetUntouched(t *testing.T
 	}
 }
 
-// TestReadPathImportEmptyArchiveOverFileFails rejects an archive with no
-// entries at a file destination: the file's bytes were not replaced, and
-// reporting success would mask a truncated stream.
+// TestReadPathImportEmptyArchiveOverFileFails rejects an empty archive at a
+// file destination instead of succeeding without replacing anything.
 func TestReadPathImportEmptyArchiveOverFileFails(t *testing.T) {
 	bundle, _, _ := makeRootfs(t)
 	source := filepath.Join(bundle, "resolv.conf")
@@ -1268,10 +1266,6 @@ func TestWritePathExportDirMountExactKeepsName(t *testing.T) {
 	}
 }
 
-// specMount and writeBundleSpecOpts write a config.json with full mount
-// declarations and the root filesystem's read-only flag, for tests that
-// exercise the readonly resolution writeBundleSpec's destination -> source
-// map cannot express.
 type specMount struct {
 	Destination string   `json:"destination"`
 	Type        string   `json:"type"`
@@ -1279,6 +1273,8 @@ type specMount struct {
 	Options     []string `json:"options,omitempty"`
 }
 
+// writeBundleSpecOpts is writeBundleSpec with mount options and the root
+// read-only flag.
 func writeBundleSpecOpts(t *testing.T, bundle string, rootReadonly bool, mounts []specMount) {
 	t.Helper()
 	spec := struct {
@@ -1297,11 +1293,9 @@ func writeBundleSpecOpts(t *testing.T, bundle string, rootReadonly bool, mounts 
 	}
 }
 
-// TestResolveMountRootReadOnly pins the readonly flag: a matched mount's
+// TestResolveMountRootReadOnly pins the readonly flag: the matched mount's
 // options decide with last-option-wins semantics, and a path no mount covers
-// falls back to the spec's root read-only flag — so a writable mount inside a
-// read-only root stays writable, as Docker treats volumes in a --read-only
-// container.
+// falls back to the spec's root read-only flag.
 func TestResolveMountRootReadOnly(t *testing.T) {
 	bundle, _, _ := makeRootfs(t)
 	writeBundleSpecOpts(t, bundle, true, []specMount{
@@ -1332,13 +1326,9 @@ func TestResolveMountRootReadOnly(t *testing.T) {
 	}
 }
 
-// TestTransferImportToReadOnlyPathRejected is the write-side contract on
-// read-only destinations: a copy-to targeting a path backed by a read-only
-// bind mount — or by the rootfs of a container whose spec marks root
-// read-only — fails with ErrPermissionDenied and leaves the backing content
-// untouched. Resolution writes to the backing directory from outside the
-// mount namespace, where MS_RDONLY would not intervene, so the refusal is
-// what upholds the read-only contract the container sees.
+// TestTransferImportToReadOnlyPathRejected verifies that a copy-to targeting
+// a read-only bind mount or a read-only rootfs fails with ErrPermissionDenied
+// and leaves the backing content untouched.
 func TestTransferImportToReadOnlyPathRejected(t *testing.T) {
 	newBundle := func(t *testing.T) (bundleParent, bundle string) {
 		t.Helper()
@@ -1350,8 +1340,7 @@ func TestTransferImportToReadOnlyPathRejected(t *testing.T) {
 		return bundleParent, bundle
 	}
 
-	// The rejection must come before the input stream is consumed, so a
-	// ReadStream with no backing stream must never get its Reader called.
+	// A ReadStream with no backing stream asserts the rejection precedes any read.
 	transferTo := func(t *testing.T, bundleParent, containerPath string) error {
 		t.Helper()
 		return NewContainerFSTransferrer(bundleParent).Transfer(context.Background(),

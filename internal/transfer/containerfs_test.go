@@ -1066,6 +1066,10 @@ func TestReadPathImportOverSingleFileBindMount(t *testing.T) {
 	if err := os.WriteFile(source, []byte("nameserver 10.0.0.1\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
+	stagingLookalike := source + ".transfer-tmp"
+	if err := os.WriteFile(stagingLookalike, []byte("keep\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(rootfs, "etc"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -1119,6 +1123,13 @@ func TestReadPathImportOverSingleFileBindMount(t *testing.T) {
 	}
 	if string(shadow) != "shadowed\n" {
 		t.Fatalf("shadowed rootfs entry was modified: %q", shadow)
+	}
+	lookalike, err := os.ReadFile(stagingLookalike)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(lookalike) != "keep\n" {
+		t.Fatalf("staging lookalike was modified: %q", lookalike)
 	}
 }
 
@@ -1196,8 +1207,14 @@ func TestReadPathImportMultipleEntriesOverFileLeavesTargetUntouched(t *testing.T
 	if string(got) != "nameserver 10.0.0.1\n" {
 		t.Fatalf("target was modified by a failed import: %q", got)
 	}
-	if _, err := os.Stat(source + ".transfer-tmp"); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatal("staging file left behind after a failed import")
+	entries, err := os.ReadDir(filepath.Dir(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".transfer-") {
+			t.Fatalf("staging file left behind after a failed import: %s", entry.Name())
+		}
 	}
 }
 
@@ -1319,6 +1336,23 @@ func TestResolveMountRootReadOnly(t *testing.T) {
 		if readonly != tc.want {
 			t.Errorf("%s: readonly = %v, want %v", tc.path, readonly, tc.want)
 		}
+	}
+}
+
+func TestResolveMountRootDuplicateDestinationUsesLast(t *testing.T) {
+	bundle, _, _ := makeRootfs(t)
+	writeBundleSpecOpts(t, bundle, false, []specMount{
+		{Destination: "/data", Type: "bind", Source: "/mnt/first", Options: []string{"ro"}},
+		{Destination: "/data", Type: "bind", Source: "/mnt/second", Options: []string{"rw"}},
+	})
+
+	root, rel, readonly, err := resolveMountRoot(bundle, "/data/file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root != "/mnt/second" || rel != "/file" || readonly {
+		t.Fatalf("resolved to (%q, %q, readonly=%v), want (%q, %q, readonly=false)",
+			root, rel, readonly, "/mnt/second", "/file")
 	}
 }
 

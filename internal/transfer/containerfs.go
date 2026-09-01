@@ -19,6 +19,7 @@ package transfer
 import (
 	"archive/tar"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -154,7 +155,7 @@ func resolveMountRoot(bundleContainerDir, containerPath string) (root, rel strin
 		if target != dest && !strings.HasPrefix(target, strings.TrimSuffix(dest, "/")+"/") {
 			continue
 		}
-		if len(dest) > len(bestDest) {
+		if len(dest) >= len(bestDest) {
 			bestDest, bestSrc = dest, m.Source
 			bestReadonly = readOnlyMount(m.Options)
 		}
@@ -421,21 +422,19 @@ func extractOverFile(dst *os.Root, target string, r io.Reader, preserveOwnership
 		return fmt.Errorf("cannot extract %q over file %s: not a regular file", header.Name, target)
 	}
 
-	// A fixed name overwrites debris from an interrupted transfer.
-	tmp := target + ".transfer-tmp"
-	f, err := dst.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	tmp := path.Join(path.Dir(target), ".transfer-"+rand.Text())
+	f, err := dst.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to stage %s: %w", target, err)
 	}
-	defer dst.Remove(tmp)
+	defer func() {
+		f.Close()
+		dst.Remove(tmp)
+	}()
 	// Copy exactly the size the header declares; the tar reader
 	// bounds the entry anyway, and the explicit limit satisfies
 	// gosec's decompression-bomb rule (G110).
 	if _, err := io.CopyN(f, tr, header.Size); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
 		return err
 	}
 	switch _, err := tr.Next(); {
@@ -445,16 +444,14 @@ func extractOverFile(dst *os.Root, target string, r io.Reader, preserveOwnership
 		return fmt.Errorf("failed to read tar header: %w", err)
 	}
 
-	staged, err := dst.Open(tmp)
-	if err != nil {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
-	defer staged.Close()
 	out, err := dst.OpenFile(target, os.O_WRONLY|os.O_TRUNC, 0)
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, staged); err != nil {
+	if _, err := io.Copy(out, f); err != nil {
 		out.Close()
 		return err
 	}

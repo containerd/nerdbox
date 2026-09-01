@@ -217,25 +217,25 @@ func rootRel(p string) string {
 	return p
 }
 
-// writePath creates a tar archive from the given path within rootfs
-// and writes it to w. name is the archive's top-level entry name,
-// taken from the container's view of the path: when src resolved
-// through a mount, the backing file or directory's own basename may
-// differ from the name the container sees. When noWalk is true and
-// path is a directory, only the directory entry itself is included
-// without walking into it.
+// writePath creates a tar archive from the given path within dir — the
+// resolved backing directory, a rootfs or a mount source — and writes it
+// to w. name is the archive's top-level entry name, taken from the
+// container's view of the path: when src resolved through a mount, the
+// backing file or directory's own basename may differ from the name the
+// container sees. When noWalk is true and path is a directory, only the
+// directory entry itself is included without walking into it.
 //
-// All filesystem accesses are anchored to rootfs through *os.Root,
-// so symlink resolution cannot escape the rootfs even if the
-// container concurrently mutates its own filesystem.
-func writePath(rootfs, src, name string, w io.Writer, mediaType string, noWalk bool) error {
+// All filesystem accesses are anchored to dir through *os.Root, so
+// symlink resolution cannot escape it even if the container
+// concurrently mutates its own filesystem.
+func writePath(dir, src, name string, w io.Writer, mediaType string, noWalk bool) error {
 	if mediaType != mediaTypeTar {
 		return fmt.Errorf("unsupported media type %q: %w", mediaType, errdefs.ErrNotImplemented)
 	}
 
-	root, err := os.OpenRoot(rootfs)
+	root, err := os.OpenRoot(dir)
 	if err != nil {
-		return fmt.Errorf("failed to open rootfs: %w", err)
+		return fmt.Errorf("failed to open transfer root: %w", err)
 	}
 	defer root.Close()
 
@@ -282,8 +282,8 @@ func writePath(rootfs, src, name string, w io.Writer, mediaType string, noWalk b
 			// The root entry itself.
 			rel = ""
 		case relPath == ".":
-			// Walking from the rootfs root: walkPath is already the
-			// entry name relative to the root.
+			// Walking from the root itself: walkPath is already the
+			// entry name relative to it.
 			rel = walkPath
 		default:
 			// Walking a subdirectory: strip "relPath/" prefix.
@@ -305,7 +305,7 @@ func writePath(rootfs, src, name string, w io.Writer, mediaType string, noWalk b
 }
 
 // writeTarEntry writes a single tar entry. srcPath is interpreted
-// relative to root, so symlink resolution cannot escape the rootfs.
+// relative to root, so symlink resolution cannot escape it.
 func writeTarEntry(root *os.Root, tw *tar.Writer, srcPath string, fi os.FileInfo, name string) error {
 	header, err := tar.FileInfoHeader(fi, "")
 	if err != nil {
@@ -340,23 +340,24 @@ func writeTarEntry(root *os.Root, tw *tar.Writer, srcPath string, fi os.FileInfo
 }
 
 // readPath reads a tar archive from r and extracts it under path
-// within rootfs. When preserveOwnership is true, extracted files have
-// their UID/GID set from the tar headers.
+// within dir — the resolved backing directory, a rootfs or a mount
+// source. When preserveOwnership is true, extracted files have their
+// UID/GID set from the tar headers.
 //
 // The destination directory is opened as a sub-*os.Root so the
 // destination boundary is enforced by os.Root rather than by lexical
-// path checks. Pre-existing symlinks within the rootfs, symlinks
-// created by earlier entries in the same archive, absolute symlink
-// targets, and tar entry names containing "../" all resolve within
-// the destination's sub-root and cannot redirect writes outside it.
-func readPath(r io.Reader, rootfs, dstPath, mediaType string, preserveOwnership bool) error {
+// path checks. Pre-existing symlinks within dir, symlinks created by
+// earlier entries in the same archive, absolute symlink targets, and
+// tar entry names containing "../" all resolve within the
+// destination's sub-root and cannot redirect writes outside it.
+func readPath(r io.Reader, dir, dstPath, mediaType string, preserveOwnership bool) error {
 	if mediaType != mediaTypeTar {
 		return fmt.Errorf("unsupported media type %q: %w", mediaType, errdefs.ErrNotImplemented)
 	}
 
-	root, err := os.OpenRoot(rootfs)
+	root, err := os.OpenRoot(dir)
 	if err != nil {
-		return fmt.Errorf("failed to open rootfs: %w", err)
+		return fmt.Errorf("failed to open transfer root: %w", err)
 	}
 	defer root.Close()
 

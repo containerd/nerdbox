@@ -98,9 +98,11 @@ func (t *containerFSTransferrer) Transfer(ctx context.Context, src, dst any, opt
 // consistent with the container's own view of its filesystem.
 //
 // The longest matching destination wins, so a mount nested inside another
-// resolves against the innermost one. A bundle with no readable or parseable
-// config.json resolves to the rootfs: absent mount information there is
-// nothing to redirect, and the caller reports any genuine failure.
+// resolves against the innermost one. A bundle with no config.json, or one
+// that does not parse as a spec, resolves to the rootfs: absent mount
+// information there is nothing to redirect. A config that exists but cannot
+// be read is an error — resolving blind could land a transfer on a shadowed
+// path or bypass a read-only mount.
 //
 // A relative source is interpreted against the bundle directory, as the
 // runtime does (nerdbox itself declares such mounts for bundle extra files

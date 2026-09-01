@@ -19,6 +19,7 @@ package transfer
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -27,6 +28,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/containerd/errdefs"
 )
 
 // makeRootfs creates a temporary rootfs and a sibling "outside"
@@ -829,7 +832,7 @@ func writeBundleSpec(t *testing.T, bundle string, binds map[string]string) {
 func TestResolveMountRootNoSpec(t *testing.T) {
 	bundle, rootfs, _ := makeRootfs(t)
 
-	root, rel, err := resolveMountRoot(bundle, "/etc/hosts")
+	root, rel, _, err := resolveMountRoot(bundle, "/etc/hosts")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -862,7 +865,7 @@ func TestResolveMountRootSelectsLongestDestination(t *testing.T) {
 		// A sibling whose name merely shares the prefix is not inside the mount.
 		{"/database", rootfs, "/database"},
 	} {
-		root, rel, err := resolveMountRoot(bundle, tc.path)
+		root, rel, _, err := resolveMountRoot(bundle, tc.path)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -889,7 +892,7 @@ func TestReadPathImportLandsInBindSource(t *testing.T) {
 	}
 	writeBundleSpec(t, bundle, map[string]string{"/data": source})
 
-	root, rel, err := resolveMountRoot(bundle, "/data")
+	root, rel, _, err := resolveMountRoot(bundle, "/data")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -950,7 +953,7 @@ func TestWritePathExportReadsBindSource(t *testing.T) {
 	}
 	writeBundleSpec(t, bundle, map[string]string{"/data": source})
 
-	root, rel, err := resolveMountRoot(bundle, "/data/payload.txt")
+	root, rel, _, err := resolveMountRoot(bundle, "/data/payload.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1004,7 +1007,7 @@ func TestResolveMountRootSingleFileMount(t *testing.T) {
 		// resolving elsewhere.
 		{"/etc/hosts/sub", extra, "hosts/sub"},
 	} {
-		root, rel, err := resolveMountRoot(bundle, tc.path)
+		root, rel, _, err := resolveMountRoot(bundle, tc.path)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1033,7 +1036,7 @@ func TestWritePathExportSingleFileBindMount(t *testing.T) {
 	}
 	writeBundleSpec(t, bundle, map[string]string{"/etc/resolv.conf": source})
 
-	root, rel, err := resolveMountRoot(bundle, "/etc/resolv.conf")
+	root, rel, _, err := resolveMountRoot(bundle, "/etc/resolv.conf")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1076,7 +1079,7 @@ func TestReadPathImportOverSingleFileBindMount(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	root, rel, err := resolveMountRoot(bundle, "/etc/resolv.conf")
+	root, rel, _, err := resolveMountRoot(bundle, "/etc/resolv.conf")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1130,7 +1133,7 @@ func TestReadPathImportDirectoryOverFileFails(t *testing.T) {
 	}
 	writeBundleSpec(t, bundle, map[string]string{"/etc/resolv.conf": source})
 
-	root, rel, err := resolveMountRoot(bundle, "/etc/resolv.conf")
+	root, rel, _, err := resolveMountRoot(bundle, "/etc/resolv.conf")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1171,7 +1174,7 @@ func TestWritePathExportDirMountExactKeepsName(t *testing.T) {
 	}
 	writeBundleSpec(t, bundle, map[string]string{"/data": source})
 
-	root, rel, err := resolveMountRoot(bundle, "/data")
+	root, rel, _, err := resolveMountRoot(bundle, "/data")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1188,4 +1191,131 @@ func TestWritePathExportDirMountExactKeepsName(t *testing.T) {
 	if _, ok := entries[filepath.Base(source)+"/file"]; ok {
 		t.Fatal("archive leaked the mount source's basename instead of the container-view name")
 	}
+}
+
+// specMount and writeBundleSpecOpts write a config.json with full mount
+// declarations and the root filesystem's read-only flag, for tests that
+// exercise the readonly resolution writeBundleSpec's destination -> source
+// map cannot express.
+type specMount struct {
+	Destination string   `json:"destination"`
+	Type        string   `json:"type"`
+	Source      string   `json:"source"`
+	Options     []string `json:"options,omitempty"`
+}
+
+func writeBundleSpecOpts(t *testing.T, bundle string, rootReadonly bool, mounts []specMount) {
+	t.Helper()
+	spec := struct {
+		Root struct {
+			Readonly bool `json:"readonly"`
+		} `json:"root"`
+		Mounts []specMount `json:"mounts"`
+	}{Mounts: mounts}
+	spec.Root.Readonly = rootReadonly
+	data, err := json.Marshal(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bundle, "config.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestResolveMountRootReadOnly pins the readonly flag: a matched mount's
+// options decide with last-option-wins semantics, and a path no mount covers
+// falls back to the spec's root read-only flag — so a writable mount inside a
+// read-only root stays writable, as Docker treats volumes in a --read-only
+// container.
+func TestResolveMountRootReadOnly(t *testing.T) {
+	bundle, _, _ := makeRootfs(t)
+	writeBundleSpecOpts(t, bundle, true, []specMount{
+		{Destination: "/ro", Type: "bind", Source: "/mnt/ro", Options: []string{"rbind", "ro"}},
+		{Destination: "/rw", Type: "bind", Source: "/mnt/rw", Options: []string{"rbind"}},
+		{Destination: "/ro-then-rw", Type: "bind", Source: "/mnt/a", Options: []string{"rbind", "ro", "rw"}},
+		{Destination: "/rw-then-ro", Type: "bind", Source: "/mnt/b", Options: []string{"rbind", "rw", "ro"}},
+	})
+
+	for _, tc := range []struct {
+		path string
+		want bool
+	}{
+		{"/ro/file", true},
+		{"/rw/file", false},
+		{"/ro-then-rw/file", false},
+		{"/rw-then-ro/file", true},
+		// No mount covers the path: the read-only root decides.
+		{"/etc/hosts", true},
+	} {
+		_, _, readonly, err := resolveMountRoot(bundle, tc.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if readonly != tc.want {
+			t.Errorf("%s: readonly = %v, want %v", tc.path, readonly, tc.want)
+		}
+	}
+}
+
+// TestTransferImportToReadOnlyPathRejected is the write-side contract on
+// read-only destinations: a copy-to targeting a path backed by a read-only
+// bind mount — or by the rootfs of a container whose spec marks root
+// read-only — fails with ErrPermissionDenied and leaves the backing content
+// untouched. Resolution writes to the backing directory from outside the
+// mount namespace, where MS_RDONLY would not intervene, so the refusal is
+// what upholds the read-only contract the container sees.
+func TestTransferImportToReadOnlyPathRejected(t *testing.T) {
+	newBundle := func(t *testing.T) (bundleParent, bundle string) {
+		t.Helper()
+		bundleParent = t.TempDir()
+		bundle = filepath.Join(bundleParent, "c1")
+		if err := os.MkdirAll(filepath.Join(bundle, "rootfs"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		return bundleParent, bundle
+	}
+
+	// The rejection must come before the input stream is consumed, so a
+	// ReadStream with no backing stream must never get its Reader called.
+	transferTo := func(t *testing.T, bundleParent, containerPath string) error {
+		t.Helper()
+		return NewContainerFSTransferrer(bundleParent).Transfer(context.Background(),
+			&ReadStream{MediaType: mediaTypeTar},
+			&ContainerPath{ContainerID: "c1", Path: containerPath})
+	}
+
+	t.Run("read-only bind mount", func(t *testing.T) {
+		bundleParent, bundle := newBundle(t)
+		source := filepath.Join(bundle, "bind-source")
+		if err := os.MkdirAll(source, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(source, "keep"), []byte("ORIGINAL"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		writeBundleSpecOpts(t, bundle, false, []specMount{
+			{Destination: "/data", Type: "bind", Source: source, Options: []string{"rbind", "ro"}},
+		})
+
+		err := transferTo(t, bundleParent, "/data/keep")
+		if !errdefs.IsPermissionDenied(err) {
+			t.Fatalf("expected permission-denied error, got %v", err)
+		}
+		got, err := os.ReadFile(filepath.Join(source, "keep"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != "ORIGINAL" {
+			t.Fatalf("read-only mount source was modified: %q", got)
+		}
+	})
+
+	t.Run("read-only rootfs", func(t *testing.T) {
+		bundleParent, bundle := newBundle(t)
+		writeBundleSpecOpts(t, bundle, true, nil)
+
+		if err := transferTo(t, bundleParent, "/etc/hosts"); !errdefs.IsPermissionDenied(err) {
+			t.Fatalf("expected permission-denied error, got %v", err)
+		}
+	})
 }

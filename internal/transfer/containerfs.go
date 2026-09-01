@@ -54,7 +54,7 @@ func (t *containerFSTransferrer) Transfer(ctx context.Context, src, dst any, opt
 			return errdefs.ErrNotImplemented
 		}
 		bundle := filepath.Join(t.bundleDir, s.ContainerID)
-		root, src, err := resolveMountRoot(bundle, s.Path)
+		root, src, _, err := resolveMountRoot(bundle, s.Path)
 		if err != nil {
 			return err
 		}
@@ -71,9 +71,12 @@ func (t *containerFSTransferrer) Transfer(ctx context.Context, src, dst any, opt
 			return errdefs.ErrNotImplemented
 		}
 		bundle := filepath.Join(t.bundleDir, d.ContainerID)
-		root, dst, err := resolveMountRoot(bundle, d.Path)
+		root, dst, readonly, err := resolveMountRoot(bundle, d.Path)
 		if err != nil {
 			return err
+		}
+		if readonly {
+			return fmt.Errorf("container path %q is marked read-only: %w", d.Path, errdefs.ErrPermissionDenied)
 		}
 		r := s.Reader(ctx)
 		return readPath(r, root, dst, s.MediaType, d.PreserveOwnership)
@@ -105,36 +108,48 @@ func (t *containerFSTransferrer) Transfer(ctx context.Context, src, dst any, opt
 // mount — cannot anchor an *os.Root, so it resolves to the file's parent
 // directory with the file's name as the relative path.
 //
+// The returned readonly flag reports that the container's view of the path is
+// write-protected: the matched mount carries a read-only option, or no mount
+// covers the path and the spec declares the root filesystem read-only.
+// Resolution operates on the backing directory, outside the mount namespace
+// where MS_RDONLY is enforced, so a writer must honor the flag rather than
+// rely on the write failing.
+//
 // Known limitations, tracked by issue #164: a path whose subtree contains a
 // mount deeper inside (e.g. archiving /etc when /etc/resolv.conf is a mount)
 // resolves to the outer directory only, and non-bind mounts (tmpfs, ...)
 // exist only in the container's mount namespace and cannot be resolved from
 // the bundle at all.
-func resolveMountRoot(bundleContainerDir, containerPath string) (root, rel string, err error) {
+func resolveMountRoot(bundleContainerDir, containerPath string) (root, rel string, readonly bool, err error) {
 	rootfs := filepath.Join(bundleContainerDir, "rootfs")
 
 	data, err := os.ReadFile(filepath.Join(bundleContainerDir, "config.json"))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return rootfs, containerPath, nil
+			return rootfs, containerPath, false, nil
 		}
-		return "", "", fmt.Errorf("failed to read bundle config: %w", err)
+		return "", "", false, fmt.Errorf("failed to read bundle config: %w", err)
 	}
 
 	var spec struct {
+		Root struct {
+			Readonly bool `json:"readonly"`
+		} `json:"root"`
 		Mounts []struct {
-			Destination string `json:"destination"`
-			Type        string `json:"type"`
-			Source      string `json:"source"`
+			Destination string   `json:"destination"`
+			Type        string   `json:"type"`
+			Source      string   `json:"source"`
+			Options     []string `json:"options"`
 		} `json:"mounts"`
 	}
 	if err := json.Unmarshal(data, &spec); err != nil {
-		return rootfs, containerPath, nil
+		return rootfs, containerPath, false, nil
 	}
 
 	target := path.Clean("/" + containerPath)
 
 	var bestDest, bestSrc string
+	var bestReadonly bool
 	for _, m := range spec.Mounts {
 		if m.Type != "bind" || m.Source == "" {
 			continue
@@ -145,10 +160,11 @@ func resolveMountRoot(bundleContainerDir, containerPath string) (root, rel strin
 		}
 		if len(dest) > len(bestDest) {
 			bestDest, bestSrc = dest, m.Source
+			bestReadonly = readOnlyMount(m.Options)
 		}
 	}
 	if bestDest == "" {
-		return rootfs, containerPath, nil
+		return rootfs, containerPath, spec.Root.Readonly, nil
 	}
 
 	// This code runs in the Linux VM, where the two predicates agree;
@@ -165,13 +181,30 @@ func resolveMountRoot(bundleContainerDir, containerPath string) (root, rel strin
 		// Single-file mount: anchor at the parent directory. A residual
 		// rel below the file yields a path that fails with ENOTDIR when
 		// the caller stats it, which is the honest answer.
-		return filepath.Dir(bestSrc), filepath.Base(bestSrc) + rel, nil
+		return filepath.Dir(bestSrc), filepath.Base(bestSrc) + rel, bestReadonly, nil
 	}
 
 	if rel == "" {
 		rel = "."
 	}
-	return bestSrc, rel, nil
+	return bestSrc, rel, bestReadonly, nil
+}
+
+// readOnlyMount reports whether the option list marks a mount read-only.
+// All options are scanned without short-circuiting so a later "rw"
+// overrides an earlier "ro" and vice versa, matching typical
+// mount-option semantics.
+func readOnlyMount(options []string) bool {
+	readonly := false
+	for _, opt := range options {
+		switch opt {
+		case "ro":
+			readonly = true
+		case "rw":
+			readonly = false
+		}
+	}
+	return readonly
 }
 
 // rootRel converts a path expressed in the container's view (which

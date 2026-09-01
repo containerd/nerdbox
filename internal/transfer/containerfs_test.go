@@ -1158,6 +1158,51 @@ func TestReadPathImportDirectoryOverFileFails(t *testing.T) {
 	}
 }
 
+// TestReadPathImportMultipleEntriesOverFileLeavesTargetUntouched rejects an
+// archive carrying more than one entry at a file destination — and, because
+// the payload is staged before the destination is touched, the failed import
+// leaves the file's original bytes in place and no staging debris behind.
+func TestReadPathImportMultipleEntriesOverFileLeavesTargetUntouched(t *testing.T) {
+	bundle, _, _ := makeRootfs(t)
+	source := filepath.Join(bundle, "resolv.conf")
+	if err := os.WriteFile(source, []byte("nameserver 10.0.0.1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	writeBundleSpec(t, bundle, map[string]string{"/etc/resolv.conf": source})
+
+	root, rel, _, err := resolveMountRoot(bundle, "/etc/resolv.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	buf := writeTar(t, func(tw *tar.Writer) {
+		for _, name := range []string{"first", "second"} {
+			body := []byte("OWNED " + name + "\n")
+			_ = tw.WriteHeader(&tar.Header{
+				Name:     name,
+				Typeflag: tar.TypeReg,
+				Mode:     0644,
+				Size:     int64(len(body)),
+			})
+			_, _ = tw.Write(body)
+		}
+	})
+
+	if err := readPath(buf, root, rel, mediaTypeTar, false); err == nil {
+		t.Fatal("expected error extracting multiple entries over a file destination")
+	}
+	got, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "nameserver 10.0.0.1\n" {
+		t.Fatalf("target was modified by a failed import: %q", got)
+	}
+	if _, err := os.Stat(source + ".transfer-tmp"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal("staging file left behind after a failed import")
+	}
+}
+
 // TestReadPathImportEmptyArchiveOverFileFails rejects an archive with no
 // entries at a file destination: the file's bytes were not replaced, and
 // reporting success would mask a truncated stream.

@@ -416,55 +416,74 @@ func readPath(r io.Reader, rootfs, dstPath, mediaType string, preserveOwnership 
 // extractOverFile extracts an archive onto a destination that is an
 // existing file rather than a directory, replacing its contents with
 // the archived bytes. Only an archive carrying exactly one regular
-// file makes sense here; a directory or any other entry type cannot
-// be extracted over a file and is rejected, and an empty archive is
-// too — reporting success while the file keeps its old bytes would
-// mask a truncated stream. The file is truncated in place rather than
-// recreated, so it keeps its mode and, when it is a bind-mount
-// source, its inode — a mounted file replaced by a new inode would
-// leave the container reading the stale one.
+// file makes sense here; anything else — an empty archive, a
+// directory or other entry type, a second entry, a truncated payload
+// — is rejected. The payload is staged in a temporary sibling first,
+// so a rejected archive leaves the destination untouched, and the
+// destination is then truncated in place rather than recreated, so it
+// keeps its mode and, when it is a bind-mount source, its inode — a
+// mounted file replaced by a new inode would leave the container
+// reading the stale one.
 func extractOverFile(dst *os.Root, target string, r io.Reader, preserveOwnership bool) error {
 	tr := tar.NewReader(r)
-	written := false
-	for {
-		header, err := tr.Next()
-		if err == io.EOF {
-			if !written {
-				return fmt.Errorf("cannot extract empty archive over file %s", target)
-			}
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("failed to read tar header: %w", err)
-		}
-		if header.Typeflag != tar.TypeReg {
-			return fmt.Errorf("cannot extract %q over file %s: not a regular file", header.Name, target)
-		}
-		if written {
-			return fmt.Errorf("cannot extract multiple entries over file %s", target)
-		}
-
-		f, err := dst.OpenFile(target, os.O_WRONLY|os.O_TRUNC, 0)
-		if err != nil {
-			return err
-		}
-		// Copy exactly the size the header declares; the tar reader
-		// bounds the entry anyway, and the explicit limit satisfies
-		// gosec's decompression-bomb rule (G110).
-		if _, err := io.CopyN(f, tr, header.Size); err != nil {
-			f.Close()
-			return err
-		}
-		if err := f.Close(); err != nil {
-			return err
-		}
-		if preserveOwnership {
-			if err := dst.Lchown(target, header.Uid, header.Gid); err != nil {
-				return fmt.Errorf("failed to chown %s: %w", target, err)
-			}
-		}
-		written = true
+	header, err := tr.Next()
+	if err == io.EOF {
+		return fmt.Errorf("cannot extract empty archive over file %s", target)
 	}
+	if err != nil {
+		return fmt.Errorf("failed to read tar header: %w", err)
+	}
+	if header.Typeflag != tar.TypeReg {
+		return fmt.Errorf("cannot extract %q over file %s: not a regular file", header.Name, target)
+	}
+
+	// A fixed staging name self-heals: debris from an interrupted
+	// transfer is overwritten rather than blocking the next one.
+	tmp := target + ".transfer-tmp"
+	f, err := dst.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		return fmt.Errorf("failed to stage %s: %w", target, err)
+	}
+	defer dst.Remove(tmp)
+	// Copy exactly the size the header declares; the tar reader
+	// bounds the entry anyway, and the explicit limit satisfies
+	// gosec's decompression-bomb rule (G110).
+	if _, err := io.CopyN(f, tr, header.Size); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	switch _, err := tr.Next(); {
+	case err == nil:
+		return fmt.Errorf("cannot extract multiple entries over file %s", target)
+	case err != io.EOF:
+		return fmt.Errorf("failed to read tar header: %w", err)
+	}
+
+	staged, err := dst.Open(tmp)
+	if err != nil {
+		return err
+	}
+	defer staged.Close()
+	out, err := dst.OpenFile(target, os.O_WRONLY|os.O_TRUNC, 0)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, staged); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	if preserveOwnership {
+		if err := dst.Lchown(target, header.Uid, header.Gid); err != nil {
+			return fmt.Errorf("failed to chown %s: %w", target, err)
+		}
+	}
+	return nil
 }
 
 func extractTarEntry(dst *os.Root, target string, header *tar.Header, r io.Reader, preserveOwnership bool) error {

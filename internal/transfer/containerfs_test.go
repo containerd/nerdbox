@@ -1159,8 +1159,7 @@ func TestReadPathImportDirectoryOverFileFails(t *testing.T) {
 }
 
 // TestReadPathImportMultipleEntriesOverFileLeavesTargetUntouched rejects a
-// multi-entry archive at a file destination, leaving the file's bytes intact
-// and no staging debris behind.
+// multi-entry archive at a file destination without touching the file.
 func TestReadPathImportMultipleEntriesOverFileLeavesTargetUntouched(t *testing.T) {
 	bundle, _, _ := makeRootfs(t)
 	source := filepath.Join(bundle, "resolv.conf")
@@ -1273,8 +1272,6 @@ type specMount struct {
 	Options     []string `json:"options,omitempty"`
 }
 
-// writeBundleSpecOpts is writeBundleSpec with mount options and the root
-// read-only flag.
 func writeBundleSpecOpts(t *testing.T, bundle string, rootReadonly bool, mounts []specMount) {
 	t.Helper()
 	spec := struct {
@@ -1293,9 +1290,8 @@ func writeBundleSpecOpts(t *testing.T, bundle string, rootReadonly bool, mounts 
 	}
 }
 
-// TestResolveMountRootReadOnly pins the readonly flag: the matched mount's
-// options decide with last-option-wins semantics, and a path no mount covers
-// falls back to the spec's root read-only flag.
+// TestResolveMountRootReadOnly pins the readonly flag: the last ro/rw option
+// wins, and a path no mount covers falls back to the spec's root flag.
 func TestResolveMountRootReadOnly(t *testing.T) {
 	bundle, _, _ := makeRootfs(t)
 	writeBundleSpecOpts(t, bundle, true, []specMount{
@@ -1326,9 +1322,8 @@ func TestResolveMountRootReadOnly(t *testing.T) {
 	}
 }
 
-// TestTransferImportToReadOnlyPathRejected verifies that a copy-to targeting
-// a read-only bind mount or a read-only rootfs fails with ErrPermissionDenied
-// and leaves the backing content untouched.
+// TestTransferImportToReadOnlyPathRejected verifies copy-to into a read-only
+// mount or rootfs fails with ErrPermissionDenied, the backing bytes intact.
 func TestTransferImportToReadOnlyPathRejected(t *testing.T) {
 	newBundle := func(t *testing.T) (bundleParent, bundle string) {
 		t.Helper()

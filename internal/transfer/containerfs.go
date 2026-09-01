@@ -108,10 +108,8 @@ func (t *containerFSTransferrer) Transfer(ctx context.Context, src, dst any, opt
 // mount — cannot anchor an *os.Root, so it resolves to the file's parent
 // directory with the file's name as the relative path.
 //
-// The readonly result reports that the container sees the path as read-only:
-// the matched mount carries a read-only option, or no mount covers the path
-// and the spec's root is read-only. Writers must honor it — resolution
-// bypasses the mount namespace where MS_RDONLY is enforced.
+// Writers must honor the readonly result: resolution bypasses the mount
+// namespace, so MS_RDONLY never intervenes on the backing directory.
 //
 // Known limitations, tracked by issue #164: a path whose subtree contains a
 // mount deeper inside (e.g. archiving /etc when /etc/resolv.conf is a mount)
@@ -188,8 +186,7 @@ func resolveMountRoot(bundleContainerDir, containerPath string) (root, rel strin
 	return bestSrc, rel, bestReadonly, nil
 }
 
-// readOnlyMount reports whether the options mark a mount read-only; a later
-// "rw" or "ro" overrides an earlier one, as in mount(8) semantics.
+// readOnlyMount applies mount(8) semantics: the last "ro" or "rw" wins.
 func readOnlyMount(options []string) bool {
 	readonly := false
 	for _, opt := range options {
@@ -408,11 +405,9 @@ func readPath(r io.Reader, dir, dstPath, mediaType string, preserveOwnership boo
 	}
 }
 
-// extractOverFile extracts an archive that must carry exactly one regular
-// file over an existing file destination. The payload is staged in a sibling
-// first so a rejected archive leaves the destination untouched, then the
-// destination is truncated in place: a new inode would leave a container
-// whose mount binds this file reading the stale one.
+// extractOverFile extracts an archive of exactly one regular file over an
+// existing file. The payload is staged first so a rejected archive leaves
+// the file untouched; truncating in place keeps a bind-mount source's inode.
 func extractOverFile(dst *os.Root, target string, r io.Reader, preserveOwnership bool) error {
 	tr := tar.NewReader(r)
 	header, err := tr.Next()

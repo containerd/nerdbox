@@ -122,13 +122,14 @@ func (t *containerFSTransferrer) Transfer(ctx context.Context, src, dst any, opt
 // the bundle at all.
 func resolveMountRoot(bundleContainerDir, containerPath string) (root, rel string, readonly bool, err error) {
 	rootfs := filepath.Join(bundleContainerDir, "rootfs")
+	configPath := filepath.Join(bundleContainerDir, "config.json")
 
-	data, err := os.ReadFile(filepath.Join(bundleContainerDir, "config.json"))
+	data, err := os.ReadFile(configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return rootfs, containerPath, false, nil
 		}
-		return "", "", false, fmt.Errorf("failed to read bundle config: %w", err)
+		return "", "", false, fmt.Errorf("failed to read bundle config %q: %w", configPath, err)
 	}
 
 	var spec struct {
@@ -143,7 +144,7 @@ func resolveMountRoot(bundleContainerDir, containerPath string) (root, rel strin
 		} `json:"mounts"`
 	}
 	if err := json.Unmarshal(data, &spec); err != nil {
-		return "", "", false, fmt.Errorf("failed to parse bundle config: %w", err)
+		return "", "", false, fmt.Errorf("failed to parse bundle config %q: %w", configPath, err)
 	}
 
 	target := path.Clean("/" + containerPath)

@@ -909,12 +909,29 @@ func TestResolveMountRootNoSpec(t *testing.T) {
 
 func TestResolveMountRootRejectsMalformedSpec(t *testing.T) {
 	bundle, _, _ := makeRootfs(t)
-	if err := os.WriteFile(filepath.Join(bundle, "config.json"), []byte("{"), 0644); err != nil {
+	configPath := filepath.Join(bundle, "config.json")
+	if err := os.WriteFile(configPath, []byte("{"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
 	if _, _, _, err := resolveMountRoot(bundle, "/etc/hosts"); err == nil {
 		t.Fatal("expected malformed config.json to fail resolution")
+	} else if !strings.Contains(err.Error(), configPath) {
+		t.Fatalf("error = %q, want config path %q", err, configPath)
+	}
+}
+
+func TestResolveMountRootReportsUnreadableSpecPath(t *testing.T) {
+	bundle, _, _ := makeRootfs(t)
+	configPath := filepath.Join(bundle, "config.json")
+	if err := os.Mkdir(configPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, _, err := resolveMountRoot(bundle, "/etc/hosts"); err == nil {
+		t.Fatal("expected unreadable config.json to fail resolution")
+	} else if !strings.Contains(err.Error(), configPath) {
+		t.Fatalf("error = %q, want config path %q", err, configPath)
 	}
 }
 

@@ -1079,11 +1079,19 @@ func TestWritePathExportReadsBindSource(t *testing.T) {
 // bundle directory, as the runtime does for bundle extra files.
 func TestResolveMountRootSingleFileMount(t *testing.T) {
 	bundle, _, _ := makeRootfs(t)
+	resolvedBundle, err := filepath.EvalSymlinks(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(bundle, "resolv.conf"), []byte("nameserver 10.0.0.1\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	extra := filepath.Join(bundle, "extra")
 	if err := os.MkdirAll(extra, 0755); err != nil {
+		t.Fatal(err)
+	}
+	resolvedExtra, err := filepath.EvalSymlinks(extra)
+	if err != nil {
 		t.Fatal(err)
 	}
 	hosts := filepath.Join(extra, "hosts")
@@ -1105,13 +1113,13 @@ func TestResolveMountRootSingleFileMount(t *testing.T) {
 		wantRoot string
 		wantRel  string
 	}{
-		{"/etc/resolv.conf", bundle, "resolv.conf"},
-		{"/etc/hosts", extra, "hosts"},
-		{"/etc/hostname", extra, "hosts"},
+		{"/etc/resolv.conf", resolvedBundle, "resolv.conf"},
+		{"/etc/hosts", resolvedExtra, "hosts"},
+		{"/etc/hostname", resolvedExtra, "hosts"},
 		// A path below a file mount cannot exist; the residual rel makes
 		// the caller's stat fail with ENOTDIR rather than silently
 		// resolving elsewhere.
-		{"/etc/hosts/sub", extra, "hosts/sub"},
+		{"/etc/hosts/sub", resolvedExtra, "hosts/sub"},
 	} {
 		root, rel, _, err := resolveMountRoot(bundle, tc.path)
 		if err != nil {

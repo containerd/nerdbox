@@ -223,7 +223,7 @@ func getStreams(stdio stdio.Stdio, sm stream.Manager) ([3]io.ReadWriteCloser, er
 
 func getStream(uri string, sm stream.Manager) (io.ReadWriteCloser, error) {
 	if !strings.HasPrefix(uri, "stream://") {
-		return nil, fmt.Errorf("not a stream: %s", errdefs.ErrInvalidArgument)
+		return nil, fmt.Errorf("not a stream: %w", errdefs.ErrInvalidArgument)
 	}
 	sid := uri[9:]
 	c, err := sm.Get(sid)

@@ -419,12 +419,21 @@ func readPath(r io.Reader, dir, dstPath, mediaType string, preserveOwnership boo
 // the file untouched; truncating in place keeps a bind-mount source's inode.
 func extractOverFile(dst *os.Root, target string, r io.Reader, preserveOwnership bool) error {
 	tr := tar.NewReader(r)
-	header, err := tr.Next()
-	if err == io.EOF {
-		return fmt.Errorf("cannot extract empty archive over file %s", target)
-	}
-	if err != nil {
-		return fmt.Errorf("failed to read tar header: %w", err)
+	var header *tar.Header
+	for {
+		var err error
+		header, err = tr.Next()
+		if err == io.EOF {
+			return fmt.Errorf("cannot extract empty archive over file %s", target)
+		}
+		if err != nil {
+			return fmt.Errorf("failed to read tar header: %w", err)
+		}
+		// archive/tar hides per-file PAX and GNU long-name headers, but
+		// surfaces global PAX headers. They carry metadata, not a payload.
+		if header.Typeflag != tar.TypeXGlobalHeader {
+			break
+		}
 	}
 	if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA { //nolint:staticcheck // TypeRegA compatibility is intentional.
 		return fmt.Errorf("cannot extract %q over file %s: not a regular file", header.Name, target)
@@ -445,11 +454,17 @@ func extractOverFile(dst *os.Root, target string, r io.Reader, preserveOwnership
 	if _, err := io.CopyN(f, tr, header.Size); err != nil {
 		return fmt.Errorf("failed to stage %q over file %s: %w", header.Name, target, err)
 	}
-	switch _, err := tr.Next(); {
-	case err == nil:
-		return fmt.Errorf("cannot extract multiple entries over file %s", target)
-	case err != io.EOF:
-		return fmt.Errorf("failed to read tar header: %w", err)
+validateArchive:
+	for {
+		next, err := tr.Next()
+		switch {
+		case err == io.EOF:
+			break validateArchive
+		case err != nil:
+			return fmt.Errorf("failed to read tar header: %w", err)
+		case next.Typeflag != tar.TypeXGlobalHeader:
+			return fmt.Errorf("cannot extract multiple entries over file %s", target)
+		}
 	}
 
 	if _, err := f.Seek(0, io.SeekStart); err != nil {

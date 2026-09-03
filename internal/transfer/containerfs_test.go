@@ -1372,6 +1372,54 @@ func TestReadPathImportMultipleEntriesOverFileLeavesTargetUntouched(t *testing.T
 	}
 }
 
+func TestReadPathImportGlobalPAXHeaderOverFile(t *testing.T) {
+	_, rootfs, _ := makeRootfs(t)
+	target := filepath.Join(rootfs, "target")
+	if err := os.WriteFile(target, []byte("original"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte("replacement")
+	buf := writeTar(t, func(tw *tar.Writer) {
+		if err := tw.WriteHeader(&tar.Header{
+			Name:       "pax_global_header",
+			Typeflag:   tar.TypeXGlobalHeader,
+			PAXRecords: map[string]string{"comment": "metadata"},
+		}); err != nil {
+			t.Fatalf("write global PAX header: %v", err)
+		}
+		if err := tw.WriteHeader(&tar.Header{
+			Name:     "payload",
+			Typeflag: tar.TypeReg,
+			Mode:     0644,
+			Size:     int64(len(body)),
+		}); err != nil {
+			t.Fatalf("write payload header: %v", err)
+		}
+		if _, err := tw.Write(body); err != nil {
+			t.Fatalf("write payload: %v", err)
+		}
+		if err := tw.WriteHeader(&tar.Header{
+			Name:       "pax_global_footer",
+			Typeflag:   tar.TypeXGlobalHeader,
+			PAXRecords: map[string]string{"comment": "trailing metadata"},
+		}); err != nil {
+			t.Fatalf("write trailing global PAX header: %v", err)
+		}
+	})
+
+	if err := readPath(buf, rootfs, "/target", mediaTypeTar, false); err != nil {
+		t.Fatalf("import with global PAX metadata: %v", err)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(body) {
+		t.Fatalf("target content = %q, want %q", got, body)
+	}
+}
+
 // TestReadPathImportEmptyArchiveOverFileFails rejects an empty archive at a
 // file destination instead of succeeding without replacing anything.
 func TestReadPathImportEmptyArchiveOverFileFails(t *testing.T) {

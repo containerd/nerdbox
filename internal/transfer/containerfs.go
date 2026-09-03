@@ -98,10 +98,11 @@ func (t *containerFSTransferrer) Transfer(ctx context.Context, src, dst any, opt
 // content. Resolving against the mount's source keeps both directions
 // consistent with the container's own view of its filesystem.
 //
-// The longest matching destination wins, so a mount nested inside another
-// resolves against the innermost one. A bundle with no config.json, or one
-// that does not parse as a spec, resolves to the rootfs; a config that
-// exists but cannot be read is an error rather than a blind fallback.
+// Mounts are applied in spec order, so the last matching bind mount wins. A
+// later parent mount can therefore hide an earlier child mount. A bundle with
+// no config.json, or one that does not parse as a spec, resolves to the rootfs;
+// a config that exists but cannot be read is an error rather than a blind
+// fallback.
 //
 // A relative source is interpreted against the bundle directory, as the
 // runtime does (nerdbox itself declares such mounts for bundle extra files
@@ -145,8 +146,8 @@ func resolveMountRoot(bundleContainerDir, containerPath string) (root, rel strin
 
 	target := path.Clean("/" + containerPath)
 
-	var bestDest, bestSrc string
-	var bestReadonly bool
+	var mountDest, mountSrc string
+	var mountReadonly bool
 	for _, m := range spec.Mounts {
 		if m.Type != "bind" || m.Source == "" {
 			continue
@@ -155,12 +156,10 @@ func resolveMountRoot(bundleContainerDir, containerPath string) (root, rel strin
 		if target != dest && !strings.HasPrefix(target, strings.TrimSuffix(dest, "/")+"/") {
 			continue
 		}
-		if len(dest) >= len(bestDest) {
-			bestDest, bestSrc = dest, m.Source
-			bestReadonly = readOnlyMount(m.Options)
-		}
+		mountDest, mountSrc = dest, m.Source
+		mountReadonly = readOnlyMount(m.Options)
 	}
-	if bestDest == "" {
+	if mountDest == "" {
 		return rootfs, containerPath, spec.Root.Readonly, nil
 	}
 
@@ -168,23 +167,23 @@ func resolveMountRoot(bundleContainerDir, containerPath string) (root, rel strin
 	// accepting either form of absolute path keeps the unit tests, which
 	// mix spec-style Linux sources with host temp directories, portable
 	// to Windows hosts.
-	if !filepath.IsAbs(bestSrc) && !path.IsAbs(bestSrc) {
-		bestSrc = filepath.Join(bundleContainerDir, bestSrc)
+	if !filepath.IsAbs(mountSrc) && !path.IsAbs(mountSrc) {
+		mountSrc = filepath.Join(bundleContainerDir, mountSrc)
 	}
 
-	rel = strings.TrimPrefix(target, bestDest)
+	rel = strings.TrimPrefix(target, mountDest)
 
-	if fi, err := os.Stat(bestSrc); err == nil && !fi.IsDir() {
+	if fi, err := os.Stat(mountSrc); err == nil && !fi.IsDir() {
 		// Single-file mount: anchor at the parent directory. A residual
 		// rel below the file yields a path that fails with ENOTDIR when
 		// the caller stats it, which is the honest answer.
-		return filepath.Dir(bestSrc), filepath.Base(bestSrc) + rel, bestReadonly, nil
+		return filepath.Dir(mountSrc), filepath.Base(mountSrc) + rel, mountReadonly, nil
 	}
 
 	if rel == "" {
 		rel = "."
 	}
-	return bestSrc, rel, bestReadonly, nil
+	return mountSrc, rel, mountReadonly, nil
 }
 
 // readOnlyMount applies mount(8) semantics: the last "ro" or "rw" wins.

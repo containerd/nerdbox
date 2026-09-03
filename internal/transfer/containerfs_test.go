@@ -844,23 +844,64 @@ func TestResolveMountRootNoSpec(t *testing.T) {
 	}
 }
 
-// TestResolveMountRootSelectsLongestDestination pins the nesting rule: a path
-// covered by two mounts resolves against the innermost one.
-func TestResolveMountRootSelectsLongestDestination(t *testing.T) {
+// TestResolveMountRootUsesLastMatchingDestination pins OCI mount ordering: a
+// later parent mount hides an earlier child just as a later child overlays an
+// earlier parent.
+func TestResolveMountRootUsesLastMatchingDestination(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		mounts       []specMount
+		wantRoot     string
+		wantRel      string
+		wantReadonly bool
+	}{
+		{
+			name: "parent before child",
+			mounts: []specMount{
+				{Destination: "/data", Type: "bind", Source: "/mnt/outer", Options: []string{"ro"}},
+				{Destination: "/data/inner", Type: "bind", Source: "/mnt/inner", Options: []string{"rw"}},
+			},
+			wantRoot: "/mnt/inner",
+			wantRel:  "/file",
+		},
+		{
+			name: "child before parent",
+			mounts: []specMount{
+				{Destination: "/data/inner", Type: "bind", Source: "/mnt/inner", Options: []string{"rw"}},
+				{Destination: "/data", Type: "bind", Source: "/mnt/outer", Options: []string{"ro"}},
+			},
+			wantRoot:     "/mnt/outer",
+			wantRel:      "/inner/file",
+			wantReadonly: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bundle, _, _ := makeRootfs(t)
+			writeBundleSpecOpts(t, bundle, false, tc.mounts)
+
+			root, rel, readonly, err := resolveMountRoot(bundle, "/data/inner/file")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if root != tc.wantRoot || rel != tc.wantRel || readonly != tc.wantReadonly {
+				t.Errorf("resolved to (%q, %q, readonly=%v), want (%q, %q, readonly=%v)",
+					root, rel, readonly, tc.wantRoot, tc.wantRel, tc.wantReadonly)
+			}
+		})
+	}
+}
+
+func TestResolveMountRootMatchesPathBoundary(t *testing.T) {
 	bundle, rootfs, _ := makeRootfs(t)
-	writeBundleSpec(t, bundle, map[string]string{
-		"/data":       "/mnt/outer",
-		"/data/inner": "/mnt/inner",
-	})
+	writeBundleSpec(t, bundle, map[string]string{"/data": "/mnt/data"})
 
 	for _, tc := range []struct {
 		path     string
 		wantRoot string
 		wantRel  string
 	}{
-		{"/data/file", "/mnt/outer", "/file"},
-		{"/data/inner/file", "/mnt/inner", "/file"},
-		{"/data", "/mnt/outer", "."},
+		{"/data/file", "/mnt/data", "/file"},
+		{"/data", "/mnt/data", "."},
 		{"/elsewhere/file", rootfs, "/elsewhere/file"},
 		// A sibling whose name merely shares the prefix is not inside the mount.
 		{"/database", rootfs, "/database"},

@@ -916,7 +916,7 @@ func TestResolveMountRootRejectsMalformedSpec(t *testing.T) {
 
 	if _, _, _, err := resolveMountRoot(bundle, "/etc/hosts"); err == nil {
 		t.Fatal("expected malformed config.json to fail resolution")
-	} else if !strings.Contains(err.Error(), configPath) {
+	} else if !strings.Contains(err.Error(), fmt.Sprintf("%q", configPath)) {
 		t.Fatalf("error = %q, want config path %q", err, configPath)
 	}
 }
@@ -930,7 +930,7 @@ func TestResolveMountRootReportsUnreadableSpecPath(t *testing.T) {
 
 	if _, _, _, err := resolveMountRoot(bundle, "/etc/hosts"); err == nil {
 		t.Fatal("expected unreadable config.json to fail resolution")
-	} else if !strings.Contains(err.Error(), configPath) {
+	} else if !strings.Contains(err.Error(), fmt.Sprintf("%q", configPath)) {
 		t.Fatalf("error = %q, want config path %q", err, configPath)
 	}
 }

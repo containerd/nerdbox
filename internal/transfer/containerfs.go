@@ -100,10 +100,10 @@ func (t *containerFSTransferrer) Transfer(ctx context.Context, src, dst any, opt
 // consistent with the container's own view of its filesystem.
 //
 // Mounts are applied in spec order, so the last matching bind mount wins. A
-// later parent mount can therefore hide an earlier child mount. A bundle with
-// no config.json, or one that does not parse as a spec, resolves to the rootfs;
-// a config that exists but cannot be read is an error rather than a blind
-// fallback.
+// later parent mount can therefore hide an earlier child mount. Legacy relative
+// destinations are interpreted from "/", as required by the Linux OCI runtime
+// spec. A bundle with no config.json resolves to the rootfs; a config that
+// exists but cannot be read or parsed is an error rather than a blind fallback.
 //
 // A relative source is interpreted against the bundle directory, as the
 // runtime does (nerdbox itself declares such mounts for bundle extra files
@@ -143,7 +143,7 @@ func resolveMountRoot(bundleContainerDir, containerPath string) (root, rel strin
 		} `json:"mounts"`
 	}
 	if err := json.Unmarshal(data, &spec); err != nil {
-		return rootfs, containerPath, false, nil
+		return "", "", false, fmt.Errorf("failed to parse bundle config: %w", err)
 	}
 
 	target := path.Clean("/" + containerPath)
@@ -151,7 +151,7 @@ func resolveMountRoot(bundleContainerDir, containerPath string) (root, rel strin
 	var mountDest, mountSrc string
 	var mountReadonly bool
 	for _, m := range spec.Mounts {
-		if m.Type != "bind" || m.Source == "" || m.Destination == "" || !path.IsAbs(m.Destination) {
+		if m.Type != "bind" || m.Source == "" || m.Destination == "" {
 			continue
 		}
 		dest := path.Clean("/" + m.Destination)
@@ -194,14 +194,15 @@ func resolveMountRoot(bundleContainerDir, containerPath string) (root, rel strin
 	return mountSrc, rel, mountReadonly, nil
 }
 
-// readOnlyMount applies mount(8) semantics: the last "ro" or "rw" wins.
+// readOnlyMount applies mount(8) semantics: the last read-only or read-write
+// option wins, including their recursive variants.
 func readOnlyMount(options []string) bool {
 	readonly := false
 	for _, opt := range options {
 		switch opt {
-		case "ro":
+		case "ro", "rro":
 			readonly = true
-		case "rw":
+		case "rw", "rrw":
 			readonly = false
 		}
 	}

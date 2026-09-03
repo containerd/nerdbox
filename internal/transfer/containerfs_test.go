@@ -907,6 +907,17 @@ func TestResolveMountRootNoSpec(t *testing.T) {
 	}
 }
 
+func TestResolveMountRootRejectsMalformedSpec(t *testing.T) {
+	bundle, _, _ := makeRootfs(t)
+	if err := os.WriteFile(filepath.Join(bundle, "config.json"), []byte("{"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, _, err := resolveMountRoot(bundle, "/etc/hosts"); err == nil {
+		t.Fatal("expected malformed config.json to fail resolution")
+	}
+}
+
 // TestResolveMountRootUsesLastMatchingDestination pins OCI mount ordering: a
 // later parent mount hides an earlier child just as a later child overlays an
 // earlier parent.
@@ -979,20 +990,27 @@ func TestResolveMountRootMatchesPathBoundary(t *testing.T) {
 	}
 }
 
-func TestResolveMountRootSkipsInvalidDestinations(t *testing.T) {
+func TestResolveMountRootHandlesLegacyRelativeDestination(t *testing.T) {
 	bundle, rootfs, _ := makeRootfs(t)
 	writeBundleSpec(t, bundle,
 		specMount{Destination: "", Source: "/mnt/empty"},
 		specMount{Destination: "relative", Source: "/mnt/relative"},
 	)
 
-	for _, containerPath := range []string{"/etc/hosts", "/relative/file"} {
-		root, rel, _, err := resolveMountRoot(bundle, containerPath)
+	for _, tc := range []struct {
+		containerPath string
+		wantRoot      string
+		wantRel       string
+	}{
+		{containerPath: "/etc/hosts", wantRoot: rootfs, wantRel: "/etc/hosts"},
+		{containerPath: "/relative/file", wantRoot: "/mnt/relative", wantRel: "/file"},
+	} {
+		root, rel, _, err := resolveMountRoot(bundle, tc.containerPath)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if root != rootfs || rel != containerPath {
-			t.Errorf("%s -> (%q, %q), want (%q, %q)", containerPath, root, rel, rootfs, containerPath)
+		if root != tc.wantRoot || rel != tc.wantRel {
+			t.Errorf("%s -> (%q, %q), want (%q, %q)", tc.containerPath, root, rel, tc.wantRoot, tc.wantRel)
 		}
 	}
 }
@@ -1479,8 +1497,9 @@ func writeBundleSpecOpts(t *testing.T, bundle string, rootReadonly bool, mounts 
 	}
 }
 
-// TestResolveMountRootReadOnly pins the readonly flag: the last ro/rw option
-// wins, and a path no mount covers falls back to the spec's root flag.
+// TestResolveMountRootReadOnly pins the readonly flag: the last ro/rw option,
+// including recursive variants, wins, and a path no mount covers falls back
+// to the spec's root flag.
 func TestResolveMountRootReadOnly(t *testing.T) {
 	bundle, _, _ := makeRootfs(t)
 	writeBundleSpecOpts(t, bundle, true, []specMount{
@@ -1488,6 +1507,9 @@ func TestResolveMountRootReadOnly(t *testing.T) {
 		{Destination: "/rw", Type: "bind", Source: "/mnt/rw", Options: []string{"rbind"}},
 		{Destination: "/ro-then-rw", Type: "bind", Source: "/mnt/a", Options: []string{"rbind", "ro", "rw"}},
 		{Destination: "/rw-then-ro", Type: "bind", Source: "/mnt/b", Options: []string{"rbind", "rw", "ro"}},
+		{Destination: "/rro", Type: "bind", Source: "/mnt/rro", Options: []string{"rbind", "rro"}},
+		{Destination: "/rro-then-rrw", Type: "bind", Source: "/mnt/c", Options: []string{"rbind", "rro", "rrw"}},
+		{Destination: "/rrw-then-rro", Type: "bind", Source: "/mnt/d", Options: []string{"rbind", "rrw", "rro"}},
 	})
 
 	for _, tc := range []struct {
@@ -1498,6 +1520,9 @@ func TestResolveMountRootReadOnly(t *testing.T) {
 		{"/rw/file", false},
 		{"/ro-then-rw/file", false},
 		{"/rw-then-ro/file", true},
+		{"/rro/file", true},
+		{"/rro-then-rrw/file", false},
+		{"/rrw-then-rro/file", true},
 		// No mount covers the path: the read-only root decides.
 		{"/etc/hosts", true},
 	} {

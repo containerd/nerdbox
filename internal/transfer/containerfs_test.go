@@ -99,13 +99,17 @@ func writeTar(t *testing.T, build func(tw *tar.Writer)) *bytes.Buffer {
 func writeLegacyRegularTar(t *testing.T, name, body string) *bytes.Buffer {
 	t.Helper()
 	buf := writeTar(t, func(tw *tar.Writer) {
-		_ = tw.WriteHeader(&tar.Header{
+		if err := tw.WriteHeader(&tar.Header{
 			Name:     name,
 			Mode:     0644,
 			Size:     int64(len(body)),
 			Typeflag: tar.TypeReg,
-		})
-		_, _ = tw.Write([]byte(body))
+		}); err != nil {
+			t.Fatalf("tar header: %v", err)
+		}
+		if _, err := tw.Write([]byte(body)); err != nil {
+			t.Fatalf("tar body: %v", err)
+		}
 	})
 
 	header := buf.Bytes()[:tarBlockSize]
@@ -971,6 +975,24 @@ func TestResolveMountRootMatchesPathBoundary(t *testing.T) {
 		}
 		if root != tc.wantRoot || rel != tc.wantRel {
 			t.Errorf("%s -> (%q, %q), want (%q, %q)", tc.path, root, rel, tc.wantRoot, tc.wantRel)
+		}
+	}
+}
+
+func TestResolveMountRootSkipsInvalidDestinations(t *testing.T) {
+	bundle, rootfs, _ := makeRootfs(t)
+	writeBundleSpec(t, bundle,
+		specMount{Destination: "", Source: "/mnt/empty"},
+		specMount{Destination: "relative", Source: "/mnt/relative"},
+	)
+
+	for _, containerPath := range []string{"/etc/hosts", "/relative/file"} {
+		root, rel, _, err := resolveMountRoot(bundle, containerPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if root != rootfs || rel != containerPath {
+			t.Errorf("%s -> (%q, %q), want (%q, %q)", containerPath, root, rel, rootfs, containerPath)
 		}
 	}
 }

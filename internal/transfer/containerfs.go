@@ -151,7 +151,7 @@ func resolveMountRoot(bundleContainerDir, containerPath string) (root, rel strin
 	var mountDest, mountSrc string
 	var mountReadonly bool
 	for _, m := range spec.Mounts {
-		if m.Type != "bind" || m.Source == "" {
+		if m.Type != "bind" || m.Source == "" || m.Destination == "" || !path.IsAbs(m.Destination) {
 			continue
 		}
 		dest := path.Clean("/" + m.Destination)
@@ -442,7 +442,7 @@ func extractOverFile(dst *os.Root, target string, r io.Reader, preserveOwnership
 	// bounds the entry anyway, and the explicit limit satisfies
 	// gosec's decompression-bomb rule (G110).
 	if _, err := io.CopyN(f, tr, header.Size); err != nil {
-		return err
+		return fmt.Errorf("failed to stage %q over file %s: %w", header.Name, target, err)
 	}
 	switch _, err := tr.Next(); {
 	case err == nil:
@@ -452,18 +452,18 @@ func extractOverFile(dst *os.Root, target string, r io.Reader, preserveOwnership
 	}
 
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return err
+		return fmt.Errorf("failed to rewind staged data for %s: %w", target, err)
 	}
 	out, err := dst.OpenFile(target, os.O_WRONLY|os.O_TRUNC, 0)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to open destination file %s: %w", target, err)
 	}
 	if _, err := io.Copy(out, f); err != nil {
 		out.Close()
-		return err
+		return fmt.Errorf("failed to extract %q over file %s: %w", header.Name, target, err)
 	}
 	if err := out.Close(); err != nil {
-		return err
+		return fmt.Errorf("failed to close destination file %s: %w", target, err)
 	}
 	if preserveOwnership {
 		if err := dst.Lchown(target, header.Uid, header.Gid); err != nil {

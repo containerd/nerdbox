@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -91,6 +92,34 @@ func writeTar(t *testing.T, build func(tw *tar.Writer)) *bytes.Buffer {
 	}
 	return buf
 }
+
+// writeLegacyRegularTar writes a raw legacy regular-file typeflag. tar.Writer
+// promotes TypeRegA to TypeReg, so the typeflag and checksum must be adjusted
+// after writing the archive.
+func writeLegacyRegularTar(t *testing.T, name, body string) *bytes.Buffer {
+	t.Helper()
+	buf := writeTar(t, func(tw *tar.Writer) {
+		_ = tw.WriteHeader(&tar.Header{
+			Name:     name,
+			Mode:     0644,
+			Size:     int64(len(body)),
+			Typeflag: tar.TypeReg,
+		})
+		_, _ = tw.Write([]byte(body))
+	})
+
+	header := buf.Bytes()[:tarBlockSize]
+	header[156] = tar.TypeRegA //nolint:staticcheck // Exercise a legacy tar typeflag.
+	copy(header[148:156], "        ")
+	var checksum int
+	for _, b := range header {
+		checksum += int(b)
+	}
+	copy(header[148:156], fmt.Sprintf("%06o\x00 ", checksum))
+	return buf
+}
+
+const tarBlockSize = 512
 
 // TestWritePathExportSymlinkEscapeBlocked verifies that when a tar
 // export hits a regular file whose path would resolve outside the
@@ -377,6 +406,50 @@ func TestReadPathImportRoundTrip(t *testing.T) {
 	if string(hard) != "hello" {
 		t.Fatalf("d/hard body: %q", hard)
 	}
+}
+
+// TestReadPathImportLegacyRegularFile verifies that the legacy zero typeflag
+// extracts as a regular file for both directory and existing-file
+// destinations.
+func TestReadPathImportLegacyRegularFile(t *testing.T) {
+	t.Run("directory destination", func(t *testing.T) {
+		_, rootfs, _ := makeRootfs(t)
+		if err := os.Mkdir(filepath.Join(rootfs, "dst"), 0755); err != nil {
+			t.Fatal(err)
+		}
+
+		buf := writeLegacyRegularTar(t, "payload", "legacy")
+		if err := readPath(buf, rootfs, "/dst", mediaTypeTar, false); err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(filepath.Join(rootfs, "dst", "payload"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != "legacy" {
+			t.Fatalf("payload = %q, want %q", got, "legacy")
+		}
+	})
+
+	t.Run("file destination", func(t *testing.T) {
+		_, rootfs, _ := makeRootfs(t)
+		target := filepath.Join(rootfs, "target")
+		if err := os.WriteFile(target, []byte("original"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		buf := writeLegacyRegularTar(t, "payload", "legacy")
+		if err := readPath(buf, rootfs, "/target", mediaTypeTar, false); err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != "legacy" {
+			t.Fatalf("target = %q, want %q", got, "legacy")
+		}
+	})
 }
 
 // TestRoundTripExportImport writes some files into a rootfs, exports
@@ -1271,6 +1344,42 @@ func TestReadPathImportEmptyArchiveOverFileFails(t *testing.T) {
 	}
 	if string(got) != "nameserver 10.0.0.1\n" {
 		t.Fatalf("source was modified by a failed import: %q", got)
+	}
+}
+
+// TestReadPathImportOverSymlinkDestinationFails verifies that only an
+// existing regular file activates the single-file import path. A symlink is
+// not treated as a file destination, even when it points to a regular file.
+func TestReadPathImportOverSymlinkDestinationFails(t *testing.T) {
+	_, rootfs, _ := makeRootfs(t)
+	target := filepath.Join(rootfs, "target")
+	if err := os.WriteFile(target, []byte("original"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("target", filepath.Join(rootfs, "destination")); err != nil {
+		t.Fatal(err)
+	}
+
+	buf := writeTar(t, func(tw *tar.Writer) {
+		body := []byte("replacement")
+		_ = tw.WriteHeader(&tar.Header{
+			Name:     "payload",
+			Typeflag: tar.TypeReg,
+			Mode:     0644,
+			Size:     int64(len(body)),
+		})
+		_, _ = tw.Write(body)
+	})
+
+	if err := readPath(buf, rootfs, "/destination", mediaTypeTar, false); err == nil {
+		t.Fatal("expected error extracting over a symlink destination")
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "original" {
+		t.Fatalf("symlink target was modified: %q", got)
 	}
 }
 

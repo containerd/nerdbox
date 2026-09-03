@@ -87,8 +87,9 @@ func (t *containerFSTransferrer) Transfer(ctx context.Context, src, dst any, opt
 }
 
 // resolveMountRoot maps a path expressed in the container's view onto the
-// directory that backs it, returning that directory and the path relative to
-// it.
+// directory that backs it, returning that directory and the path within it.
+// The returned path may retain a leading slash; callers normalize it with
+// rootRel before passing it to an *os.Root operation.
 //
 // The bundle's rootfs backs only the paths no mount covers. Where the runtime
 // spec declares a bind mount, the container's mount namespace has the source
@@ -362,11 +363,11 @@ func readPath(r io.Reader, dir, dstPath, mediaType string, preserveOwnership boo
 
 	dst := root
 	if relDst != "." {
-		// A destination naming an existing non-directory — a plain
+		// A destination naming an existing regular file — a plain
 		// file in the rootfs, or the source of a single-file bind
 		// mount after resolution — receives the archived file's bytes
 		// rather than a tree extraction.
-		if fi, err := root.Stat(relDst); err == nil && !fi.IsDir() {
+		if fi, err := root.Lstat(relDst); err == nil && fi.Mode().IsRegular() {
 			return extractOverFile(root, relDst, r, preserveOwnership)
 		}
 		if err := root.MkdirAll(relDst, 0755); err != nil {
@@ -417,7 +418,7 @@ func extractOverFile(dst *os.Root, target string, r io.Reader, preserveOwnership
 	if err != nil {
 		return fmt.Errorf("failed to read tar header: %w", err)
 	}
-	if header.Typeflag != tar.TypeReg {
+	if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA { //nolint:staticcheck // TypeRegA compatibility is intentional.
 		return fmt.Errorf("cannot extract %q over file %s: not a regular file", header.Name, target)
 	}
 
@@ -471,7 +472,7 @@ func extractTarEntry(dst *os.Root, target string, header *tar.Header, r io.Reade
 		if err := dst.MkdirAll(target, os.FileMode(header.Mode)); err != nil {
 			return err
 		}
-	case tar.TypeReg:
+	case tar.TypeReg, tar.TypeRegA: //nolint:staticcheck // TypeRegA compatibility is intentional.
 		if err := dst.MkdirAll(path.Dir(target), 0755); err != nil {
 			return err
 		}

@@ -1090,9 +1090,14 @@ func TestResolveMountRootSingleFileMount(t *testing.T) {
 	if err := os.WriteFile(hosts, []byte("127.0.0.1 localhost\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
+	hostsLink := filepath.Join(bundle, "hosts-link")
+	if err := os.Symlink(hosts, hostsLink); err != nil {
+		t.Fatal(err)
+	}
 	writeBundleSpec(t, bundle,
 		specMount{Destination: "/etc/resolv.conf", Source: "resolv.conf"}, // relative to the bundle
 		specMount{Destination: "/etc/hosts", Source: hosts},               // absolute
+		specMount{Destination: "/etc/hostname", Source: hostsLink},        // symlink to a file
 	)
 
 	for _, tc := range []struct {
@@ -1102,6 +1107,7 @@ func TestResolveMountRootSingleFileMount(t *testing.T) {
 	}{
 		{"/etc/resolv.conf", bundle, "resolv.conf"},
 		{"/etc/hosts", extra, "hosts"},
+		{"/etc/hostname", extra, "hosts"},
 		// A path below a file mount cannot exist; the residual rel makes
 		// the caller's stat fail with ENOTDIR rather than silently
 		// resolving elsewhere.

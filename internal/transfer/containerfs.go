@@ -107,9 +107,10 @@ func (t *containerFSTransferrer) Transfer(ctx context.Context, src, dst any, opt
 //
 // A relative source is interpreted against the bundle directory, as the
 // runtime does (nerdbox itself declares such mounts for bundle extra files
-// like resolv.conf). A source that is not a directory — a single-file bind
-// mount — cannot anchor an *os.Root, so it resolves to the file's parent
-// directory with the file's name as the relative path.
+// like resolv.conf). Source symlinks are resolved to the path selected when
+// the runtime creates the mount. A source that is not a directory — a
+// single-file bind mount — cannot anchor an *os.Root, so it resolves to the
+// file's parent directory with the file's name as the relative path.
 //
 // Writers must honor the readonly result: resolution bypasses the mount
 // namespace, so MS_RDONLY never intervenes on the backing directory.
@@ -170,6 +171,12 @@ func resolveMountRoot(bundleContainerDir, containerPath string) (root, rel strin
 	// to Windows hosts.
 	if !filepath.IsAbs(mountSrc) && !path.IsAbs(mountSrc) {
 		mountSrc = filepath.Join(bundleContainerDir, mountSrc)
+	}
+	// A bind mount follows source symlinks when it is created. Use the same
+	// resolved path so later changes operate on the mounted object rather
+	// than on the symlink itself.
+	if resolved, err := filepath.EvalSymlinks(mountSrc); err == nil {
+		mountSrc = resolved
 	}
 
 	rel = strings.TrimPrefix(target, mountDest)

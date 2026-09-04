@@ -429,7 +429,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		for {
 			ev, err := sc.Recv()
 			if err != nil {
-				if errors.Is(err, io.EOF) || errors.Is(err, shutdown.ErrShutdown) {
+				if errors.Is(err, io.EOF) || errors.Is(err, shutdown.ErrShutdown) || errors.Is(err, ttrpc.ErrClosed) {
 					log.G(ctx).Info("vm event stream closed")
 				} else {
 					log.G(ctx).WithError(err).Error("vm event stream error")

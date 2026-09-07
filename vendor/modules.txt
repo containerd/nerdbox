@@ -166,13 +166,12 @@ github.com/docker/go-events
 # github.com/docker/go-units v0.5.0
 ## explicit
 github.com/docker/go-units
-# github.com/ebitengine/purego v0.10.2
-## explicit; go 1.18
+# github.com/ebitengine/purego v0.11.0
+## explicit; go 1.25.0
 github.com/ebitengine/purego
 github.com/ebitengine/purego/internal/cgo
 github.com/ebitengine/purego/internal/fakecgo
 github.com/ebitengine/purego/internal/strings
-github.com/ebitengine/purego/internal/xreflect
 # github.com/erofs/go-erofs v0.3.0
 ## explicit; go 1.23
 github.com/erofs/go-erofs

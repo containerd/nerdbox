@@ -19,7 +19,7 @@ require (
 	github.com/containerd/ttrpc v1.2.9
 	github.com/containerd/typeurl/v2 v2.3.0
 	github.com/docker/go-events v0.1.0
-	github.com/ebitengine/purego v0.10.2
+	github.com/ebitengine/purego v0.11.0
 	github.com/insomniacslk/dhcp v0.0.0-20250919081422-f80a1952f48e
 	github.com/mdlayher/vsock v1.3.0
 	github.com/moby/sys/userns v0.2.0

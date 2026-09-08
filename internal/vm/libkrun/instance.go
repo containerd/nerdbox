@@ -78,39 +78,76 @@ func (*vmManager) NewInstance(ctx context.Context, state string) (vm.Instance, e
 		p2 = []string{"/usr/local/lib", "/usr/local/lib64", "/usr/lib", "/lib"}
 	}
 	arch := kernelArch()
-	sharedNames := []string{fmt.Sprintf("libkrun-%s.so", arch), "libkrun.so"}
+
+	// variants lists distinct library families in priority order. Each family
+	// represents a different patchset / ABI, so we exhaust all search paths
+	// for one variant before falling back to the next. Within a variant, the
+	// arch-tagged name is preferred over the generic name.
+	//
+	// Priority: libkrun-nerdbox (custom patches) > libkrun (stock upstream)
+	variants := [][]string{
+		{fmt.Sprintf("libkrun-nerdbox-%s.so", arch), "libkrun-nerdbox.so"},
+		{fmt.Sprintf("libkrun-%s.so", arch), "libkrun.so"},
+	}
 	switch runtime.GOOS {
 	case "darwin":
-		sharedNames = []string{fmt.Sprintf("libkrun-%s.dylib", arch), "libkrun.dylib", fmt.Sprintf("libkrun-efi-%s.dylib", arch), "libkrun-efi.dylib"}
+		variants = [][]string{
+			{fmt.Sprintf("libkrun-nerdbox-%s.dylib", arch), "libkrun-nerdbox.dylib"},
+			{fmt.Sprintf("libkrun-%s.dylib", arch), "libkrun.dylib"},
+			{fmt.Sprintf("libkrun-efi-%s.dylib", arch), "libkrun-efi.dylib"},
+		}
 		p2 = append(p2, "/opt/homebrew/lib")
 	case "windows":
-		sharedNames = []string{"krun.dll"}
+		variants = [][]string{{"krun.dll"}}
 	}
 
-	for _, dir := range append(p1, p2...) {
-		if dir == "" {
-			// Unix shell semantics: path element "" means "."
-			dir = "."
+	dirs := append(p1, p2...)
+
+	// Search: variant → name → directory. All paths are checked for a given
+	// name before moving to the next name, and all names in a variant are
+	// exhausted before trying the next variant.
+	var sharedNames []string // flattened, for use in the error message
+	for _, variant := range variants {
+		sharedNames = append(sharedNames, variant...)
+	}
+	for _, variant := range variants {
+		if krunPath != "" {
+			break
 		}
-		var path string
-		if krunPath == "" {
-			for _, sharedName := range sharedNames {
-				path = filepath.Join(dir, sharedName)
+		for _, name := range variant {
+			if krunPath != "" {
+				break
+			}
+			for _, dir := range dirs {
+				if dir == "" {
+					// Unix shell semantics: path element "" means "."
+					dir = "."
+				}
+				path := filepath.Join(dir, name)
 				if _, err := os.Stat(path); err == nil {
 					krunPath = path
 					break
 				}
 			}
 		}
+	}
+
+	// Kernel and rootfs use a single name variant each; still search all dirs.
+	kernelName := fmt.Sprintf("nerdbox-kernel-%s", arch)
+	rootfsNames := []string{fmt.Sprintf("nerdbox-rootfs-%s.erofs", arch), "nerdbox-rootfs.erofs"}
+	for _, dir := range dirs {
+		if dir == "" {
+			dir = "."
+		}
 		if kernelPath == "" {
-			path = filepath.Join(dir, fmt.Sprintf("nerdbox-kernel-%s", kernelArch()))
+			path := filepath.Join(dir, kernelName)
 			if _, err := os.Stat(path); err == nil {
 				kernelPath = path
 			}
 		}
 		if rootfsPath == "" {
-			for _, name := range []string{fmt.Sprintf("nerdbox-rootfs-%s.erofs", arch), "nerdbox-rootfs.erofs"} {
-				path = filepath.Join(dir, name)
+			for _, name := range rootfsNames {
+				path := filepath.Join(dir, name)
 				if _, err := os.Stat(path); err == nil {
 					rootfsPath = path
 					break

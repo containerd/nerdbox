@@ -1158,6 +1158,78 @@ func TestReadPathImportDirectoryOverFileFails(t *testing.T) {
 	}
 }
 
+// TestReadPathImportMultipleEntriesOverFileLeavesTargetUntouched rejects a
+// multi-entry archive at a file destination without touching the file.
+func TestReadPathImportMultipleEntriesOverFileLeavesTargetUntouched(t *testing.T) {
+	bundle, _, _ := makeRootfs(t)
+	source := filepath.Join(bundle, "resolv.conf")
+	if err := os.WriteFile(source, []byte("nameserver 10.0.0.1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	writeBundleSpec(t, bundle, map[string]string{"/etc/resolv.conf": source})
+
+	root, rel, _, err := resolveMountRoot(bundle, "/etc/resolv.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	buf := writeTar(t, func(tw *tar.Writer) {
+		for _, name := range []string{"first", "second"} {
+			body := []byte("OWNED " + name + "\n")
+			_ = tw.WriteHeader(&tar.Header{
+				Name:     name,
+				Typeflag: tar.TypeReg,
+				Mode:     0644,
+				Size:     int64(len(body)),
+			})
+			_, _ = tw.Write(body)
+		}
+	})
+
+	if err := readPath(buf, root, rel, mediaTypeTar, false); err == nil {
+		t.Fatal("expected error extracting multiple entries over a file destination")
+	}
+	got, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "nameserver 10.0.0.1\n" {
+		t.Fatalf("target was modified by a failed import: %q", got)
+	}
+	if _, err := os.Stat(source + ".transfer-tmp"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal("staging file left behind after a failed import")
+	}
+}
+
+// TestReadPathImportEmptyArchiveOverFileFails rejects an empty archive at a
+// file destination instead of succeeding without replacing anything.
+func TestReadPathImportEmptyArchiveOverFileFails(t *testing.T) {
+	bundle, _, _ := makeRootfs(t)
+	source := filepath.Join(bundle, "resolv.conf")
+	if err := os.WriteFile(source, []byte("nameserver 10.0.0.1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	writeBundleSpec(t, bundle, map[string]string{"/etc/resolv.conf": source})
+
+	root, rel, _, err := resolveMountRoot(bundle, "/etc/resolv.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	buf := writeTar(t, func(tw *tar.Writer) {})
+
+	if err := readPath(buf, root, rel, mediaTypeTar, false); err == nil {
+		t.Fatal("expected error extracting an empty archive over a file destination")
+	}
+	got, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "nameserver 10.0.0.1\n" {
+		t.Fatalf("source was modified by a failed import: %q", got)
+	}
+}
+
 // TestWritePathExportDirMountExactKeepsName pins the naming contract when the
 // requested path is exactly a directory mount's destination: the walk anchors
 // at the mount source, but the archive's top-level name is the destination's
@@ -1193,10 +1265,6 @@ func TestWritePathExportDirMountExactKeepsName(t *testing.T) {
 	}
 }
 
-// specMount and writeBundleSpecOpts write a config.json with full mount
-// declarations and the root filesystem's read-only flag, for tests that
-// exercise the readonly resolution writeBundleSpec's destination -> source
-// map cannot express.
 type specMount struct {
 	Destination string   `json:"destination"`
 	Type        string   `json:"type"`
@@ -1222,11 +1290,8 @@ func writeBundleSpecOpts(t *testing.T, bundle string, rootReadonly bool, mounts 
 	}
 }
 
-// TestResolveMountRootReadOnly pins the readonly flag: a matched mount's
-// options decide with last-option-wins semantics, and a path no mount covers
-// falls back to the spec's root read-only flag — so a writable mount inside a
-// read-only root stays writable, as Docker treats volumes in a --read-only
-// container.
+// TestResolveMountRootReadOnly pins the readonly flag: the last ro/rw option
+// wins, and a path no mount covers falls back to the spec's root flag.
 func TestResolveMountRootReadOnly(t *testing.T) {
 	bundle, _, _ := makeRootfs(t)
 	writeBundleSpecOpts(t, bundle, true, []specMount{
@@ -1257,13 +1322,8 @@ func TestResolveMountRootReadOnly(t *testing.T) {
 	}
 }
 
-// TestTransferImportToReadOnlyPathRejected is the write-side contract on
-// read-only destinations: a copy-to targeting a path backed by a read-only
-// bind mount — or by the rootfs of a container whose spec marks root
-// read-only — fails with ErrPermissionDenied and leaves the backing content
-// untouched. Resolution writes to the backing directory from outside the
-// mount namespace, where MS_RDONLY would not intervene, so the refusal is
-// what upholds the read-only contract the container sees.
+// TestTransferImportToReadOnlyPathRejected verifies copy-to into a read-only
+// mount or rootfs fails with ErrPermissionDenied, the backing bytes intact.
 func TestTransferImportToReadOnlyPathRejected(t *testing.T) {
 	newBundle := func(t *testing.T) (bundleParent, bundle string) {
 		t.Helper()
@@ -1275,8 +1335,7 @@ func TestTransferImportToReadOnlyPathRejected(t *testing.T) {
 		return bundleParent, bundle
 	}
 
-	// The rejection must come before the input stream is consumed, so a
-	// ReadStream with no backing stream must never get its Reader called.
+	// A ReadStream with no backing stream asserts the rejection precedes any read.
 	transferTo := func(t *testing.T, bundleParent, containerPath string) error {
 		t.Helper()
 		return NewContainerFSTransferrer(bundleParent).Transfer(context.Background(),

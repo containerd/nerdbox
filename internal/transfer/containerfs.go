@@ -98,9 +98,9 @@ func (t *containerFSTransferrer) Transfer(ctx context.Context, src, dst any, opt
 // consistent with the container's own view of its filesystem.
 //
 // The longest matching destination wins, so a mount nested inside another
-// resolves against the innermost one. A bundle with no readable or parseable
-// config.json resolves to the rootfs: absent mount information there is
-// nothing to redirect, and the caller reports any genuine failure.
+// resolves against the innermost one. A bundle with no config.json, or one
+// that does not parse as a spec, resolves to the rootfs; a config that
+// exists but cannot be read is an error rather than a blind fallback.
 //
 // A relative source is interpreted against the bundle directory, as the
 // runtime does (nerdbox itself declares such mounts for bundle extra files
@@ -108,12 +108,8 @@ func (t *containerFSTransferrer) Transfer(ctx context.Context, src, dst any, opt
 // mount — cannot anchor an *os.Root, so it resolves to the file's parent
 // directory with the file's name as the relative path.
 //
-// The returned readonly flag reports that the container's view of the path is
-// write-protected: the matched mount carries a read-only option, or no mount
-// covers the path and the spec declares the root filesystem read-only.
-// Resolution operates on the backing directory, outside the mount namespace
-// where MS_RDONLY is enforced, so a writer must honor the flag rather than
-// rely on the write failing.
+// Writers must honor the readonly result: resolution bypasses the mount
+// namespace, so MS_RDONLY never intervenes on the backing directory.
 //
 // Known limitations, tracked by issue #164: a path whose subtree contains a
 // mount deeper inside (e.g. archiving /etc when /etc/resolv.conf is a mount)
@@ -190,10 +186,7 @@ func resolveMountRoot(bundleContainerDir, containerPath string) (root, rel strin
 	return bestSrc, rel, bestReadonly, nil
 }
 
-// readOnlyMount reports whether the option list marks a mount read-only.
-// All options are scanned without short-circuiting so a later "rw"
-// overrides an earlier "ro" and vice versa, matching typical
-// mount-option semantics.
+// readOnlyMount applies mount(8) semantics: the last "ro" or "rw" wins.
 func readOnlyMount(options []string) bool {
 	readonly := false
 	for _, opt := range options {
@@ -221,25 +214,25 @@ func rootRel(p string) string {
 	return p
 }
 
-// writePath creates a tar archive from the given path within rootfs
-// and writes it to w. name is the archive's top-level entry name,
-// taken from the container's view of the path: when src resolved
-// through a mount, the backing file or directory's own basename may
-// differ from the name the container sees. When noWalk is true and
-// path is a directory, only the directory entry itself is included
-// without walking into it.
+// writePath creates a tar archive from the given path within dir — the
+// resolved backing directory, a rootfs or a mount source — and writes it
+// to w. name is the archive's top-level entry name, taken from the
+// container's view of the path: when src resolved through a mount, the
+// backing file or directory's own basename may differ from the name the
+// container sees. When noWalk is true and path is a directory, only the
+// directory entry itself is included without walking into it.
 //
-// All filesystem accesses are anchored to rootfs through *os.Root,
-// so symlink resolution cannot escape the rootfs even if the
-// container concurrently mutates its own filesystem.
-func writePath(rootfs, src, name string, w io.Writer, mediaType string, noWalk bool) error {
+// All filesystem accesses are anchored to dir through *os.Root, so
+// symlink resolution cannot escape it even if the container
+// concurrently mutates its own filesystem.
+func writePath(dir, src, name string, w io.Writer, mediaType string, noWalk bool) error {
 	if mediaType != mediaTypeTar {
 		return fmt.Errorf("unsupported media type %q: %w", mediaType, errdefs.ErrNotImplemented)
 	}
 
-	root, err := os.OpenRoot(rootfs)
+	root, err := os.OpenRoot(dir)
 	if err != nil {
-		return fmt.Errorf("failed to open rootfs: %w", err)
+		return fmt.Errorf("failed to open transfer root: %w", err)
 	}
 	defer root.Close()
 
@@ -286,8 +279,8 @@ func writePath(rootfs, src, name string, w io.Writer, mediaType string, noWalk b
 			// The root entry itself.
 			rel = ""
 		case relPath == ".":
-			// Walking from the rootfs root: walkPath is already the
-			// entry name relative to the root.
+			// Walking from the root itself: walkPath is already the
+			// entry name relative to it.
 			rel = walkPath
 		default:
 			// Walking a subdirectory: strip "relPath/" prefix.
@@ -309,7 +302,7 @@ func writePath(rootfs, src, name string, w io.Writer, mediaType string, noWalk b
 }
 
 // writeTarEntry writes a single tar entry. srcPath is interpreted
-// relative to root, so symlink resolution cannot escape the rootfs.
+// relative to root, so symlink resolution cannot escape it.
 func writeTarEntry(root *os.Root, tw *tar.Writer, srcPath string, fi os.FileInfo, name string) error {
 	header, err := tar.FileInfoHeader(fi, "")
 	if err != nil {
@@ -344,23 +337,24 @@ func writeTarEntry(root *os.Root, tw *tar.Writer, srcPath string, fi os.FileInfo
 }
 
 // readPath reads a tar archive from r and extracts it under path
-// within rootfs. When preserveOwnership is true, extracted files have
-// their UID/GID set from the tar headers.
+// within dir — the resolved backing directory, a rootfs or a mount
+// source. When preserveOwnership is true, extracted files have their
+// UID/GID set from the tar headers.
 //
 // The destination directory is opened as a sub-*os.Root so the
 // destination boundary is enforced by os.Root rather than by lexical
-// path checks. Pre-existing symlinks within the rootfs, symlinks
-// created by earlier entries in the same archive, absolute symlink
-// targets, and tar entry names containing "../" all resolve within
-// the destination's sub-root and cannot redirect writes outside it.
-func readPath(r io.Reader, rootfs, dstPath, mediaType string, preserveOwnership bool) error {
+// path checks. Pre-existing symlinks within dir, symlinks created by
+// earlier entries in the same archive, absolute symlink targets, and
+// tar entry names containing "../" all resolve within the
+// destination's sub-root and cannot redirect writes outside it.
+func readPath(r io.Reader, dir, dstPath, mediaType string, preserveOwnership bool) error {
 	if mediaType != mediaTypeTar {
 		return fmt.Errorf("unsupported media type %q: %w", mediaType, errdefs.ErrNotImplemented)
 	}
 
-	root, err := os.OpenRoot(rootfs)
+	root, err := os.OpenRoot(dir)
 	if err != nil {
-		return fmt.Errorf("failed to open rootfs: %w", err)
+		return fmt.Errorf("failed to open transfer root: %w", err)
 	}
 	defer root.Close()
 
@@ -411,53 +405,68 @@ func readPath(r io.Reader, rootfs, dstPath, mediaType string, preserveOwnership 
 	}
 }
 
-// extractOverFile extracts an archive onto a destination that is an
-// existing file rather than a directory, replacing its contents with
-// the archived bytes. Only an archive carrying a single regular file
-// makes sense here; a directory or any other entry type cannot be
-// extracted over a file and is rejected. The file is truncated in
-// place rather than recreated, so it keeps its mode and, when it is a
-// bind-mount source, its inode — a mounted file replaced by a new
-// inode would leave the container reading the stale one.
+// extractOverFile extracts an archive of exactly one regular file over an
+// existing file. The payload is staged first so a rejected archive leaves
+// the file untouched; truncating in place keeps a bind-mount source's inode.
 func extractOverFile(dst *os.Root, target string, r io.Reader, preserveOwnership bool) error {
 	tr := tar.NewReader(r)
-	written := false
-	for {
-		header, err := tr.Next()
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("failed to read tar header: %w", err)
-		}
-		if header.Typeflag != tar.TypeReg {
-			return fmt.Errorf("cannot extract %q over file %s: not a regular file", header.Name, target)
-		}
-		if written {
-			return fmt.Errorf("cannot extract multiple entries over file %s", target)
-		}
-
-		f, err := dst.OpenFile(target, os.O_WRONLY|os.O_TRUNC, 0)
-		if err != nil {
-			return err
-		}
-		// Copy exactly the size the header declares; the tar reader
-		// bounds the entry anyway, and the explicit limit satisfies
-		// gosec's decompression-bomb rule (G110).
-		if _, err := io.CopyN(f, tr, header.Size); err != nil {
-			f.Close()
-			return err
-		}
-		if err := f.Close(); err != nil {
-			return err
-		}
-		if preserveOwnership {
-			if err := dst.Lchown(target, header.Uid, header.Gid); err != nil {
-				return fmt.Errorf("failed to chown %s: %w", target, err)
-			}
-		}
-		written = true
+	header, err := tr.Next()
+	if err == io.EOF {
+		return fmt.Errorf("cannot extract empty archive over file %s", target)
 	}
+	if err != nil {
+		return fmt.Errorf("failed to read tar header: %w", err)
+	}
+	if header.Typeflag != tar.TypeReg {
+		return fmt.Errorf("cannot extract %q over file %s: not a regular file", header.Name, target)
+	}
+
+	// A fixed name overwrites debris from an interrupted transfer.
+	tmp := target + ".transfer-tmp"
+	f, err := dst.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		return fmt.Errorf("failed to stage %s: %w", target, err)
+	}
+	defer dst.Remove(tmp)
+	// Copy exactly the size the header declares; the tar reader
+	// bounds the entry anyway, and the explicit limit satisfies
+	// gosec's decompression-bomb rule (G110).
+	if _, err := io.CopyN(f, tr, header.Size); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	switch _, err := tr.Next(); {
+	case err == nil:
+		return fmt.Errorf("cannot extract multiple entries over file %s", target)
+	case err != io.EOF:
+		return fmt.Errorf("failed to read tar header: %w", err)
+	}
+
+	staged, err := dst.Open(tmp)
+	if err != nil {
+		return err
+	}
+	defer staged.Close()
+	out, err := dst.OpenFile(target, os.O_WRONLY|os.O_TRUNC, 0)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, staged); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	if preserveOwnership {
+		if err := dst.Lchown(target, header.Uid, header.Gid); err != nil {
+			return fmt.Errorf("failed to chown %s: %w", target, err)
+		}
+	}
+	return nil
 }
 
 func extractTarEntry(dst *os.Root, target string, header *tar.Header, r io.Reader, preserveOwnership bool) error {

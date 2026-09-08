@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -91,6 +92,38 @@ func writeTar(t *testing.T, build func(tw *tar.Writer)) *bytes.Buffer {
 	}
 	return buf
 }
+
+// writeLegacyRegularTar writes a raw legacy regular-file typeflag. tar.Writer
+// promotes TypeRegA to TypeReg, so the typeflag and checksum must be adjusted
+// after writing the archive.
+func writeLegacyRegularTar(t *testing.T, name, body string) *bytes.Buffer {
+	t.Helper()
+	buf := writeTar(t, func(tw *tar.Writer) {
+		if err := tw.WriteHeader(&tar.Header{
+			Name:     name,
+			Mode:     0644,
+			Size:     int64(len(body)),
+			Typeflag: tar.TypeReg,
+		}); err != nil {
+			t.Fatalf("tar header: %v", err)
+		}
+		if _, err := tw.Write([]byte(body)); err != nil {
+			t.Fatalf("tar body: %v", err)
+		}
+	})
+
+	header := buf.Bytes()[:tarBlockSize]
+	header[156] = tar.TypeRegA //nolint:staticcheck // Exercise a legacy tar typeflag.
+	copy(header[148:156], "        ")
+	var checksum int
+	for _, b := range header {
+		checksum += int(b)
+	}
+	copy(header[148:156], fmt.Sprintf("%06o\x00 ", checksum))
+	return buf
+}
+
+const tarBlockSize = 512
 
 // TestWritePathExportSymlinkEscapeBlocked verifies that when a tar
 // export hits a regular file whose path would resolve outside the
@@ -377,6 +410,50 @@ func TestReadPathImportRoundTrip(t *testing.T) {
 	if string(hard) != "hello" {
 		t.Fatalf("d/hard body: %q", hard)
 	}
+}
+
+// TestReadPathImportLegacyRegularFile verifies that the legacy zero typeflag
+// extracts as a regular file for both directory and existing-file
+// destinations.
+func TestReadPathImportLegacyRegularFile(t *testing.T) {
+	t.Run("directory destination", func(t *testing.T) {
+		_, rootfs, _ := makeRootfs(t)
+		if err := os.Mkdir(filepath.Join(rootfs, "dst"), 0755); err != nil {
+			t.Fatal(err)
+		}
+
+		buf := writeLegacyRegularTar(t, "payload", "legacy")
+		if err := readPath(buf, rootfs, "/dst", mediaTypeTar, false); err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(filepath.Join(rootfs, "dst", "payload"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != "legacy" {
+			t.Fatalf("payload = %q, want %q", got, "legacy")
+		}
+	})
+
+	t.Run("file destination", func(t *testing.T) {
+		_, rootfs, _ := makeRootfs(t)
+		target := filepath.Join(rootfs, "target")
+		if err := os.WriteFile(target, []byte("original"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		buf := writeLegacyRegularTar(t, "payload", "legacy")
+		if err := readPath(buf, rootfs, "/target", mediaTypeTar, false); err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != "legacy" {
+			t.Fatalf("target = %q, want %q", got, "legacy")
+		}
+	})
 }
 
 // TestRoundTripExportImport writes some files into a rootfs, exports
@@ -803,28 +880,14 @@ func TestWritePathExportRootDotfilesPreserved(t *testing.T) {
 	}
 }
 
-// writeBundleSpec writes a config.json declaring the given bind mounts, as
-// destination -> source pairs.
-func writeBundleSpec(t *testing.T, bundle string, binds map[string]string) {
+// writeBundleSpec writes a config.json declaring bind mounts in the order
+// provided.
+func writeBundleSpec(t *testing.T, bundle string, binds ...specMount) {
 	t.Helper()
-	type mount struct {
-		Destination string `json:"destination"`
-		Type        string `json:"type"`
-		Source      string `json:"source"`
+	for i := range binds {
+		binds[i].Type = "bind"
 	}
-	spec := struct {
-		Mounts []mount `json:"mounts"`
-	}{}
-	for dest, src := range binds {
-		spec.Mounts = append(spec.Mounts, mount{Destination: dest, Type: "bind", Source: src})
-	}
-	data, err := json.Marshal(spec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(bundle, "config.json"), data, 0644); err != nil {
-		t.Fatal(err)
-	}
+	writeBundleSpecOpts(t, bundle, false, binds)
 }
 
 // TestResolveMountRootNoSpec resolves to the rootfs when the bundle carries no
@@ -844,23 +907,92 @@ func TestResolveMountRootNoSpec(t *testing.T) {
 	}
 }
 
-// TestResolveMountRootSelectsLongestDestination pins the nesting rule: a path
-// covered by two mounts resolves against the innermost one.
-func TestResolveMountRootSelectsLongestDestination(t *testing.T) {
+func TestResolveMountRootRejectsMalformedSpec(t *testing.T) {
+	bundle, _, _ := makeRootfs(t)
+	configPath := filepath.Join(bundle, "config.json")
+	if err := os.WriteFile(configPath, []byte("{"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, _, err := resolveMountRoot(bundle, "/etc/hosts"); err == nil {
+		t.Fatal("expected malformed config.json to fail resolution")
+	} else if !strings.Contains(err.Error(), fmt.Sprintf("%q", configPath)) {
+		t.Fatalf("error = %q, want config path %q", err, configPath)
+	}
+}
+
+func TestResolveMountRootReportsUnreadableSpecPath(t *testing.T) {
+	bundle, _, _ := makeRootfs(t)
+	configPath := filepath.Join(bundle, "config.json")
+	if err := os.Mkdir(configPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, _, err := resolveMountRoot(bundle, "/etc/hosts"); err == nil {
+		t.Fatal("expected unreadable config.json to fail resolution")
+	} else if !strings.Contains(err.Error(), fmt.Sprintf("%q", configPath)) {
+		t.Fatalf("error = %q, want config path %q", err, configPath)
+	}
+}
+
+// TestResolveMountRootUsesLastMatchingDestination pins OCI mount ordering: a
+// later parent mount hides an earlier child just as a later child overlays an
+// earlier parent.
+func TestResolveMountRootUsesLastMatchingDestination(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		mounts       []specMount
+		wantRoot     string
+		wantRel      string
+		wantReadonly bool
+	}{
+		{
+			name: "parent before child",
+			mounts: []specMount{
+				{Destination: "/data", Type: "bind", Source: "/mnt/outer", Options: []string{"ro"}},
+				{Destination: "/data/inner", Type: "bind", Source: "/mnt/inner", Options: []string{"rw"}},
+			},
+			wantRoot: "/mnt/inner",
+			wantRel:  "/file",
+		},
+		{
+			name: "child before parent",
+			mounts: []specMount{
+				{Destination: "/data/inner", Type: "bind", Source: "/mnt/inner", Options: []string{"rw"}},
+				{Destination: "/data", Type: "bind", Source: "/mnt/outer", Options: []string{"ro"}},
+			},
+			wantRoot:     "/mnt/outer",
+			wantRel:      "/inner/file",
+			wantReadonly: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bundle, _, _ := makeRootfs(t)
+			writeBundleSpecOpts(t, bundle, false, tc.mounts)
+
+			root, rel, readonly, err := resolveMountRoot(bundle, "/data/inner/file")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if root != tc.wantRoot || rel != tc.wantRel || readonly != tc.wantReadonly {
+				t.Errorf("resolved to (%q, %q, readonly=%v), want (%q, %q, readonly=%v)",
+					root, rel, readonly, tc.wantRoot, tc.wantRel, tc.wantReadonly)
+			}
+		})
+	}
+}
+
+func TestResolveMountRootMatchesPathBoundary(t *testing.T) {
 	bundle, rootfs, _ := makeRootfs(t)
-	writeBundleSpec(t, bundle, map[string]string{
-		"/data":       "/mnt/outer",
-		"/data/inner": "/mnt/inner",
-	})
+	writeBundleSpec(t, bundle, specMount{Destination: "/data", Source: "/mnt/data"})
 
 	for _, tc := range []struct {
 		path     string
 		wantRoot string
 		wantRel  string
 	}{
-		{"/data/file", "/mnt/outer", "/file"},
-		{"/data/inner/file", "/mnt/inner", "/file"},
-		{"/data", "/mnt/outer", "."},
+		{"/data/file", "/mnt/data", "/file"},
+		{"/data", "/mnt/data", "."},
 		{"/elsewhere/file", rootfs, "/elsewhere/file"},
 		// A sibling whose name merely shares the prefix is not inside the mount.
 		{"/database", rootfs, "/database"},
@@ -871,6 +1003,31 @@ func TestResolveMountRootSelectsLongestDestination(t *testing.T) {
 		}
 		if root != tc.wantRoot || rel != tc.wantRel {
 			t.Errorf("%s -> (%q, %q), want (%q, %q)", tc.path, root, rel, tc.wantRoot, tc.wantRel)
+		}
+	}
+}
+
+func TestResolveMountRootHandlesLegacyRelativeDestination(t *testing.T) {
+	bundle, rootfs, _ := makeRootfs(t)
+	writeBundleSpec(t, bundle,
+		specMount{Destination: "", Source: "/mnt/empty"},
+		specMount{Destination: "relative", Source: "/mnt/relative"},
+	)
+
+	for _, tc := range []struct {
+		containerPath string
+		wantRoot      string
+		wantRel       string
+	}{
+		{containerPath: "/etc/hosts", wantRoot: rootfs, wantRel: "/etc/hosts"},
+		{containerPath: "/relative/file", wantRoot: "/mnt/relative", wantRel: "/file"},
+	} {
+		root, rel, _, err := resolveMountRoot(bundle, tc.containerPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if root != tc.wantRoot || rel != tc.wantRel {
+			t.Errorf("%s -> (%q, %q), want (%q, %q)", tc.containerPath, root, rel, tc.wantRoot, tc.wantRel)
 		}
 	}
 }
@@ -890,7 +1047,7 @@ func TestReadPathImportLandsInBindSource(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(rootfs, "data"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	writeBundleSpec(t, bundle, map[string]string{"/data": source})
+	writeBundleSpec(t, bundle, specMount{Destination: "/data", Source: source})
 
 	root, rel, _, err := resolveMountRoot(bundle, "/data")
 	if err != nil {
@@ -951,7 +1108,7 @@ func TestWritePathExportReadsBindSource(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(rootfs, "data", "payload.txt"), []byte("shadowed\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	writeBundleSpec(t, bundle, map[string]string{"/data": source})
+	writeBundleSpec(t, bundle, specMount{Destination: "/data", Source: source})
 
 	root, rel, _, err := resolveMountRoot(bundle, "/data/payload.txt")
 	if err != nil {
@@ -979,6 +1136,10 @@ func TestWritePathExportReadsBindSource(t *testing.T) {
 // bundle directory, as the runtime does for bundle extra files.
 func TestResolveMountRootSingleFileMount(t *testing.T) {
 	bundle, _, _ := makeRootfs(t)
+	resolvedBundle, err := filepath.EvalSymlinks(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(bundle, "resolv.conf"), []byte("nameserver 10.0.0.1\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -986,26 +1147,36 @@ func TestResolveMountRootSingleFileMount(t *testing.T) {
 	if err := os.MkdirAll(extra, 0755); err != nil {
 		t.Fatal(err)
 	}
+	resolvedExtra, err := filepath.EvalSymlinks(extra)
+	if err != nil {
+		t.Fatal(err)
+	}
 	hosts := filepath.Join(extra, "hosts")
 	if err := os.WriteFile(hosts, []byte("127.0.0.1 localhost\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	writeBundleSpec(t, bundle, map[string]string{
-		"/etc/resolv.conf": "resolv.conf", // relative to the bundle
-		"/etc/hosts":       hosts,         // absolute
-	})
+	hostsLink := filepath.Join(bundle, "hosts-link")
+	if err := os.Symlink(hosts, hostsLink); err != nil {
+		t.Fatal(err)
+	}
+	writeBundleSpec(t, bundle,
+		specMount{Destination: "/etc/resolv.conf", Source: "resolv.conf"}, // relative to the bundle
+		specMount{Destination: "/etc/hosts", Source: hosts},               // absolute
+		specMount{Destination: "/etc/hostname", Source: hostsLink},        // symlink to a file
+	)
 
 	for _, tc := range []struct {
 		path     string
 		wantRoot string
 		wantRel  string
 	}{
-		{"/etc/resolv.conf", bundle, "resolv.conf"},
-		{"/etc/hosts", extra, "hosts"},
+		{"/etc/resolv.conf", resolvedBundle, "resolv.conf"},
+		{"/etc/hosts", resolvedExtra, "hosts"},
+		{"/etc/hostname", resolvedExtra, "hosts"},
 		// A path below a file mount cannot exist; the residual rel makes
 		// the caller's stat fail with ENOTDIR rather than silently
 		// resolving elsewhere.
-		{"/etc/hosts/sub", extra, "hosts/sub"},
+		{"/etc/hosts/sub", resolvedExtra, "hosts/sub"},
 	} {
 		root, rel, _, err := resolveMountRoot(bundle, tc.path)
 		if err != nil {
@@ -1034,7 +1205,7 @@ func TestWritePathExportSingleFileBindMount(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(rootfs, "etc", "resolv.conf"), []byte("shadowed\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	writeBundleSpec(t, bundle, map[string]string{"/etc/resolv.conf": source})
+	writeBundleSpec(t, bundle, specMount{Destination: "/etc/resolv.conf", Source: source})
 
 	root, rel, _, err := resolveMountRoot(bundle, "/etc/resolv.conf")
 	if err != nil {
@@ -1066,13 +1237,17 @@ func TestReadPathImportOverSingleFileBindMount(t *testing.T) {
 	if err := os.WriteFile(source, []byte("nameserver 10.0.0.1\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
+	stagingLookalike := source + ".transfer-tmp"
+	if err := os.WriteFile(stagingLookalike, []byte("keep\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(rootfs, "etc"), 0755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(rootfs, "etc", "resolv.conf"), []byte("shadowed\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	writeBundleSpec(t, bundle, map[string]string{"/etc/resolv.conf": "resolv.conf"})
+	writeBundleSpec(t, bundle, specMount{Destination: "/etc/resolv.conf", Source: "resolv.conf"})
 
 	before, err := os.Stat(source)
 	if err != nil {
@@ -1120,6 +1295,13 @@ func TestReadPathImportOverSingleFileBindMount(t *testing.T) {
 	if string(shadow) != "shadowed\n" {
 		t.Fatalf("shadowed rootfs entry was modified: %q", shadow)
 	}
+	lookalike, err := os.ReadFile(stagingLookalike)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(lookalike) != "keep\n" {
+		t.Fatalf("staging lookalike was modified: %q", lookalike)
+	}
 }
 
 // TestReadPathImportDirectoryOverFileFails rejects extracting a directory
@@ -1131,7 +1313,7 @@ func TestReadPathImportDirectoryOverFileFails(t *testing.T) {
 	if err := os.WriteFile(source, []byte("nameserver 10.0.0.1\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	writeBundleSpec(t, bundle, map[string]string{"/etc/resolv.conf": source})
+	writeBundleSpec(t, bundle, specMount{Destination: "/etc/resolv.conf", Source: source})
 
 	root, rel, _, err := resolveMountRoot(bundle, "/etc/resolv.conf")
 	if err != nil {
@@ -1166,7 +1348,7 @@ func TestReadPathImportMultipleEntriesOverFileLeavesTargetUntouched(t *testing.T
 	if err := os.WriteFile(source, []byte("nameserver 10.0.0.1\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	writeBundleSpec(t, bundle, map[string]string{"/etc/resolv.conf": source})
+	writeBundleSpec(t, bundle, specMount{Destination: "/etc/resolv.conf", Source: source})
 
 	root, rel, _, err := resolveMountRoot(bundle, "/etc/resolv.conf")
 	if err != nil {
@@ -1196,8 +1378,62 @@ func TestReadPathImportMultipleEntriesOverFileLeavesTargetUntouched(t *testing.T
 	if string(got) != "nameserver 10.0.0.1\n" {
 		t.Fatalf("target was modified by a failed import: %q", got)
 	}
-	if _, err := os.Stat(source + ".transfer-tmp"); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatal("staging file left behind after a failed import")
+	entries, err := os.ReadDir(filepath.Dir(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".transfer-") {
+			t.Fatalf("staging file left behind after a failed import: %s", entry.Name())
+		}
+	}
+}
+
+func TestReadPathImportGlobalPAXHeaderOverFile(t *testing.T) {
+	_, rootfs, _ := makeRootfs(t)
+	target := filepath.Join(rootfs, "target")
+	if err := os.WriteFile(target, []byte("original"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte("replacement")
+	buf := writeTar(t, func(tw *tar.Writer) {
+		if err := tw.WriteHeader(&tar.Header{
+			Name:       "pax_global_header",
+			Typeflag:   tar.TypeXGlobalHeader,
+			PAXRecords: map[string]string{"comment": "metadata"},
+		}); err != nil {
+			t.Fatalf("write global PAX header: %v", err)
+		}
+		if err := tw.WriteHeader(&tar.Header{
+			Name:     "payload",
+			Typeflag: tar.TypeReg,
+			Mode:     0644,
+			Size:     int64(len(body)),
+		}); err != nil {
+			t.Fatalf("write payload header: %v", err)
+		}
+		if _, err := tw.Write(body); err != nil {
+			t.Fatalf("write payload: %v", err)
+		}
+		if err := tw.WriteHeader(&tar.Header{
+			Name:       "pax_global_footer",
+			Typeflag:   tar.TypeXGlobalHeader,
+			PAXRecords: map[string]string{"comment": "trailing metadata"},
+		}); err != nil {
+			t.Fatalf("write trailing global PAX header: %v", err)
+		}
+	})
+
+	if err := readPath(buf, rootfs, "/target", mediaTypeTar, false); err != nil {
+		t.Fatalf("import with global PAX metadata: %v", err)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(body) {
+		t.Fatalf("target content = %q, want %q", got, body)
 	}
 }
 
@@ -1209,7 +1445,7 @@ func TestReadPathImportEmptyArchiveOverFileFails(t *testing.T) {
 	if err := os.WriteFile(source, []byte("nameserver 10.0.0.1\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	writeBundleSpec(t, bundle, map[string]string{"/etc/resolv.conf": source})
+	writeBundleSpec(t, bundle, specMount{Destination: "/etc/resolv.conf", Source: source})
 
 	root, rel, _, err := resolveMountRoot(bundle, "/etc/resolv.conf")
 	if err != nil {
@@ -1230,6 +1466,42 @@ func TestReadPathImportEmptyArchiveOverFileFails(t *testing.T) {
 	}
 }
 
+// TestReadPathImportOverSymlinkDestinationFails verifies that only an
+// existing regular file activates the single-file import path. A symlink is
+// not treated as a file destination, even when it points to a regular file.
+func TestReadPathImportOverSymlinkDestinationFails(t *testing.T) {
+	_, rootfs, _ := makeRootfs(t)
+	target := filepath.Join(rootfs, "target")
+	if err := os.WriteFile(target, []byte("original"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("target", filepath.Join(rootfs, "destination")); err != nil {
+		t.Fatal(err)
+	}
+
+	buf := writeTar(t, func(tw *tar.Writer) {
+		body := []byte("replacement")
+		_ = tw.WriteHeader(&tar.Header{
+			Name:     "payload",
+			Typeflag: tar.TypeReg,
+			Mode:     0644,
+			Size:     int64(len(body)),
+		})
+		_, _ = tw.Write(body)
+	})
+
+	if err := readPath(buf, rootfs, "/destination", mediaTypeTar, false); err == nil {
+		t.Fatal("expected error extracting over a symlink destination")
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "original" {
+		t.Fatalf("symlink target was modified: %q", got)
+	}
+}
+
 // TestWritePathExportDirMountExactKeepsName pins the naming contract when the
 // requested path is exactly a directory mount's destination: the walk anchors
 // at the mount source, but the archive's top-level name is the destination's
@@ -1244,7 +1516,7 @@ func TestWritePathExportDirMountExactKeepsName(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(source, "file"), []byte("x"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	writeBundleSpec(t, bundle, map[string]string{"/data": source})
+	writeBundleSpec(t, bundle, specMount{Destination: "/data", Source: source})
 
 	root, rel, _, err := resolveMountRoot(bundle, "/data")
 	if err != nil {
@@ -1290,8 +1562,9 @@ func writeBundleSpecOpts(t *testing.T, bundle string, rootReadonly bool, mounts 
 	}
 }
 
-// TestResolveMountRootReadOnly pins the readonly flag: the last ro/rw option
-// wins, and a path no mount covers falls back to the spec's root flag.
+// TestResolveMountRootReadOnly pins the readonly flag: the last ro/rw option,
+// including recursive variants, wins, and a path no mount covers falls back
+// to the spec's root flag.
 func TestResolveMountRootReadOnly(t *testing.T) {
 	bundle, _, _ := makeRootfs(t)
 	writeBundleSpecOpts(t, bundle, true, []specMount{
@@ -1299,6 +1572,9 @@ func TestResolveMountRootReadOnly(t *testing.T) {
 		{Destination: "/rw", Type: "bind", Source: "/mnt/rw", Options: []string{"rbind"}},
 		{Destination: "/ro-then-rw", Type: "bind", Source: "/mnt/a", Options: []string{"rbind", "ro", "rw"}},
 		{Destination: "/rw-then-ro", Type: "bind", Source: "/mnt/b", Options: []string{"rbind", "rw", "ro"}},
+		{Destination: "/rro", Type: "bind", Source: "/mnt/rro", Options: []string{"rbind", "rro"}},
+		{Destination: "/rro-then-rrw", Type: "bind", Source: "/mnt/c", Options: []string{"rbind", "rro", "rrw"}},
+		{Destination: "/rrw-then-rro", Type: "bind", Source: "/mnt/d", Options: []string{"rbind", "rrw", "rro"}},
 	})
 
 	for _, tc := range []struct {
@@ -1309,6 +1585,9 @@ func TestResolveMountRootReadOnly(t *testing.T) {
 		{"/rw/file", false},
 		{"/ro-then-rw/file", false},
 		{"/rw-then-ro/file", true},
+		{"/rro/file", true},
+		{"/rro-then-rrw/file", false},
+		{"/rrw-then-rro/file", true},
 		// No mount covers the path: the read-only root decides.
 		{"/etc/hosts", true},
 	} {
@@ -1319,6 +1598,23 @@ func TestResolveMountRootReadOnly(t *testing.T) {
 		if readonly != tc.want {
 			t.Errorf("%s: readonly = %v, want %v", tc.path, readonly, tc.want)
 		}
+	}
+}
+
+func TestResolveMountRootDuplicateDestinationUsesLast(t *testing.T) {
+	bundle, _, _ := makeRootfs(t)
+	writeBundleSpecOpts(t, bundle, false, []specMount{
+		{Destination: "/data", Type: "bind", Source: "/mnt/first", Options: []string{"ro"}},
+		{Destination: "/data", Type: "bind", Source: "/mnt/second", Options: []string{"rw"}},
+	})
+
+	root, rel, readonly, err := resolveMountRoot(bundle, "/data/file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root != "/mnt/second" || rel != "/file" || readonly {
+		t.Fatalf("resolved to (%q, %q, readonly=%v), want (%q, %q, readonly=false)",
+			root, rel, readonly, "/mnt/second", "/file")
 	}
 }
 

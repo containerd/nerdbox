@@ -19,6 +19,7 @@ package transfer
 import (
 	"archive/tar"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -86,8 +87,9 @@ func (t *containerFSTransferrer) Transfer(ctx context.Context, src, dst any, opt
 }
 
 // resolveMountRoot maps a path expressed in the container's view onto the
-// directory that backs it, returning that directory and the path relative to
-// it.
+// directory that backs it, returning that directory and the path within it.
+// The returned path may retain a leading slash; callers normalize it with
+// rootRel before passing it to an *os.Root operation.
 //
 // The bundle's rootfs backs only the paths no mount covers. Where the runtime
 // spec declares a bind mount, the container's mount namespace has the source
@@ -97,16 +99,18 @@ func (t *containerFSTransferrer) Transfer(ctx context.Context, src, dst any, opt
 // content. Resolving against the mount's source keeps both directions
 // consistent with the container's own view of its filesystem.
 //
-// The longest matching destination wins, so a mount nested inside another
-// resolves against the innermost one. A bundle with no config.json, or one
-// that does not parse as a spec, resolves to the rootfs; a config that
-// exists but cannot be read is an error rather than a blind fallback.
+// Mounts are applied in spec order, so the last matching bind mount wins. A
+// later parent mount can therefore hide an earlier child mount. Legacy relative
+// destinations are interpreted from "/", as required by the Linux OCI runtime
+// spec. A bundle with no config.json resolves to the rootfs; a config that
+// exists but cannot be read or parsed is an error rather than a blind fallback.
 //
 // A relative source is interpreted against the bundle directory, as the
 // runtime does (nerdbox itself declares such mounts for bundle extra files
-// like resolv.conf). A source that is not a directory — a single-file bind
-// mount — cannot anchor an *os.Root, so it resolves to the file's parent
-// directory with the file's name as the relative path.
+// like resolv.conf). Source symlinks are resolved to the path selected when
+// the runtime creates the mount. A source that is not a directory — a
+// single-file bind mount — cannot anchor an *os.Root, so it resolves to the
+// file's parent directory with the file's name as the relative path.
 //
 // Writers must honor the readonly result: resolution bypasses the mount
 // namespace, so MS_RDONLY never intervenes on the backing directory.
@@ -118,13 +122,14 @@ func (t *containerFSTransferrer) Transfer(ctx context.Context, src, dst any, opt
 // the bundle at all.
 func resolveMountRoot(bundleContainerDir, containerPath string) (root, rel string, readonly bool, err error) {
 	rootfs := filepath.Join(bundleContainerDir, "rootfs")
+	configPath := filepath.Join(bundleContainerDir, "config.json")
 
-	data, err := os.ReadFile(filepath.Join(bundleContainerDir, "config.json"))
+	data, err := os.ReadFile(configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return rootfs, containerPath, false, nil
 		}
-		return "", "", false, fmt.Errorf("failed to read bundle config: %w", err)
+		return "", "", false, fmt.Errorf("failed to read bundle config %q: %w", configPath, err)
 	}
 
 	var spec struct {
@@ -139,27 +144,25 @@ func resolveMountRoot(bundleContainerDir, containerPath string) (root, rel strin
 		} `json:"mounts"`
 	}
 	if err := json.Unmarshal(data, &spec); err != nil {
-		return rootfs, containerPath, false, nil
+		return "", "", false, fmt.Errorf("failed to parse bundle config %q: %w", configPath, err)
 	}
 
 	target := path.Clean("/" + containerPath)
 
-	var bestDest, bestSrc string
-	var bestReadonly bool
+	var mountDest, mountSrc string
+	var mountReadonly bool
 	for _, m := range spec.Mounts {
-		if m.Type != "bind" || m.Source == "" {
+		if m.Type != "bind" || m.Source == "" || m.Destination == "" {
 			continue
 		}
 		dest := path.Clean("/" + m.Destination)
 		if target != dest && !strings.HasPrefix(target, strings.TrimSuffix(dest, "/")+"/") {
 			continue
 		}
-		if len(dest) > len(bestDest) {
-			bestDest, bestSrc = dest, m.Source
-			bestReadonly = readOnlyMount(m.Options)
-		}
+		mountDest, mountSrc = dest, m.Source
+		mountReadonly = readOnlyMount(m.Options)
 	}
-	if bestDest == "" {
+	if mountDest == "" {
 		return rootfs, containerPath, spec.Root.Readonly, nil
 	}
 
@@ -167,33 +170,40 @@ func resolveMountRoot(bundleContainerDir, containerPath string) (root, rel strin
 	// accepting either form of absolute path keeps the unit tests, which
 	// mix spec-style Linux sources with host temp directories, portable
 	// to Windows hosts.
-	if !filepath.IsAbs(bestSrc) && !path.IsAbs(bestSrc) {
-		bestSrc = filepath.Join(bundleContainerDir, bestSrc)
+	if !filepath.IsAbs(mountSrc) && !path.IsAbs(mountSrc) {
+		mountSrc = filepath.Join(bundleContainerDir, mountSrc)
+	}
+	// A bind mount follows source symlinks when it is created. Use the same
+	// resolved path so later changes operate on the mounted object rather
+	// than on the symlink itself.
+	if resolved, err := filepath.EvalSymlinks(mountSrc); err == nil {
+		mountSrc = resolved
 	}
 
-	rel = strings.TrimPrefix(target, bestDest)
+	rel = strings.TrimPrefix(target, mountDest)
 
-	if fi, err := os.Stat(bestSrc); err == nil && !fi.IsDir() {
+	if fi, err := os.Stat(mountSrc); err == nil && !fi.IsDir() {
 		// Single-file mount: anchor at the parent directory. A residual
 		// rel below the file yields a path that fails with ENOTDIR when
 		// the caller stats it, which is the honest answer.
-		return filepath.Dir(bestSrc), filepath.Base(bestSrc) + rel, bestReadonly, nil
+		return filepath.Dir(mountSrc), filepath.Base(mountSrc) + rel, mountReadonly, nil
 	}
 
 	if rel == "" {
 		rel = "."
 	}
-	return bestSrc, rel, bestReadonly, nil
+	return mountSrc, rel, mountReadonly, nil
 }
 
-// readOnlyMount applies mount(8) semantics: the last "ro" or "rw" wins.
+// readOnlyMount applies mount(8) semantics: the last read-only or read-write
+// option wins, including their recursive variants.
 func readOnlyMount(options []string) bool {
 	readonly := false
 	for _, opt := range options {
 		switch opt {
-		case "ro":
+		case "ro", "rro":
 			readonly = true
-		case "rw":
+		case "rw", "rrw":
 			readonly = false
 		}
 	}
@@ -362,11 +372,11 @@ func readPath(r io.Reader, dir, dstPath, mediaType string, preserveOwnership boo
 
 	dst := root
 	if relDst != "." {
-		// A destination naming an existing non-directory — a plain
+		// A destination naming an existing regular file — a plain
 		// file in the rootfs, or the source of a single-file bind
 		// mount after resolution — receives the archived file's bytes
 		// rather than a tree extraction.
-		if fi, err := root.Stat(relDst); err == nil && !fi.IsDir() {
+		if fi, err := root.Lstat(relDst); err == nil && fi.Mode().IsRegular() {
 			return extractOverFile(root, relDst, r, preserveOwnership)
 		}
 		if err := root.MkdirAll(relDst, 0755); err != nil {
@@ -410,56 +420,67 @@ func readPath(r io.Reader, dir, dstPath, mediaType string, preserveOwnership boo
 // the file untouched; truncating in place keeps a bind-mount source's inode.
 func extractOverFile(dst *os.Root, target string, r io.Reader, preserveOwnership bool) error {
 	tr := tar.NewReader(r)
-	header, err := tr.Next()
-	if err == io.EOF {
-		return fmt.Errorf("cannot extract empty archive over file %s", target)
+	var header *tar.Header
+	for {
+		var err error
+		header, err = tr.Next()
+		if err == io.EOF {
+			return fmt.Errorf("cannot extract empty archive over file %s", target)
+		}
+		if err != nil {
+			return fmt.Errorf("failed to read tar header: %w", err)
+		}
+		// archive/tar hides per-file PAX and GNU long-name headers, but
+		// surfaces global PAX headers. They carry metadata, not a payload.
+		if header.Typeflag != tar.TypeXGlobalHeader {
+			break
+		}
 	}
-	if err != nil {
-		return fmt.Errorf("failed to read tar header: %w", err)
-	}
-	if header.Typeflag != tar.TypeReg {
+	if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA { //nolint:staticcheck // TypeRegA compatibility is intentional.
 		return fmt.Errorf("cannot extract %q over file %s: not a regular file", header.Name, target)
 	}
 
-	// A fixed name overwrites debris from an interrupted transfer.
-	tmp := target + ".transfer-tmp"
-	f, err := dst.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	tmp := path.Join(path.Dir(target), ".transfer-"+rand.Text())
+	f, err := dst.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to stage %s: %w", target, err)
 	}
-	defer dst.Remove(tmp)
+	defer func() {
+		f.Close()
+		dst.Remove(tmp)
+	}()
 	// Copy exactly the size the header declares; the tar reader
 	// bounds the entry anyway, and the explicit limit satisfies
 	// gosec's decompression-bomb rule (G110).
 	if _, err := io.CopyN(f, tr, header.Size); err != nil {
-		f.Close()
-		return err
+		return fmt.Errorf("failed to stage %q over file %s: %w", header.Name, target, err)
 	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	switch _, err := tr.Next(); {
-	case err == nil:
-		return fmt.Errorf("cannot extract multiple entries over file %s", target)
-	case err != io.EOF:
-		return fmt.Errorf("failed to read tar header: %w", err)
+validateArchive:
+	for {
+		next, err := tr.Next()
+		switch {
+		case err == io.EOF:
+			break validateArchive
+		case err != nil:
+			return fmt.Errorf("failed to read tar header: %w", err)
+		case next.Typeflag != tar.TypeXGlobalHeader:
+			return fmt.Errorf("cannot extract multiple entries over file %s", target)
+		}
 	}
 
-	staged, err := dst.Open(tmp)
-	if err != nil {
-		return err
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("failed to rewind staged data for %s: %w", target, err)
 	}
-	defer staged.Close()
 	out, err := dst.OpenFile(target, os.O_WRONLY|os.O_TRUNC, 0)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to open destination file %s: %w", target, err)
 	}
-	if _, err := io.Copy(out, staged); err != nil {
+	if _, err := io.Copy(out, f); err != nil {
 		out.Close()
-		return err
+		return fmt.Errorf("failed to extract %q over file %s: %w", header.Name, target, err)
 	}
 	if err := out.Close(); err != nil {
-		return err
+		return fmt.Errorf("failed to close destination file %s: %w", target, err)
 	}
 	if preserveOwnership {
 		if err := dst.Lchown(target, header.Uid, header.Gid); err != nil {
@@ -475,7 +496,7 @@ func extractTarEntry(dst *os.Root, target string, header *tar.Header, r io.Reade
 		if err := dst.MkdirAll(target, os.FileMode(header.Mode)); err != nil {
 			return err
 		}
-	case tar.TypeReg:
+	case tar.TypeReg, tar.TypeRegA: //nolint:staticcheck // TypeRegA compatibility is intentional.
 		if err := dst.MkdirAll(path.Dir(target), 0755); err != nil {
 			return err
 		}

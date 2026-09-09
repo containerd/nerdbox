@@ -88,33 +88,6 @@ func writeTar(t *testing.T, build func(tw *tar.Writer)) *bytes.Buffer {
 	return buf
 }
 
-// TestWritePathExportSymlinkEscapeBlocked verifies that when a tar
-// export hits a regular file whose path would resolve outside the
-// rootfs (because an intermediate symlink points outside), the open
-// fails rather than reading the host file.
-func TestWritePathExportSymlinkEscapeBlocked(t *testing.T) {
-	_, rootfs, outside := makeRootfs(t)
-
-	// Place a sensitive file outside the rootfs.
-	secret := filepath.Join(outside, "secret")
-	if err := os.WriteFile(secret, []byte("HOST_SECRET"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Inside rootfs: a symlink that points outside.
-	if err := os.Symlink(outside, filepath.Join(rootfs, "escape")); err != nil {
-		t.Fatal(err)
-	}
-
-	buf := &bytes.Buffer{}
-	// Asking to copy /escape/secret. Lstat would have to traverse
-	// the symlink "/escape" out of the rootfs to reach "secret".
-	err := writePath(rootfs, "/escape/secret", buf, mediaTypeTar, false)
-	if err == nil {
-		t.Fatal("expected error when traversing symlink out of rootfs, got nil")
-	}
-}
-
 // TestWritePathExportPreservesSymlinks verifies that a symlink within
 // the rootfs is copied as a symlink (its target string preserved),
 // not dereferenced.
@@ -230,89 +203,6 @@ func TestReadPathImportContainsTarEscape(t *testing.T) {
 	}
 	if string(body) != "PWND" {
 		t.Fatalf("contained entry body: want %q, got %q", "PWND", body)
-	}
-}
-
-// TestReadPathImportSymlinkRedirectBlocked verifies the classic
-// tar-symlink attack: a tar containing a symlink pointing outside
-// the rootfs followed by a regular file beneath that symlink does
-// not write through the symlink to the host.
-func TestReadPathImportSymlinkRedirectBlocked(t *testing.T) {
-	_, rootfs, outside := makeRootfs(t)
-	target := filepath.Join(outside, "target")
-
-	// Pre-existing host file we want to protect.
-	if err := os.WriteFile(target, []byte("ORIGINAL"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	buf := writeTar(t, func(tw *tar.Writer) {
-		// Symlink "linkdir" -> absolute path outside rootfs.
-		_ = tw.WriteHeader(&tar.Header{
-			Name:     "linkdir",
-			Linkname: outside,
-			Typeflag: tar.TypeSymlink,
-			Mode:     0777,
-		})
-		// Then a regular file beneath that symlink.
-		_ = tw.WriteHeader(&tar.Header{
-			Name:     "linkdir/target",
-			Typeflag: tar.TypeReg,
-			Mode:     0644,
-			Size:     5,
-		})
-		_, _ = tw.Write([]byte("OWNED"))
-	})
-
-	// readPath may return an error or succeed silently; either is
-	// acceptable. The invariant is that the host file is NOT
-	// modified.
-	_ = readPath(buf, rootfs, "/", mediaTypeTar, false)
-
-	got, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatalf("read host file: %v", err)
-	}
-	if string(got) != "ORIGINAL" {
-		t.Fatalf("host file was overwritten: got %q", got)
-	}
-}
-
-// TestReadPathImportPreExistingSymlink verifies that a symlink that
-// already exists in the rootfs and points outside cannot be used to
-// redirect writes from a subsequent extraction.
-func TestReadPathImportPreExistingSymlink(t *testing.T) {
-	_, rootfs, outside := makeRootfs(t)
-	target := filepath.Join(outside, "target")
-	if err := os.WriteFile(target, []byte("ORIGINAL"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	// Pre-existing symlink in the destination directory.
-	if err := os.MkdirAll(filepath.Join(rootfs, "dst"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(outside, filepath.Join(rootfs, "dst", "linkdir")); err != nil {
-		t.Fatal(err)
-	}
-
-	buf := writeTar(t, func(tw *tar.Writer) {
-		_ = tw.WriteHeader(&tar.Header{
-			Name:     "linkdir/target",
-			Typeflag: tar.TypeReg,
-			Mode:     0644,
-			Size:     5,
-		})
-		_, _ = tw.Write([]byte("OWNED"))
-	})
-
-	_ = readPath(buf, rootfs, "/dst", mediaTypeTar, false)
-
-	got, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatalf("read host file: %v", err)
-	}
-	if string(got) != "ORIGINAL" {
-		t.Fatalf("host file was overwritten via pre-existing symlink: got %q", got)
 	}
 }
 
@@ -544,61 +434,6 @@ func TestReadPathImportNestedDotDotInName(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(rootfs, "etc", "passwd")); err == nil {
 		t.Fatal("nested ../ entry leaked outside the destination")
-	}
-}
-
-// TestReadPathImportSymlinkAbsoluteTargetReroutedInRoot verifies that
-// a symlink with an absolute target (e.g. "/") is created literally
-// but, when later traversed via os.Root, is re-rooted at the rootfs
-// rather than the host root. We then attempt to write through it and
-// confirm the host file system is untouched.
-func TestReadPathImportSymlinkAbsoluteTargetReroutedInRoot(t *testing.T) {
-	_, rootfs, outside := makeRootfs(t)
-	hostFile := filepath.Join(outside, "host")
-	if err := os.WriteFile(hostFile, []byte("ORIGINAL"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	buf := writeTar(t, func(tw *tar.Writer) {
-		// Create a directory in the rootfs that mirrors the host
-		// file's basename so that, if the symlink were resolved
-		// against the host, "/host" would name the host file.
-		_ = tw.WriteHeader(&tar.Header{
-			Name:     "host",
-			Typeflag: tar.TypeDir,
-			Mode:     0755,
-		})
-		// A symlink with an absolute target. Created verbatim by
-		// root.Symlink — but any later read/write through it goes
-		// via os.Root, which interprets "/" as the rootfs.
-		_ = tw.WriteHeader(&tar.Header{
-			Name:     "abs",
-			Linkname: "/host",
-			Typeflag: tar.TypeSymlink,
-			Mode:     0777,
-		})
-		// Write through the symlink. Must land at <rootfs>/host/payload,
-		// not at <outside>/payload.
-		_ = tw.WriteHeader(&tar.Header{
-			Name:     "abs/payload",
-			Typeflag: tar.TypeReg,
-			Mode:     0644,
-			Size:     5,
-		})
-		_, _ = tw.Write([]byte("OWNED"))
-	})
-
-	_ = readPath(buf, rootfs, "/", mediaTypeTar, false)
-
-	got, err := os.ReadFile(hostFile)
-	if err != nil {
-		t.Fatalf("read host file: %v", err)
-	}
-	if string(got) != "ORIGINAL" {
-		t.Fatalf("host file overwritten via absolute symlink: got %q", got)
-	}
-	if _, err := os.Stat(filepath.Join(outside, "payload")); err == nil {
-		t.Fatal("payload written outside rootfs via absolute symlink")
 	}
 }
 

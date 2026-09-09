@@ -24,6 +24,7 @@ import (
 	"github.com/containerd/containerd/v2/core/streaming"
 	"github.com/containerd/containerd/v2/core/transfer"
 	tplugins "github.com/containerd/containerd/v2/core/transfer/plugins"
+	cplugins "github.com/containerd/containerd/v2/plugins"
 	"github.com/containerd/errdefs"
 	"github.com/containerd/log"
 	"github.com/containerd/plugin"
@@ -36,6 +37,7 @@ import (
 
 	itransfer "github.com/containerd/nerdbox/internal/transfer"
 	"github.com/containerd/nerdbox/plugins"
+	ctrfsplugin "github.com/containerd/nerdbox/plugins/vminit/ctrfs"
 )
 
 // streamGetterProvider is implemented by the vsock streaming plugin.
@@ -49,6 +51,7 @@ func init() {
 		ID:   "transfer",
 		Requires: []plugin.Type{
 			plugins.StreamingPlugin,
+			cplugins.InternalPlugin,
 		},
 		InitFn: func(ic *plugin.InitContext) (any, error) {
 			sp, err := ic.GetByID(plugins.StreamingPlugin, "vsock")
@@ -57,12 +60,19 @@ func init() {
 			}
 			sgp := sp.(streamGetterProvider)
 
-			bundleDir := ic.Properties[plugins.PropertyBundleDir]
+			cfs, err := ic.GetByID(cplugins.InternalPlugin, ctrfsplugin.ContainerFSPluginID)
+			if err != nil {
+				return nil, err
+			}
+			ctrFS, ok := cfs.(itransfer.ContainerFS)
+			if !ok {
+				return nil, fmt.Errorf("plugin %q does not provide container filesystem access: %w", ctrfsplugin.ContainerFSPluginID, errdefs.ErrInvalidArgument)
+			}
 
 			return &service{
 				streamGetter: sgp.StreamGetter(),
 				transferrers: []transfer.Transferrer{
-					itransfer.NewContainerFSTransferrer(bundleDir),
+					itransfer.NewContainerFSTransferrer(ctrFS),
 					itransfer.NewEchoTransferrer(),
 				},
 			}, nil

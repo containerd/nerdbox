@@ -25,6 +25,7 @@ import (
 	"github.com/containerd/containerd/v2/core/transfer"
 	tplugins "github.com/containerd/containerd/v2/core/transfer/plugins"
 	"github.com/containerd/errdefs"
+	"github.com/containerd/errdefs/pkg/errgrpc"
 	"github.com/containerd/log"
 	"github.com/containerd/plugin"
 	"github.com/containerd/plugin/registry"
@@ -83,18 +84,18 @@ func (s *service) RegisterTTRPC(server *ttrpc.Server) error {
 func (s *service) Transfer(ctx context.Context, req *transferapi.TransferRequest) (*emptypb.Empty, error) {
 	src, err := s.convertAny(ctx, req.Source)
 	if err != nil {
-		return nil, err
+		return nil, errgrpc.ToGRPC(err)
 	}
 	dst, err := s.convertAny(ctx, req.Destination)
 	if err != nil {
-		return nil, err
+		return nil, errgrpc.ToGRPC(err)
 	}
 
 	for _, t := range s.transferrers {
 		if err = t.Transfer(ctx, src, dst); err == nil {
 			return &emptypb.Empty{}, nil
 		} else if !errdefs.IsNotImplemented(err) {
-			return nil, err
+			return nil, errgrpc.ToGRPC(err)
 		}
 		log.G(ctx).WithError(err).WithField("src_type", fmt.Sprintf("%T", src)).WithField("dst_type", fmt.Sprintf("%T", dst)).Debug("transfer not implemented for type pair")
 	}

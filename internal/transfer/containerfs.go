@@ -19,6 +19,8 @@ package transfer
 import (
 	"archive/tar"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -51,10 +53,16 @@ func (t *containerFSTransferrer) Transfer(ctx context.Context, src, dst any, opt
 		if !ok {
 			return errdefs.ErrNotImplemented
 		}
-		rootfs := filepath.Join(t.bundleDir, s.ContainerID, "rootfs")
+		bundle := filepath.Join(t.bundleDir, s.ContainerID)
+		root, src, err := resolveMountRoot(bundle, s.Path)
+		if err != nil {
+			return err
+		}
 		w := d.Writer(ctx)
 		defer w.Close()
-		return writePath(rootfs, s.Path, w, d.MediaType, s.NoWalk)
+		// The archive's top-level name reflects the container's view of
+		// the path: a mount source's basename need not match it.
+		return writePath(root, src, path.Base(rootRel(s.Path)), w, d.MediaType, s.NoWalk)
 
 	case *ReadStream:
 		// Copy-to: ReadStream -> ContainerPath
@@ -62,12 +70,108 @@ func (t *containerFSTransferrer) Transfer(ctx context.Context, src, dst any, opt
 		if !ok {
 			return errdefs.ErrNotImplemented
 		}
-		rootfs := filepath.Join(t.bundleDir, d.ContainerID, "rootfs")
+		bundle := filepath.Join(t.bundleDir, d.ContainerID)
+		root, dst, err := resolveMountRoot(bundle, d.Path)
+		if err != nil {
+			return err
+		}
 		r := s.Reader(ctx)
-		return readPath(r, rootfs, d.Path, s.MediaType, d.PreserveOwnership)
+		return readPath(r, root, dst, s.MediaType, d.PreserveOwnership)
 	}
 
 	return errdefs.ErrNotImplemented
+}
+
+// resolveMountRoot maps a path expressed in the container's view onto the
+// directory that backs it, returning that directory and the path relative to
+// it.
+//
+// The bundle's rootfs backs only the paths no mount covers. Where the runtime
+// spec declares a bind mount, the container's mount namespace has the source
+// mounted over the destination, so the rootfs entry underneath is shadowed:
+// extracting there produces a file the container never sees, and archiving
+// from there reads whatever the rootfs happens to hold rather than the mounted
+// content. Resolving against the mount's source keeps both directions
+// consistent with the container's own view of its filesystem.
+//
+// The longest matching destination wins, so a mount nested inside another
+// resolves against the innermost one. A bundle with no readable or parseable
+// config.json resolves to the rootfs: absent mount information there is
+// nothing to redirect, and the caller reports any genuine failure.
+//
+// A relative source is interpreted against the bundle directory, as the
+// runtime does (nerdbox itself declares such mounts for bundle extra files
+// like resolv.conf). A source that is not a directory — a single-file bind
+// mount — cannot anchor an *os.Root, so it resolves to the file's parent
+// directory with the file's name as the relative path.
+//
+// Known limitations, tracked by issue #164: a path whose subtree contains a
+// mount deeper inside (e.g. archiving /etc when /etc/resolv.conf is a mount)
+// resolves to the outer directory only, and non-bind mounts (tmpfs, ...)
+// exist only in the container's mount namespace and cannot be resolved from
+// the bundle at all.
+func resolveMountRoot(bundleContainerDir, containerPath string) (root, rel string, err error) {
+	rootfs := filepath.Join(bundleContainerDir, "rootfs")
+
+	data, err := os.ReadFile(filepath.Join(bundleContainerDir, "config.json"))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return rootfs, containerPath, nil
+		}
+		return "", "", fmt.Errorf("failed to read bundle config: %w", err)
+	}
+
+	var spec struct {
+		Mounts []struct {
+			Destination string `json:"destination"`
+			Type        string `json:"type"`
+			Source      string `json:"source"`
+		} `json:"mounts"`
+	}
+	if err := json.Unmarshal(data, &spec); err != nil {
+		return rootfs, containerPath, nil
+	}
+
+	target := path.Clean("/" + containerPath)
+
+	var bestDest, bestSrc string
+	for _, m := range spec.Mounts {
+		if m.Type != "bind" || m.Source == "" {
+			continue
+		}
+		dest := path.Clean("/" + m.Destination)
+		if target != dest && !strings.HasPrefix(target, strings.TrimSuffix(dest, "/")+"/") {
+			continue
+		}
+		if len(dest) > len(bestDest) {
+			bestDest, bestSrc = dest, m.Source
+		}
+	}
+	if bestDest == "" {
+		return rootfs, containerPath, nil
+	}
+
+	// This code runs in the Linux VM, where the two predicates agree;
+	// accepting either form of absolute path keeps the unit tests, which
+	// mix spec-style Linux sources with host temp directories, portable
+	// to Windows hosts.
+	if !filepath.IsAbs(bestSrc) && !path.IsAbs(bestSrc) {
+		bestSrc = filepath.Join(bundleContainerDir, bestSrc)
+	}
+
+	rel = strings.TrimPrefix(target, bestDest)
+
+	if fi, err := os.Stat(bestSrc); err == nil && !fi.IsDir() {
+		// Single-file mount: anchor at the parent directory. A residual
+		// rel below the file yields a path that fails with ENOTDIR when
+		// the caller stats it, which is the honest answer.
+		return filepath.Dir(bestSrc), filepath.Base(bestSrc) + rel, nil
+	}
+
+	if rel == "" {
+		rel = "."
+	}
+	return bestSrc, rel, nil
 }
 
 // rootRel converts a path expressed in the container's view (which
@@ -85,14 +189,17 @@ func rootRel(p string) string {
 }
 
 // writePath creates a tar archive from the given path within rootfs
-// and writes it to w. When noWalk is true and path is a directory,
-// only the directory entry itself is included without walking into
-// it.
+// and writes it to w. name is the archive's top-level entry name,
+// taken from the container's view of the path: when src resolved
+// through a mount, the backing file or directory's own basename may
+// differ from the name the container sees. When noWalk is true and
+// path is a directory, only the directory entry itself is included
+// without walking into it.
 //
 // All filesystem accesses are anchored to rootfs through *os.Root,
 // so symlink resolution cannot escape the rootfs even if the
 // container concurrently mutates its own filesystem.
-func writePath(rootfs, src string, w io.Writer, mediaType string, noWalk bool) error {
+func writePath(rootfs, src, name string, w io.Writer, mediaType string, noWalk bool) error {
 	if mediaType != mediaTypeTar {
 		return fmt.Errorf("unsupported media type %q: %w", mediaType, errdefs.ErrNotImplemented)
 	}
@@ -110,12 +217,11 @@ func writePath(rootfs, src string, w io.Writer, mediaType string, noWalk bool) e
 		return fmt.Errorf("failed to stat %s: %w", src, err)
 	}
 
-	// The top-level entry name is the basename of the requested
-	// path. When the caller asks for the whole filesystem (path "/"),
-	// relPath is "." and baseName is "."; child entries then drop
-	// the leading "./" via path.Join, so the tar contains
-	// "bin/sh" rather than leaking the host bundle's directory name.
-	baseName := path.Base(relPath)
+	// When the caller asks for the whole filesystem (path "/"), name
+	// is "."; child entries then drop the leading "./" via path.Join,
+	// so the tar contains "bin/sh" rather than leaking the host
+	// bundle's directory name.
+	baseName := name
 
 	tw := tar.NewWriter(w)
 
@@ -229,6 +335,13 @@ func readPath(r io.Reader, rootfs, dstPath, mediaType string, preserveOwnership 
 
 	dst := root
 	if relDst != "." {
+		// A destination naming an existing non-directory — a plain
+		// file in the rootfs, or the source of a single-file bind
+		// mount after resolution — receives the archived file's bytes
+		// rather than a tree extraction.
+		if fi, err := root.Stat(relDst); err == nil && !fi.IsDir() {
+			return extractOverFile(root, relDst, r, preserveOwnership)
+		}
 		if err := root.MkdirAll(relDst, 0755); err != nil {
 			return fmt.Errorf("failed to create destination: %w", err)
 		}
@@ -262,6 +375,55 @@ func readPath(r io.Reader, rootfs, dstPath, mediaType string, preserveOwnership 
 		if err := extractTarEntry(dst, entryName, header, tr, preserveOwnership); err != nil {
 			return err
 		}
+	}
+}
+
+// extractOverFile extracts an archive onto a destination that is an
+// existing file rather than a directory, replacing its contents with
+// the archived bytes. Only an archive carrying a single regular file
+// makes sense here; a directory or any other entry type cannot be
+// extracted over a file and is rejected. The file is truncated in
+// place rather than recreated, so it keeps its mode and, when it is a
+// bind-mount source, its inode — a mounted file replaced by a new
+// inode would leave the container reading the stale one.
+func extractOverFile(dst *os.Root, target string, r io.Reader, preserveOwnership bool) error {
+	tr := tar.NewReader(r)
+	written := false
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("failed to read tar header: %w", err)
+		}
+		if header.Typeflag != tar.TypeReg {
+			return fmt.Errorf("cannot extract %q over file %s: not a regular file", header.Name, target)
+		}
+		if written {
+			return fmt.Errorf("cannot extract multiple entries over file %s", target)
+		}
+
+		f, err := dst.OpenFile(target, os.O_WRONLY|os.O_TRUNC, 0)
+		if err != nil {
+			return err
+		}
+		// Copy exactly the size the header declares; the tar reader
+		// bounds the entry anyway, and the explicit limit satisfies
+		// gosec's decompression-bomb rule (G110).
+		if _, err := io.CopyN(f, tr, header.Size); err != nil {
+			f.Close()
+			return err
+		}
+		if err := f.Close(); err != nil {
+			return err
+		}
+		if preserveOwnership {
+			if err := dst.Lchown(target, header.Uid, header.Gid); err != nil {
+				return fmt.Errorf("failed to chown %s: %w", target, err)
+			}
+		}
+		written = true
 	}
 }
 

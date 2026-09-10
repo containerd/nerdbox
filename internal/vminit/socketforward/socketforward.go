@@ -67,6 +67,20 @@ type Service struct {
 
 	// notify delivers ConnectRequest messages to the Accept stream so the
 	// host shim can set up the vsock relay for each new connection.
+	//
+	// TODO: this channel, like the rest of Service, is process-wide (one
+	// per VM), but Accept below is a per-container stream on the host
+	// side (see socketForwarder in internal/shim/task/socketforward.go,
+	// "for a single container"). If more than one container in this VM
+	// binds a socket forward, each runs its own concurrent Accept RPC,
+	// and every one of those RPCs reads from this same channel — so a
+	// ConnectRequest can be delivered to a different container's Accept
+	// stream than the one whose forward it actually belongs to, which
+	// that container's host-side handleConnection then rejects as an
+	// "unknown forward ID". This was never reachable before multiple
+	// containers could share one VM. Fixing it means keying notify (and
+	// pending) by forward ID or container ID so a request only ever
+	// reaches the Accept stream that owns it.
 	notify chan *socketforward.ConnectRequest
 }
 
@@ -136,6 +150,11 @@ func (s *Service) Accept(ctx context.Context, srv socketforward.TTRPCSocketForwa
 		}
 	}()
 
+	// TODO: see the TODO on the notify field. Every concurrent caller of
+	// Accept (one per container sharing this VM) races here for the next
+	// value off the single shared notify channel, so a request meant for
+	// one container's forward can be delivered to a different
+	// container's stream instead.
 	for {
 		select {
 		case req := <-s.notify:
@@ -165,6 +184,16 @@ func (s *Service) bind(ctx context.Context, forwardID, socketPath string) error 
 	l, err := net.Listen("unix", socketPath)
 	if err != nil {
 		return fmt.Errorf("listening on %s: %w", socketPath, err)
+	}
+	// Allow all processes (including those in user namespaces) to connect to
+	// this forwarded socket.  Containers in user namespaces run as a mapped
+	// UID that is "other" from the VM init namespace's perspective, so they
+	// need write permission on the socket file to call connect(2). Execute
+	// bits are not meaningful for a UNIX socket, so 0o666 (rw for all) is
+	// sufficient; no need for 0o777.
+	if err := os.Chmod(socketPath, 0o666); err != nil {
+		l.Close()
+		return fmt.Errorf("chmod socket %s: %w", socketPath, err)
 	}
 
 	s.listeners = append(s.listeners, l)

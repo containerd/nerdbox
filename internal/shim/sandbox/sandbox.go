@@ -75,6 +75,11 @@ type Options struct {
 	InitArgs    []string
 	CPU         uint8
 	Memory      uint32 // in MiB
+	// NetnsPath is the host-side network namespace path (e.g.
+	// /var/run/netns/cni-<id>) to enter on the libkrun FFI thread before
+	// any FFI calls are made.  Empty means host-network (no namespace
+	// entry).
+	NetnsPath string
 }
 
 type Opt func(*Options)
@@ -127,5 +132,14 @@ func WithResources(cpu uint8, memory uint32) Opt {
 	return func(o *Options) {
 		o.CPU = cpu
 		o.Memory = memory
+	}
+}
+
+// WithNetnsPath sets the host-side network namespace path that the VM's
+// libkrun FFI thread will enter (via setns) before any context configuration
+// calls.  An empty path means host-network — no namespace entry.
+func WithNetnsPath(path string) Opt {
+	return func(o *Options) {
+		o.NetnsPath = path
 	}
 }

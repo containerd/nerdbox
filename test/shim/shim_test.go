@@ -79,6 +79,7 @@ func TestMain(m *testing.M) {
 //
 //	-run TestShim/Exec
 //	-run TestShim/Lifecycle
+//	-run TestShim/Sandbox
 //
 // LayersSuite (HundredLayers) packs 101 erofs layers into a single
 // GPT-partitioned VMDK, consuming only one virtio-blk device regardless
@@ -89,6 +90,10 @@ func TestMain(m *testing.M) {
 // to provide it. This is the regression guard for TSI (Transparent Socket
 // Impersonation), the default connectivity path for containers started
 // without any network configuration.
+//
+// SandboxSuite verifies the containerd sandbox shim API contract
+// (runtime/sandbox/v1): lifecycle, platform, ping, single and multiple
+// member containers, per-container independence, and error cases.
 func TestShim(t *testing.T) {
 	cfg := shimConfig()
 	shimtest.NewRunSuite(cfg).Run(t)
@@ -98,6 +103,26 @@ func TestShim(t *testing.T) {
 	shimtest.NewUDSSuite(cfg).Run(t)
 	shimtest.NewLayersSuite(cfg).Run(t)
 	shimtest.NewNetworkSuite(cfg).Run(t)
+	shimtest.NewSandboxSuite(cfg).Run(t)
+}
+
+// BenchmarkShim runs the shimtest benchmark suites against the nerdbox shim.
+// Run individual benchmarks with -bench, e.g.:
+//
+//	go test -bench 'BenchmarkShim/Lifecycle' -benchtime 5x ./test/shim/...
+//	go test -bench 'BenchmarkShim/ContainerCreate' -benchtime 5x ./test/shim/...
+//
+// ContainerCreate benchmarks the per-container create/start/wait/delete cycle
+// inside a shared sandbox VM; Lifecycle benchmarks the full shim-start +
+// single-container cycle.  Comparing their ms/create and ms/total metrics
+// shows the marginal cost of adding a container to an existing sandbox versus
+// booting a fresh VM.
+func BenchmarkShim(b *testing.B) {
+	cfg := shimConfig()
+	shimtest.NewRunSuite(cfg).Bench(b)
+	shimtest.NewExecSuite(cfg).Bench(b)
+	shimtest.NewLayersSuite(cfg).Bench(b)
+	shimtest.NewSandboxSuite(cfg).Bench(b)
 }
 
 // FuzzTransferMissing exercises the transfer service with arbitrary paths
@@ -109,21 +134,13 @@ func FuzzTransferMissing(f *testing.F) {
 
 // shimPath returns a PATH value that prepends candidate _output directories
 // to the current PATH. The local module _output/ is highest priority, followed
-// by sibling worktree _output/ directories (to find kernel/initrd/libkrun built
-// in another branch worktree).
+// by sibling worktree _output/ directories that do NOT contain a libkrun.so —
+// those are included for kernel/rootfs/vminitd assets only.  Sibling _output
+// dirs that carry a libkrun.so are skipped to prevent the shim from resolving
+// a stale libkrun built in another worktree.
 func shimPath() string {
 	root := moduleRoot()
 	current := os.Getenv("PATH")
-
-	// Build the final PATH as an ordered, deduplicated list:
-	//   1. local _output (always first, re-anchored even if already present)
-	//   2. sibling worktree _output dirs (fallback for kernel/initrd/libkrun)
-	//   3. everything already in PATH, minus any entries already added above
-	//
-	// The local _output must be unconditionally first: shimtest helpers call
-	// os.Setenv to inject it into the test-process PATH between tests, so by
-	// the time shimPath is called again it may already be present — but
-	// sibling dirs may also have been added and could sort ahead of it.
 	localOutput := filepath.Join(root, "_output")
 
 	parent := filepath.Dir(root)
@@ -133,7 +150,13 @@ func shimPath() string {
 			if !e.IsDir() || e.Name() == filepath.Base(root) {
 				continue
 			}
-			siblingOutputs = append(siblingOutputs, filepath.Join(parent, e.Name(), "_output"))
+			dir := filepath.Join(parent, e.Name(), "_output")
+			// Skip sibling _output dirs that have their own libkrun.so;
+			// using a stale libkrun can cause symbol-not-found crashes.
+			if _, err := os.Stat(filepath.Join(dir, "libkrun.so")); err == nil {
+				continue
+			}
+			siblingOutputs = append(siblingOutputs, dir)
 		}
 	}
 
@@ -147,17 +170,17 @@ func shimPath() string {
 		}
 	}
 
-	// 1. Local _output first (exists check; silently skip if missing).
+	// 1. Local _output first.
 	if _, err := os.Stat(localOutput); err == nil {
 		add(localOutput)
 	}
-	// 2. Sibling _output dirs that exist and haven't been added yet.
+	// 2. Sibling _output dirs without libkrun.so (kernel/rootfs fallback).
 	for _, dir := range siblingOutputs {
 		if _, err := os.Stat(dir); err == nil {
 			add(dir)
 		}
 	}
-	// 3. Retain existing PATH entries not already included above.
+	// 3. Retain existing PATH entries.
 	for _, dir := range filepath.SplitList(current) {
 		add(dir)
 	}

@@ -39,6 +39,11 @@ type localsandbox struct {
 	mu       sync.Mutex
 	vmm      vm.Manager
 	instance vm.Instance
+	// stopping is set while a Stop call is tearing down instance. It
+	// serializes concurrent Stop calls against each other and makes
+	// Client/StartStream fail fast instead of racing a call against an
+	// in-flight Shutdown.
+	stopping bool
 }
 
 // diskReserver is a package-private optional interface for vm.Manager
@@ -138,39 +143,86 @@ func (s *localsandbox) Start(ctx context.Context, opts ...sandbox.Opt) error {
 }
 
 func (s *localsandbox) Stop(ctx context.Context) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.instance == nil {
-		return fmt.Errorf("sandbox must be started: %w", errdefs.ErrFailedPrecondition)
-	}
-
-	if err := s.instance.Shutdown(ctx); err != nil {
+	instance, err := s.beginStopping()
+	if err != nil {
 		return err
 	}
 
-	s.instance = nil
+	stopped := false
+	defer func() {
+		s.mu.Lock()
+		if stopped {
+			// Stopped successful so clear vm instance.
+			s.instance = nil
+		}
+		s.stopping = false
+		s.mu.Unlock()
+	}()
+
+	if err := instance.Shutdown(ctx); err != nil {
+		return err
+	}
+
+	stopped = true
 	return nil
 }
 
 func (s *localsandbox) Client() (*ttrpc.Client, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.instance == nil {
-		return nil, fmt.Errorf("sandbox must be started: %w", errdefs.ErrFailedPrecondition)
+	instance, err := s.activeInstance()
+	if err != nil {
+		return nil, err
 	}
 
-	return s.instance.Client(), nil
+	// A live instance can still hand back a nil client if a previous Stop
+	// call failed partway through tearing it down (e.g. the underlying
+	// Shutdown cleared its client but then failed on a later step, so
+	// s.instance was deliberately left set for a retry). Surface that as
+	// an unavailable error instead of a nil client with a nil error.
+	client := instance.Client()
+	if client == nil {
+		return nil, errdefs.ErrUnavailable.WithMessage("sandbox client is unavailable")
+	}
+
+	return client, nil
 }
 
 func (s *localsandbox) StartStream(ctx context.Context, streamID string) (net.Conn, error) {
+	instance, err := s.activeInstance()
+	if err != nil {
+		return nil, err
+	}
+
+	return instance.StartStream(ctx, streamID)
+}
+
+// beginStopping validates that the sandbox can be stopped, marks it
+// stopping, and hands back the instance that is to be shut down.
+func (s *localsandbox) beginStopping() (vm.Instance, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.instance == nil {
-		return nil, fmt.Errorf("sandbox must be started: %w", errdefs.ErrFailedPrecondition)
+		return nil, errdefs.ErrFailedPrecondition.WithMessage("sandbox must be started")
+	}
+	if s.stopping {
+		return nil, errdefs.ErrFailedPrecondition.WithMessage("sandbox is already stopping")
+	}
+	s.stopping = true
+	return s.instance, nil
+}
+
+// activeInstance hands back an instance that has been started and is
+// not begun any shutdown process.
+func (s *localsandbox) activeInstance() (vm.Instance, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.instance == nil {
+		return nil, errdefs.ErrFailedPrecondition.WithMessage("sandbox must be started")
+	}
+	if s.stopping {
+		return nil, errdefs.ErrFailedPrecondition.WithMessage("sandbox is stopping")
 	}
 
-	return s.instance.StartStream(ctx, streamID)
+	return s.instance, nil
 }

@@ -155,13 +155,14 @@ func (*vmManager) NewInstance(ctx context.Context, state string) (vm.Instance, e
 	}
 
 	return &vmInstance{
-		vmc:        vmc,
-		state:      state,
-		kernelPath: kernelPath,
-		rootfsPath: rootfsPath,
-		streamPath: filepath.Join(state, "streaming.sock"),
-		lib:        lib,
-		handler:    handler,
+		vmc:                vmc,
+		state:              state,
+		kernelPath:         kernelPath,
+		rootfsPath:         rootfsPath,
+		streamPath:         filepath.Join(state, "streaming.sock"),
+		lib:                lib,
+		handler:            handler,
+		inFlightHandshakes: make(map[net.Conn]struct{}),
 	}, nil
 }
 
@@ -179,6 +180,16 @@ type vmInstance struct {
 
 	client *ttrpc.Client
 	conn   net.Conn // underlying TTRPC connection; closed in Shutdown
+
+	// inFlightHandshakes lets Shutdown close every dialed-but-unclaimed
+	// StartStream connection, so a handshake blocked on a guest that never
+	// acks returns instead of hanging for the VM's lifetime. Shutdown also
+	// nils this out, so a StartStream that dials afterward fails fast
+	// rather than registering a connection nothing will ever close.
+	inFlightHandshakes map[net.Conn]struct{}
+
+	// shuttingDown is set while Shutdown is tearing the instance down.
+	shuttingDown bool
 }
 
 func (v *vmInstance) AddFS(ctx context.Context, tag, mountPath string, opts ...vm.MountOpt) error {
@@ -397,37 +408,101 @@ func (v *vmInstance) StartStream(ctx context.Context, streamID string, _ ...vm.S
 			if err != nil {
 				return nil, fmt.Errorf("failed to connect to stream server: %w", err)
 			}
-			// Write length-prefixed stream ID
-			idBytes := []byte(streamID)
-			if err := binary.Write(conn, binary.BigEndian, uint32(len(idBytes))); err != nil {
+
+			if !v.trackStreamConn(conn) {
+				// Shutdown has already closed every tracked stream
+				// connection and is tearing down (or has torn down) the
+				// VM; don't hand back a connection racing that teardown.
 				conn.Close()
-				return nil, fmt.Errorf("failed to write stream id length: %w", err)
+				return nil, errdefs.ErrUnavailable.WithMessage("vm instance is shutting down")
 			}
-			if _, err := conn.Write(idBytes); err != nil {
+
+			handshakeErr := completeStreamHandshake(conn, streamID)
+			if !v.untrackStreamConn(conn) {
+				// Shutdown's closeStreamConnsLocked ran while the handshake
+				// was in flight (or in the instant after it finished) and
+				// may have closed this exact conn out from under us, even
+				// though handshakeErr came back nil; don't hand back a
+				// connection that could already be dead.
 				conn.Close()
-				return nil, fmt.Errorf("failed to write stream id: %w", err)
+				return nil, errdefs.ErrUnavailable.WithMessage("vm instance is shutting down")
 			}
-			// Wait for ack (length-prefixed string echoed back)
-			var ackLen uint32
-			if err := binary.Read(conn, binary.BigEndian, &ackLen); err != nil {
+			if handshakeErr != nil {
 				conn.Close()
-				return nil, fmt.Errorf("failed to read ack length: %w", err)
-			}
-			ackBytes := make([]byte, ackLen)
-			if _, err := io.ReadFull(conn, ackBytes); err != nil {
-				conn.Close()
-				return nil, fmt.Errorf("failed to read ack: %w", err)
-			}
-			if ack := string(ackBytes); ack != streamID {
-				conn.Close()
-				return nil, fmt.Errorf("stream %q rejected by server: %s", streamID, ack)
+				return nil, handshakeErr
 			}
 
 			return conn, nil
 		}
 		time.Sleep(d)
 	}
-	return nil, fmt.Errorf("timeout waiting for stream server: %w", errdefs.ErrUnavailable)
+	return nil, errdefs.ErrUnavailable.WithMessage("timed out waiting for stream server")
+}
+
+// completeStreamHandshake has no deadline of its own: a caller that wants
+// it to return when the VM goes away must close conn out from under it
+// (see closeStreamConnsLocked), which unblocks the pending Write or Read
+// with an error.
+func completeStreamHandshake(conn net.Conn, streamID string) error {
+	idBytes := []byte(streamID)
+	if err := binary.Write(conn, binary.BigEndian, uint32(len(idBytes))); err != nil {
+		return fmt.Errorf("failed to write stream id length: %w", err)
+	}
+	if _, err := conn.Write(idBytes); err != nil {
+		return fmt.Errorf("failed to write stream id: %w", err)
+	}
+	var ackLen uint32
+	if err := binary.Read(conn, binary.BigEndian, &ackLen); err != nil {
+		return fmt.Errorf("failed to read ack length: %w", err)
+	}
+	ackBytes := make([]byte, ackLen)
+	if _, err := io.ReadFull(conn, ackBytes); err != nil {
+		return fmt.Errorf("failed to read ack: %w", err)
+	}
+	if ack := string(ackBytes); ack != streamID {
+		return fmt.Errorf("stream %q rejected by server: %s", streamID, ack)
+	}
+	return nil
+}
+
+// trackStreamConn registers conn so closeStreamConnsLocked can close it if
+// it is still in flight when the VM is torn down. It returns false once
+// Shutdown has run (or is running), in which case conn was never
+// registered and the caller must close it itself.
+func (v *vmInstance) trackStreamConn(conn net.Conn) bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.inFlightHandshakes == nil {
+		return false
+	}
+	v.inFlightHandshakes[conn] = struct{}{}
+	return true
+}
+
+// untrackStreamConn removes conn from the set closeStreamConnsLocked would
+// close, and reports whether conn was still tracked (i.e. Shutdown had not
+// yet run closeStreamConnsLocked as of this call). A false return means
+// Shutdown already ran and cleared the set, so conn may already have been
+// closed even if it was tracked when this call started — the caller must
+// not treat conn as usable in that case.
+func (v *vmInstance) untrackStreamConn(conn net.Conn) bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.inFlightHandshakes == nil {
+		return false
+	}
+	delete(v.inFlightHandshakes, conn)
+	return true
+}
+
+// closeStreamConnsLocked lets a StartStream call blocked in
+// completeStreamHandshake return with an error instead of hanging once
+// the VM it depends on is gone. Callers must hold v.mu.
+func (v *vmInstance) closeStreamConnsLocked() {
+	for conn := range v.inFlightHandshakes {
+		conn.Close()
+	}
+	v.inFlightHandshakes = nil
 }
 
 func (v *vmInstance) Client() *ttrpc.Client {
@@ -437,11 +512,22 @@ func (v *vmInstance) Client() *ttrpc.Client {
 }
 
 func (v *vmInstance) Shutdown(ctx context.Context) error {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	if v.handler == 0 {
-		return fmt.Errorf("libkrun already closed")
+	err := v.beginShutdown()
+	if err != nil {
+		return err
 	}
+
+	// shuttingDown clears once the teardown below finishes, successfully
+	// or not, so a caller that gets an error back (e.g. from dlClose) can
+	// retry instead of finding this instance permanently stuck rejecting
+	// every Shutdown call.
+	defer func() {
+		v.mu.Lock()
+		v.shuttingDown = false
+		v.mu.Unlock()
+	}()
+
+	v.mu.Lock()
 
 	// Close the TTRPC client so in-flight RPCs fail fast and its background
 	// goroutines are stopped before we tear down the connection underneath.
@@ -460,6 +546,10 @@ func (v *vmInstance) Shutdown(ctx context.Context) error {
 		v.conn = nil
 	}
 
+	// Run the shutdown of the vm context outside of the critical section to
+	// allow concurrent operations to run/stop gracefully.
+	v.mu.Unlock()
+
 	// Stop the VM. krun_free_ctx joins all VM threads (vCPU, virtio workers)
 	// on most platforms. On Windows WHP it initiates the stop but may return
 	// before krun_start_enter unblocks; the goroutine is cleaned up on exit.
@@ -471,10 +561,34 @@ func (v *vmInstance) Shutdown(ctx context.Context) error {
 
 	// On Unix, dlClose unloads the library after krun_free_ctx has joined all
 	// VM threads. On Windows it is a no-op (see dlfcn_windows.go).
-	if err := dlClose(v.handler); err != nil {
+	v.mu.Lock()
+	handler := v.handler
+	v.mu.Unlock()
+
+	if err := dlClose(handler); err != nil {
 		return err
 	}
+
+	v.mu.Lock()
 	v.handler = 0
+	v.mu.Unlock()
+	return nil
+}
+
+// beginShutdown validates the instance can be shutdown and marks it
+// as shutdown in progress to prevent concurrent shutdowns from occurring.
+func (v *vmInstance) beginShutdown() error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	if v.handler == 0 {
+		return errors.New("libkrun already closed")
+	}
+	if v.shuttingDown {
+		return errors.New("libkrun already shutting down")
+	}
+	v.shuttingDown = true
+	v.closeStreamConnsLocked()
 	return nil
 }
 

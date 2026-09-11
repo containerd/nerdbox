@@ -22,6 +22,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -127,5 +128,82 @@ func TestStartStreamFailsFastOnceShutdown(t *testing.T) {
 	defer cancel()
 	if _, err := v.StartStream(ctx, "test-stream"); err == nil {
 		t.Fatal("expected StartStream to fail fast once inFlightHandshakes is nil")
+	}
+}
+
+// TestCompleteStreamHandshakeRejectsOversizedAck verifies that a
+// guest-claimed ack length far larger than the stream ID sent is rejected
+// before completeStreamHandshake allocates a buffer for it, so a
+// malicious or buggy guest can't force an arbitrarily large allocation
+// with a single crafted length prefix.
+func TestCompleteStreamHandshakeRejectsOversizedAck(t *testing.T) {
+	const streamID = "test-stream"
+
+	guestConn, hostConn := net.Pipe()
+	defer guestConn.Close()
+
+	go func() {
+		var idLen uint32
+		if err := binary.Read(guestConn, binary.BigEndian, &idLen); err != nil {
+			return
+		}
+		io.ReadFull(guestConn, make([]byte, idLen))
+		// Claim an ack far larger than any legitimate response for this ID
+		// instead of echoing the stream ID back.
+		binary.Write(guestConn, binary.BigEndian, uint32(maxAckSize(len(streamID))+1))
+	}()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- completeStreamHandshake(hostConn, streamID)
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected an error for an ack length above the maximum for this stream id")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("completeStreamHandshake did not return for an oversized ack length")
+	}
+}
+
+// TestCompleteStreamHandshakeAcceptsLongStreamID verifies that a
+// legitimate stream ID longer than the old fixed ack-size cap still
+// succeeds: the streaming protocol documents stream IDs as arbitrary
+// strings, so the ack bound must scale with the ID's own length instead
+// of rejecting an ID the guest already accepted and echoed back.
+func TestCompleteStreamHandshakeAcceptsLongStreamID(t *testing.T) {
+	streamID := strings.Repeat("x", 8192)
+
+	guestConn, hostConn := net.Pipe()
+	defer guestConn.Close()
+
+	go func() {
+		var idLen uint32
+		if err := binary.Read(guestConn, binary.BigEndian, &idLen); err != nil {
+			return
+		}
+		idBytes := make([]byte, idLen)
+		if _, err := io.ReadFull(guestConn, idBytes); err != nil {
+			return
+		}
+		// Echo the stream ID back verbatim, as a real guest ack does.
+		binary.Write(guestConn, binary.BigEndian, idLen)
+		guestConn.Write(idBytes)
+	}()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- completeStreamHandshake(hostConn, streamID)
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected a long but legitimate stream id to succeed, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("completeStreamHandshake did not return for a long stream id")
 	}
 }

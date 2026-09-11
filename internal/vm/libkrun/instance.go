@@ -439,6 +439,22 @@ func (v *vmInstance) StartStream(ctx context.Context, streamID string, _ ...vm.S
 	return nil, errdefs.ErrUnavailable.WithMessage("timed out waiting for stream server")
 }
 
+// maxAckSize bounds the length-prefixed ack completeStreamHandshake will
+// allocate for, relative to idLen (the stream ID's length). ackLen is
+// guest-controlled, so the bound can't be a fixed constant: the streaming
+// protocol documents IDs as arbitrary strings, and the guest's success ack
+// is the ID itself (plugins/vminit/streaming/plugin.go:152-154), so a
+// fixed cap would reject legitimate IDs above it after the guest already
+// accepted them. The guest's only other response is a short %q-wrapped
+// rejection message naming the ID (same file); Go's %q quoting can expand
+// a single byte needing a \xHH escape into 4 output characters, so the
+// bound scales by 4x (not 2x) plus a fixed margin for the surrounding
+// quotes and message text, while still bounding what an adversarial guest
+// can force to a small multiple of what the caller itself sent.
+func maxAckSize(idLen int) int {
+	return 4*idLen + 64
+}
+
 // completeStreamHandshake has no deadline of its own: a caller that wants
 // it to return when the VM goes away must close conn out from under it
 // (see closeStreamConnsLocked), which unblocks the pending Write or Read
@@ -454,6 +470,9 @@ func completeStreamHandshake(conn net.Conn, streamID string) error {
 	var ackLen uint32
 	if err := binary.Read(conn, binary.BigEndian, &ackLen); err != nil {
 		return fmt.Errorf("failed to read ack length: %w", err)
+	}
+	if max := maxAckSize(len(idBytes)); ackLen > uint32(max) {
+		return fmt.Errorf("ack length %d exceeds maximum %d for a %d-byte stream id", ackLen, max, len(idBytes))
 	}
 	ackBytes := make([]byte, ackLen)
 	if _, err := io.ReadFull(conn, ackBytes); err != nil {

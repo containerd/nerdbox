@@ -207,3 +207,62 @@ func TestCompleteStreamHandshakeAcceptsLongStreamID(t *testing.T) {
 		t.Fatal("completeStreamHandshake did not return for a long stream id")
 	}
 }
+
+// withShortVMStartTimeout temporarily shortens the package-level
+// vmStartTimeout, restoring it via t.Cleanup.
+func withShortVMStartTimeout(t *testing.T, d time.Duration) {
+	old := vmStartTimeout
+	vmStartTimeout = d
+	t.Cleanup(func() { vmStartTimeout = old })
+}
+
+// TestStartStreamHandshakeIsBounded verifies that a guest which accepts a
+// stream but never acks it cannot wedge StartStream for as long as the VM
+// keeps running: closeStreamConnsLocked only unblocks a handshake once
+// Shutdown runs, so this guest, with no Shutdown ever called, can only be
+// bounded by StartStream's own deadline.
+func TestStartStreamHandshakeIsBounded(t *testing.T) {
+	withShortVMStartTimeout(t, 200*time.Millisecond)
+
+	origWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatalf("failed to chdir to temp dir: %v", err)
+	}
+	t.Cleanup(func() { os.Chdir(origWD) })
+
+	const streamPath = "streaming.sock"
+	l, err := net.Listen("unix", streamPath)
+	if err != nil {
+		t.Fatalf("failed to listen on %s: %v", streamPath, err)
+	}
+	defer l.Close()
+
+	hang := make(chan struct{})
+	t.Cleanup(func() { close(hang) })
+	go func() {
+		conn, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var idLen uint32
+		if err := binary.Read(conn, binary.BigEndian, &idLen); err != nil {
+			return
+		}
+		io.ReadFull(conn, make([]byte, idLen))
+		<-hang // Deliberately never acks.
+	}()
+
+	v := &vmInstance{streamPath: streamPath, inFlightHandshakes: make(map[net.Conn]struct{})}
+
+	start := time.Now()
+	if _, err := v.StartStream(context.Background(), "test-stream"); err == nil {
+		t.Fatal("expected an error from a guest that never acks")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("StartStream took %s to fail, want about %s", elapsed, vmStartTimeout)
+	}
+}

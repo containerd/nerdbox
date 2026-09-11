@@ -417,19 +417,46 @@ func (v *vmInstance) StartStream(ctx context.Context, streamID string, _ ...vm.S
 				return nil, errdefs.ErrUnavailable.WithMessage("vm instance is shutting down")
 			}
 
-			handshakeErr := completeStreamHandshake(conn, streamID)
-			if !v.untrackStreamConn(conn) {
-				// Shutdown's closeStreamConnsLocked ran while the handshake
-				// was in flight (or in the instant after it finished) and
-				// may have closed this exact conn out from under us, even
-				// though handshakeErr came back nil; don't hand back a
-				// connection that could already be dead.
-				conn.Close()
-				return nil, errdefs.ErrUnavailable.WithMessage("vm instance is shutting down")
+			// completeStreamHandshake has no deadline of its own, and
+			// closeStreamConnsLocked only unblocks it once Shutdown runs.
+			// A guest that stops acking streams while the VM keeps running
+			// would otherwise wedge this call for the VM's lifetime, so
+			// bound it here too.
+			deadline := time.Now().Add(vmStartTimeout)
+			if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
+				deadline = dl
 			}
+			if err := conn.SetDeadline(deadline); err != nil {
+				v.untrackStreamConn(conn)
+				conn.Close()
+				return nil, fmt.Errorf("failed to set stream handshake deadline: %w", err)
+			}
+
+			handshakeErr := completeStreamHandshake(conn, streamID)
 			if handshakeErr != nil {
+				v.untrackStreamConn(conn)
 				conn.Close()
 				return nil, handshakeErr
+			}
+
+			// Clear the deadline before the untrack check below: it
+			// becomes a long-lived I/O stream from here, not bounded by
+			// vmStartTimeout, but conn must stay tracked while this can
+			// still fail.
+			if err := conn.SetDeadline(time.Time{}); err != nil {
+				v.untrackStreamConn(conn)
+				conn.Close()
+				return nil, fmt.Errorf("failed to clear stream handshake deadline: %w", err)
+			}
+
+			// Untrack as the last check before returning conn: keeping it
+			// tracked until here means Shutdown, if it runs anywhere
+			// during the handshake or the deadline clear above, still
+			// finds and closes conn instead of this call handing back a
+			// connection racing (or already lost to) that teardown.
+			if !v.untrackStreamConn(conn) {
+				conn.Close()
+				return nil, errdefs.ErrUnavailable.WithMessage("vm instance is shutting down")
 			}
 
 			return conn, nil

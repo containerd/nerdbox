@@ -45,3 +45,6 @@ formatters:
       - releases
       - reports
       - test
+
+run:
+  timeout: 5m

@@ -7,12 +7,12 @@ require (
 	github.com/containerd/cgroups/v3 v3.1.3
 	github.com/containerd/console v1.0.5
 	github.com/containerd/containerd/api v1.11.1
-	github.com/containerd/containerd/v2 v2.3.4
+	github.com/containerd/containerd/v2 v2.3.5
 	github.com/containerd/errdefs v1.0.0
 	github.com/containerd/errdefs/pkg v0.3.0
 	github.com/containerd/fifo v1.1.0
 	github.com/containerd/go-runc v1.2.1
-	github.com/containerd/log v0.1.1-0.20260403072107-cb1839ebf76b
+	github.com/containerd/log v0.2.0
 	github.com/containerd/otelttrpc v0.1.0
 	github.com/containerd/plugin v1.1.0
 	github.com/containerd/shimtest v0.3.3
@@ -38,7 +38,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cilium/ebpf v0.16.0 // indirect
 	github.com/containerd/continuity v0.5.0 // indirect
-	github.com/containerd/platforms v1.0.0-rc.4 // indirect
+	github.com/containerd/platforms v1.0.0-rc.5 // indirect
 	github.com/coreos/go-systemd/v22 v22.7.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/erofs/go-erofs v0.3.0 // indirect

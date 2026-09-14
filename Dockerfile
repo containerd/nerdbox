@@ -265,6 +265,7 @@ RUN go install github.com/go-delve/delve/cmd/dlv@latest
 
 FROM "${RUST_IMAGE}" AS libkrun-build
 ARG LIBKRUN_VERSION=v1.19.0
+ARG KERNEL_ARCH="x86_64"
 # Pin to the commit that fixes get_extent_at binary search at extent
 # boundaries (merged into imago main as 1907e11b).  A [patch.crates-io]
 # git override substitutes by crate name regardless of version, so this
@@ -282,14 +283,17 @@ RUN git clone --depth 1 --branch ${LIBKRUN_VERSION} https://github.com/container
     printf '\n[patch.crates-io]\nimago = { git = "https://gitlab.com/hreitz/imago.git", rev = "%s" }\n' \
         "${IMAGO_FIX_REV}" >> Cargo.toml && \
     cargo update imago && \
-    make -j$(nproc) BLK=1 NET=1
+    make -j$(nproc) BLK=1 NET=1 && \
+    cp /libkrun/target/release/libkrun.so /libkrun/target/release/libkrun-nerdbox-${KERNEL_ARCH}.so
 
 FROM scratch AS libkrun
-COPY --from=libkrun-build /libkrun/target/release/libkrun.so /libkrun.so
+ARG KERNEL_ARCH="x86_64"
+COPY --from=libkrun-build /libkrun/target/release/libkrun-nerdbox-${KERNEL_ARCH}.so /libkrun-nerdbox-${KERNEL_ARCH}.so
 
 FROM ${GOLANG_IMAGE} AS dev
 ARG CONTAINERD_VERSION=2.1.4
 ARG TARGETARCH
+ARG KERNEL_ARCH="x86_64"
 
 ENV PATH=/go/src/github.com/containerd/nerdbox/_output:$PATH
 WORKDIR /go/src/github.com/containerd/nerdbox
@@ -307,7 +311,9 @@ COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-buildx /usr/
 
 COPY --from=dlv /go/bin/dlv /usr/local/bin/dlv
 
-COPY --from=libkrun /libkrun.so /usr/local/lib64/libkrun.so
+COPY --from=libkrun /libkrun-nerdbox-${KERNEL_ARCH}.so /usr/local/lib64/libkrun-nerdbox-${KERNEL_ARCH}.so
+RUN ln -s libkrun-nerdbox-${KERNEL_ARCH}.so /usr/local/lib64/libkrun-nerdbox.so && \
+    ln -s libkrun-nerdbox-${KERNEL_ARCH}.so /usr/local/lib64/libkrun.so
 ENV LIBKRUN_PATH=/go/src/github.com/containerd/nerdbox/_output
 
 VOLUME /var/lib/containerd

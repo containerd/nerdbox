@@ -17,71 +17,50 @@
 package log
 
 import (
-	"context"
 	"io"
 	"log/slog"
+	"sync"
 
 	"github.com/sirupsen/logrus"
+	lslog "github.com/sirupsen/logrus/hooks/slog"
 )
 
 // slogOut is used to set the slog logger when setting output format.
 var slogOut io.Writer
 
-// slogLevel is used to control the slog handler's level when slog output is active.
-var slogLevel = &slog.LevelVar{}
+// slogOnce guards UseSlog so repeated calls do not stack up hooks or
+// reset slogOut to the discard writer installed on the first call.
+var slogOnce sync.Once
 
 func UseSlog() {
-	L.Logger.SetNoLock()
-	L.Logger.AddHook(slogHook{})
-	slogOut = L.Logger.Out
-	L.Logger.SetOutput(io.Discard)
+	slogOnce.Do(func() {
+		L.Logger.SetNoLock()
+		L.Logger.AddHook(slogHook{})
+		slogOut = L.Logger.Out
+
+		// Disable logrus formatting and output, as both are handled by slog.
+		L.Logger.SetFormatter(discardFormatter{})
+		L.Logger.SetOutput(io.Discard)
+	})
 }
 
 type slogHook struct{}
 
-func (hook slogHook) Levels() []logrus.Level {
+func (slogHook) Levels() []logrus.Level {
 	return logrus.AllLevels
 }
 
-func logrusToSlogLevel(l logrus.Level) slog.Level {
-	switch l {
-	case logrus.PanicLevel:
-		return slog.LevelError + 4
-	case logrus.FatalLevel:
-		return slog.LevelError + 2
-	case logrus.ErrorLevel:
-		return slog.LevelError
-	case logrus.WarnLevel:
-		return slog.LevelWarn
-	case logrus.DebugLevel:
-		return slog.LevelDebug
-	case logrus.TraceLevel:
-		return slog.LevelDebug - 4
-	default:
-		return slog.LevelInfo
-	}
+func (slogHook) Fire(entry *logrus.Entry) error {
+	return lslog.NewHook(slog.Default(), nil).Fire(entry)
 }
 
-func (hook slogHook) Fire(entry *logrus.Entry) error {
-	level := logrusToSlogLevel(entry.Level)
+// loggerLevel exposes the current Logrus logger level as a slog.Leveler.
+type loggerLevel struct{}
 
-	handler := slog.Default().Handler()
-
-	ctx := entry.Context
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	if !handler.Enabled(ctx, level) {
-		return nil
-	}
-
-	record := slog.NewRecord(entry.Time, level, entry.Message, 0)
-
-	// Convert logrus fields to slog attributes.
-	for k, v := range entry.Data {
-		record.AddAttrs(slog.Any(k, v))
-	}
-
-	return handler.Handle(ctx, record)
+func (loggerLevel) Level() slog.Level {
+	return lslog.Level(L.Logger.GetLevel()).Level()
 }
+
+type discardFormatter struct{}
+
+func (discardFormatter) Format(*logrus.Entry) ([]byte, error) { return nil, nil }

@@ -311,7 +311,6 @@ func newService(ctx context.Context, config Config, shutdownSvc shutdown.Service
 	if err != nil {
 		return nil, err
 	}
-	shutdownSvc.RegisterCallback(ts.Shutdown)
 
 	registry.Register(&plugin.Registration{
 		Type: cplugins.InternalPlugin,

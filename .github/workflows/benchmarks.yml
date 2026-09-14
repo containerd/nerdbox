@@ -7,7 +7,8 @@ on:
     - cron: '0 0 * * *'
 
 permissions:
-  contents: read
+  contents: write
+  deployments: write
 
 jobs:
   setup:
@@ -119,7 +120,7 @@ jobs:
       - name: Run benchmarks
         run: |
           go test -bench=BenchmarkVM -benchtime=5x -run=^$ -v ./integration/... \
-            | tee /tmp/bench-output.txt
+            | tee /tmp/benchmark-output.txt
 
       - name: Publish benchmark results to step summary
         if: always()
@@ -131,3 +132,15 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
           grep -E '^(Benchmark|PASS|FAIL|ok|---)' /tmp/bench-output.txt >> $GITHUB_STEP_SUMMARY || true
           echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Store benchmark results
+        uses: benchmark-action/github-action-benchmark@a7bc2366eda11037936ea57d811a43b3418d3073  # v1.21.0
+        with:
+          name: 'Nerdbox Benchmarks'
+          tool: 'go'
+          benchmark-data-dir-path: "data/benchmarks/linux/${{ matrix.arch }}"
+          output-file-path: '/tmp/benchmark-output.txt'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push benchmark result
+        run: git push 'https://github.com/containerd/nerdbox.git' ghpages:gh-pages

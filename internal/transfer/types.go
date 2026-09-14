@@ -120,6 +120,22 @@ func (s *ReadStream) Reader(ctx context.Context) io.Reader {
 	return tstreaming.ReceiveStream(ctx, s.stream)
 }
 
+// Close releases the stream without consuming it, so that a client
+// sending on it is not left waiting when the transfer cannot be carried
+// out.
+//
+// The stream is established while the request is being unmarshalled,
+// before any transferrer sees it, so a transfer that fails before
+// reading has to release it explicitly. Close is safe to call once the
+// stream has been read: consuming it closes the stream too, and the
+// transport tolerates the second close.
+func (s *ReadStream) Close() error {
+	if s.stream == nil {
+		return nil
+	}
+	return s.stream.Close()
+}
+
 // WriteStream carries data from the server to the client (export
 // direction). The server writes data into the stream and the client
 // receives it.
@@ -174,4 +190,20 @@ func (s *WriteStream) UnmarshalAny(ctx context.Context, sg streaming.StreamGette
 // Writer returns an io.WriteCloser that sends data to the client.
 func (s *WriteStream) Writer(ctx context.Context) io.WriteCloser {
 	return tstreaming.WriteByteStream(ctx, s.stream)
+}
+
+// Close releases the stream without writing to it, so that a client
+// waiting to receive is not left waiting when the transfer cannot be
+// carried out.
+//
+// The stream is established while the request is being unmarshalled,
+// before any transferrer sees it, so a transfer that fails before
+// writing has to release it explicitly. Close is safe to call once the
+// stream has been written: closing the writer closes the stream too, and
+// the transport tolerates the second close.
+func (s *WriteStream) Close() error {
+	if s.stream == nil {
+		return nil
+	}
+	return s.stream.Close()
 }

@@ -31,6 +31,7 @@ import (
 	_ "github.com/containerd/nerdbox/plugins/services/system"
 	_ "github.com/containerd/nerdbox/plugins/services/transfer"
 
+	_ "github.com/containerd/nerdbox/plugins/vminit/ctrfs"
 	_ "github.com/containerd/nerdbox/plugins/vminit/events"
 	_ "github.com/containerd/nerdbox/plugins/vminit/socketforward"
 	_ "github.com/containerd/nerdbox/plugins/vminit/streaming"

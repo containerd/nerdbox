@@ -74,17 +74,23 @@ func (p *linuxPlatform) CopyConsole(ctx context.Context, console console.Console
 	if err != nil {
 		return nil, err
 	}
-	var cstdin io.Closer
+	owned := &closingConsole{EpollConsole: epollConsole}
+	defer func() {
+		if retErr != nil {
+			epollConsole.Shutdown(p.epoller.CloseConsole)
+			owned.Close()
+		}
+	}()
 
 	var cwg sync.WaitGroup
 	if stdin != "" {
 		var in io.ReadCloser
 		if s, ok := strings.CutPrefix(stdin, "stream://"); ok {
 			in, err = p.streams.Get(s)
-			cstdin = in
+			owned.closeStdin = in
 		} else {
 			in, err = fifo.OpenFifo(ctx, stdin, syscall.O_RDONLY|syscall.O_NONBLOCK, 0)
-			cstdin = in
+			owned.closeStdin = in
 		}
 		if err != nil {
 			return nil, err
@@ -112,6 +118,7 @@ func (p *linuxPlatform) CopyConsole(ctx context.Context, console console.Console
 		if err != nil {
 			return nil, err
 		}
+		owned.closeStdout = raw
 		// Assert CloseWrite at setup time so a future wrapper that drops it
 		// causes an immediate failure rather than a silent hang.
 		sc, ok := raw.(process.StreamWriteCloser)
@@ -126,7 +133,7 @@ func (p *linuxPlatform) CopyConsole(ctx context.Context, console console.Console
 			defer bufPool.Put(buf)
 			io.CopyBuffer(sc, epollConsole, *buf)
 			// CloseWrite sends OP_SHUTDOWN(SEND) in-order after all data.
-			// Do NOT Close the transport here; deferred to processIO.Close.
+			// Full transport close waits for the process to be deleted.
 			if err := sc.CloseWrite(); err != nil {
 				// Non-fatal: log only; transport will be closed at delete.
 				_ = err
@@ -221,16 +228,7 @@ func (p *linuxPlatform) CopyConsole(ctx context.Context, console console.Console
 		}()
 		cwg.Wait()
 	}
-	if cstdin != nil {
-		cons = &closingConsole{
-			EpollConsole: epollConsole,
-			closeStdin:   cstdin,
-		}
-	} else {
-		cons = epollConsole
-	}
-
-	return
+	return owned, nil
 }
 
 func (p *linuxPlatform) ShutdownConsole(ctx context.Context, cons console.Console) error {
@@ -253,9 +251,25 @@ func (p *linuxPlatform) Close() error {
 type closingConsole struct {
 	*console.EpollConsole
 
-	closeStdin io.Closer
+	closeStdin  io.Closer
+	closeStdout io.Closer
+	once        sync.Once
+	err         error
 }
 
 func (c *closingConsole) StdinCloser() io.Closer {
 	return c.closeStdin
+}
+
+func (c *closingConsole) Close() error {
+	c.once.Do(func() {
+		var errs []error
+		for _, closer := range []io.Closer{c.closeStdin, c.closeStdout, c.EpollConsole} {
+			if closer != nil {
+				errs = append(errs, closer.Close())
+			}
+		}
+		c.err = errors.Join(errs...)
+	})
+	return c.err
 }

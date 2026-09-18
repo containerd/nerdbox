@@ -168,8 +168,10 @@ func (p *Init) Create(ctx context.Context, r *CreateConfig) (retError error) {
 		p.console = console
 		if sc, ok := console.(interface{ StdinCloser() io.Closer }); ok {
 			c := sc.StdinCloser()
-			p.stdin = c
-			p.closers = append(p.closers, c)
+			if c != nil {
+				p.stdin = c
+				p.closers = append(p.closers, c)
+			}
 		}
 	} else {
 		c, err := pio.Copy(ctx, &p.wg)
@@ -285,10 +287,13 @@ func (p *Init) delete(ctx context.Context) error {
 			err = p.runtimeError(err, "failed to delete task")
 		}
 	}
+	for _, c := range p.closers {
+		c.Close()
+	}
+	if p.console != nil {
+		p.console.Close()
+	}
 	if p.io != nil {
-		for _, c := range p.closers {
-			c.Close()
-		}
 		p.io.Close()
 	}
 	if err2 := mount.UnmountRecursive(p.Rootfs, 0); err2 != nil {

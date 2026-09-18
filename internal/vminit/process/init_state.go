@@ -176,8 +176,10 @@ func (s *createdCheckpointState) Start(ctx context.Context) error {
 		p.console = console
 		if sc, ok := console.(interface{ StdinCloser() io.Closer }); ok {
 			c := sc.StdinCloser()
-			p.stdin = c
-			p.closers = append(p.closers, c)
+			if c != nil {
+				p.stdin = c
+				p.closers = append(p.closers, c)
+			}
 		}
 	} else {
 		c, err := p.io.Copy(ctx, &p.wg)

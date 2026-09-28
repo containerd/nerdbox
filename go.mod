@@ -1,13 +1,13 @@
 module github.com/containerd/nerdbox
 
-go 1.26.3
+go 1.26.6
 
 require (
 	github.com/Microsoft/go-winio v0.6.3-0.20251027160822-ad3df93bed29
 	github.com/containerd/cgroups/v3 v3.1.3
 	github.com/containerd/console v1.0.5
-	github.com/containerd/containerd/api v1.11.1
-	github.com/containerd/containerd/v2 v2.3.5
+	github.com/containerd/containerd/api v1.12.0
+	github.com/containerd/containerd/v2 v2.4.1
 	github.com/containerd/errdefs v1.0.0
 	github.com/containerd/errdefs/pkg v0.3.0
 	github.com/containerd/fifo v1.1.0
@@ -16,7 +16,7 @@ require (
 	github.com/containerd/otelttrpc v0.1.0
 	github.com/containerd/plugin v1.1.0
 	github.com/containerd/shimtest v0.3.3
-	github.com/containerd/ttrpc v1.2.9
+	github.com/containerd/ttrpc v1.2.10
 	github.com/containerd/typeurl/v2 v2.3.0
 	github.com/docker/go-events v0.1.0
 	github.com/ebitengine/purego v0.11.0
@@ -34,20 +34,20 @@ require (
 )
 
 require (
-	github.com/Microsoft/hcsshim v0.15.0-rc.1 // indirect
+	github.com/Microsoft/hcsshim v0.15.0-rc.4 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/cilium/ebpf v0.16.0 // indirect
+	github.com/cilium/ebpf v0.17.3 // indirect
 	github.com/containerd/continuity v0.5.0 // indirect
 	github.com/containerd/platforms v1.0.0-rc.5 // indirect
 	github.com/coreos/go-systemd/v22 v22.7.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
-	github.com/erofs/go-erofs v0.3.0 // indirect
-	github.com/go-logr/logr v1.4.3 // indirect
+	github.com/erofs/go-erofs v0.3.1 // indirect
+	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
-	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
+	github.com/google/uuid v1.6.0 // indirect
 	github.com/josharian/native v1.1.0 // indirect
-	github.com/klauspost/compress v1.18.5 // indirect
+	github.com/klauspost/compress v1.20.0 // indirect
 	github.com/mdlayher/packet v1.1.2 // indirect
 	github.com/mdlayher/socket v0.6.0 // indirect
 	github.com/moby/sys/mountinfo v0.7.2 // indirect
@@ -57,14 +57,13 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/sirupsen/logrus v1.10.2 // indirect
 	github.com/u-root/uio v0.0.0-20230220225925-ffce2a382923 // indirect
-	go.opencensus.io v0.24.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/otel v1.44.0 // indirect
-	go.opentelemetry.io/otel/metric v1.44.0 // indirect
-	go.opentelemetry.io/otel/trace v1.44.0 // indirect
+	go.opentelemetry.io/otel v1.46.0 // indirect
+	go.opentelemetry.io/otel/metric v1.46.0 // indirect
+	go.opentelemetry.io/otel/sdk v1.46.0 // indirect
+	go.opentelemetry.io/otel/trace v1.46.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	golang.org/x/exp v0.0.0-20241108190413-2d47ceb2692f // indirect
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260825221802-da73d73af1c5 // indirect
 )

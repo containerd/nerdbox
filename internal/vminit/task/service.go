@@ -54,6 +54,7 @@ import (
 
 	"github.com/containerd/nerdbox/internal/nwcfg"
 	"github.com/containerd/nerdbox/internal/systools"
+	"github.com/containerd/nerdbox/internal/vminit/ctrfs"
 	"github.com/containerd/nerdbox/internal/vminit/ctrnetworking"
 	"github.com/containerd/nerdbox/internal/vminit/process"
 	"github.com/containerd/nerdbox/internal/vminit/runc"
@@ -66,9 +67,12 @@ var (
 )
 
 // NewTaskService creates a new instance of a task service
-func NewTaskService(ctx context.Context, bundle string, publisher events.Publisher, sd shutdown.Service, sm stream.Manager) (taskAPI.TTRPCTaskService, error) {
+func NewTaskService(ctx context.Context, bundle string, publisher events.Publisher, sd shutdown.Service, sm stream.Manager, ctrFS *ctrfs.Registry) (taskAPI.TTRPCTaskService, error) {
 	if cgroups.Mode() != cgroups.Unified {
 		return nil, fmt.Errorf("only unified cgroups mode is supported: %w", errdefs.ErrNotImplemented)
+	}
+	if ctrFS == nil {
+		return nil, fmt.Errorf("container filesystem registry is required: %w", errdefs.ErrInvalidArgument)
 	}
 	ep, err := oomv2.New(publisher)
 	if err != nil {
@@ -82,6 +86,7 @@ func NewTaskService(ctx context.Context, bundle string, publisher events.Publish
 		ep:                   ep,
 		streams:              sm,
 		shutdown:             sd,
+		ctrFS:                ctrFS,
 		ctrNetConnectWaiters: make(map[string]func() error),
 		containers:           make(map[string]*runc.Container),
 		running:              make(map[int][]containerProcess),
@@ -133,6 +138,10 @@ type service struct {
 	ep       oom.Watcher
 
 	streams stream.Manager
+
+	// ctrFS holds each container's mount namespace open, so container paths
+	// can be resolved the way the container resolves them.
+	ctrFS *ctrfs.Registry
 
 	// ctrNetConnectWaiters holds functions to wait for, and collect errors from,
 	// container connect. If there's no entry, there's nothing to wait for.
@@ -270,6 +279,17 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	}
 	s.ctrNetConnectWaiters[r.ID] = waitForConnect
 
+	// Take a reference to the container's mount namespace while its init
+	// process is guaranteed to exist. The runtime has already applied the
+	// container's mounts at this point, and the reference keeps them
+	// resolvable for the container's whole lifetime, including after its
+	// processes exit. Failing here would leave the container running but its
+	// filesystem unreachable to transfers, which is not worth failing the
+	// create over.
+	if err := s.ctrFS.Add(r.ID, container.Pid()); err != nil {
+		log.G(ctx).WithError(err).Warn("Container filesystem will not be reachable for copy operations")
+	}
+
 	s.containers[r.ID] = container
 
 	s.send(&eventstypes.TaskCreate{
@@ -389,6 +409,8 @@ func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.
 
 // Delete the initial process and container
 func (s *service) Delete(ctx context.Context, r *taskAPI.DeleteRequest) (*taskAPI.DeleteResponse, error) {
+	ctx = log.WithLogger(ctx, log.G(ctx).WithField("container_id", r.ID))
+
 	// If the task wasn't started, network setup may not have completed yet.
 	// Clear the waiter function.
 	go func() {
@@ -407,8 +429,24 @@ func (s *service) Delete(ctx context.Context, r *taskAPI.DeleteRequest) (*taskAP
 	}
 	// if we deleted an init task, send the task delete event
 	if r.ExecID == "" {
+		// Forget the container and drop its mount namespace reference now
+		// that it is gone. Releasing the reference any earlier would leave
+		// the filesystem unreachable for a delete that fails and leaves the
+		// container in place; releasing it here also lets the kernel free
+		// the mount tree and the filesystems underneath it.
+		//
+		// The runtime state was torn down above without s.mu held, so a
+		// container created with the same ID in the meantime may already
+		// have taken this ID's place. Clean up only what this delete
+		// removed, or the new container would be forgotten and lose the
+		// reference it just took.
 		s.mu.Lock()
-		delete(s.containers, r.ID)
+		if s.containers[r.ID] == container {
+			delete(s.containers, r.ID)
+			if err := s.ctrFS.Release(r.ID); err != nil {
+				log.G(ctx).WithError(err).Warn("Failed to release container mount namespace")
+			}
+		}
 		s.mu.Unlock()
 		s.send(&eventstypes.TaskDelete{
 			ContainerID: container.ID,

@@ -23,9 +23,11 @@ import (
 	"github.com/containerd/plugin"
 	"github.com/containerd/plugin/registry"
 
+	"github.com/containerd/nerdbox/internal/vminit/ctrfs"
 	"github.com/containerd/nerdbox/internal/vminit/stream"
 	"github.com/containerd/nerdbox/internal/vminit/task"
 	"github.com/containerd/nerdbox/plugins"
+	ctrfsplugin "github.com/containerd/nerdbox/plugins/vminit/ctrfs"
 )
 
 func init() {
@@ -50,7 +52,11 @@ func init() {
 			if err != nil {
 				return nil, err
 			}
-			return task.NewTaskService(ic.Context, ic.Properties[plugins.PropertyBundleDir], pp.(events.Publisher), ss.(shutdown.Service), sm.(stream.Manager))
+			cfs, err := ic.GetByID(cplugins.InternalPlugin, ctrfsplugin.ContainerFSPluginID)
+			if err != nil {
+				return nil, err
+			}
+			return task.NewTaskService(ic.Context, ic.Properties[plugins.PropertyBundleDir], pp.(events.Publisher), ss.(shutdown.Service), sm.(stream.Manager), cfs.(*ctrfs.Registry))
 		},
 	})
 }

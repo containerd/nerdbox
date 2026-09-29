@@ -28,6 +28,7 @@ import (
 
 	_ "github.com/containerd/nerdbox/plugins/services/bundle"
 	_ "github.com/containerd/nerdbox/plugins/services/mount"
+	_ "github.com/containerd/nerdbox/plugins/services/sharedresources"
 	_ "github.com/containerd/nerdbox/plugins/services/system"
 	_ "github.com/containerd/nerdbox/plugins/services/transfer"
 

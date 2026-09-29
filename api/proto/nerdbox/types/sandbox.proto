@@ -1,0 +1,87 @@
+/*
+	Copyright The containerd Authors.
+
+	Licensed under the Apache License, Version 2.0 (the "License");
+	you may not use this file except in compliance with the License.
+	You may obtain a copy of the License at
+
+		http://www.apache.org/licenses/LICENSE-2.0
+
+	Unless required by applicable law or agreed to in writing, software
+	distributed under the License is distributed on an "AS IS" BASIS,
+	WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+	See the License for the specific language governing permissions and
+	limitations under the License.
+*/
+
+syntax = "proto3";
+
+package nerdbox.types;
+
+option go_package = "github.com/containerd/nerdbox/api/types;types";
+
+// CRIPodConfig is a hand-maintained, wire-compatible *subset* of
+// k8s.io/cri-api's runtime.v1.PodSandboxConfig (the type containerd's CRI
+// plugin marshals into CreateSandboxRequest.Options — see
+// internal/shim/task/podconfig.go), covering only the fields the shim
+// actually reads: pod hostname, DNS config, and Linux sysctls.
+//
+// This intentionally does NOT import k8s.io/cri-api: that package pulls in
+// gRPC unconditionally (its generated *_grpc.pb.go carries no build tag),
+// which defeats the shim's "no_grpc" build tag for the sake of decoding
+// three scalar-ish fields out of an otherwise-unused message. Protobuf's
+// wire format tolerates this: an unrecognized field number is simply
+// skipped on decode, so a real CRI PodSandboxConfig — which carries many
+// more fields than these — decodes cleanly into this subset, silently
+// dropping everything this shim doesn't need.
+//
+// Field numbers below (and every message's nesting level) are copied
+// verbatim from the upstream message (CRI v1, github.com/kubernetes/cri-api,
+// pkg/apis/runtime/v1/api.proto) and MUST continue to match it exactly:
+// this only decodes correctly because the wire bytes line up field-for-field
+// with upstream at every level, not just the top one. CRI v1 is a frozen,
+// GA, append-only-evolution API (see kubernetes/cri-api's own compatibility
+// policy), so existing field numbers are not expected to ever be reused or
+// renumbered. Field numbers NOT listed here (e.g. PodSandboxConfig's own
+// 1, 3, 5, 6, 7, 9, 10) are other upstream fields this shim has no use for;
+// they are simply omitted rather than declared, and are skipped like any
+// other unrecognized field on decode.
+//
+// Deliberately named and packaged differently than upstream's
+// runtime.v1.PodSandboxConfig, rather than reusing that exact
+// fully-qualified proto name: registering a second, different message
+// under upstream's own name would panic at process init if this binary
+// ever also imported the real k8s.io/cri-api (protobuf-go's global type
+// registry rejects duplicate registrations for the same full name).
+message CRIPodConfig {
+	// Hostname of the sandbox (upstream field 2).
+	string hostname = 2;
+	// DNS config for the sandbox (upstream field 4).
+	CRIDNSConfig dns_config = 4;
+	// Linux-specific pod sandbox config (upstream field 8).
+	CRILinuxPodSandboxConfig linux = 8;
+}
+
+// CRIDNSConfig is a wire-compatible subset of runtime.v1.DNSConfig,
+// covering every field it has today (unlike CRIPodConfig, this one just
+// happens to be complete). See CRIPodConfig's doc comment for why this is
+// a hand-maintained copy rather than an import.
+message CRIDNSConfig {
+	// List of DNS servers of the cluster (upstream field 1).
+	repeated string servers = 1;
+	// List of DNS search domains of the cluster (upstream field 2).
+	repeated string searches = 2;
+	// List of DNS options; see resolv.conf(5) (upstream field 3).
+	repeated string options = 3;
+}
+
+// CRILinuxPodSandboxConfig is a wire-compatible subset of
+// runtime.v1.LinuxPodSandboxConfig, covering only the field this shim
+// reads (pod-level sysctls). See CRIPodConfig's doc comment for why this
+// is a hand-maintained copy rather than an import.
+message CRILinuxPodSandboxConfig {
+	// Sysctls to apply within the pod's containers (upstream field 3).
+	// Fields NOT listed here (upstream 1, 2, 4, 5) are omitted; see
+	// CRIPodConfig's doc comment.
+	map<string, string> sysctls = 3;
+}

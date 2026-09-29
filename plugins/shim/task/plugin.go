@@ -17,14 +17,13 @@
 package task
 
 import (
-	"github.com/containerd/containerd/v2/pkg/shim"
-	"github.com/containerd/containerd/v2/pkg/shutdown"
-	cplugins "github.com/containerd/containerd/v2/plugins"
+	"fmt"
+
+	taskAPI "github.com/containerd/containerd/api/runtime/task/v3"
 	"github.com/containerd/plugin"
 	"github.com/containerd/plugin/registry"
+	"github.com/containerd/ttrpc"
 
-	"github.com/containerd/nerdbox/internal/shim/sandbox"
-	"github.com/containerd/nerdbox/internal/shim/task"
 	"github.com/containerd/nerdbox/plugins"
 )
 
@@ -33,25 +32,29 @@ func init() {
 		Type: plugins.TTRPCPlugin,
 		ID:   "task",
 		Requires: []plugin.Type{
-			cplugins.EventPlugin,
-			cplugins.InternalPlugin,
-			plugins.SandboxPlugin,
+			plugins.TaskPlugin,
 		},
 		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
-			pp, err := ic.GetByID(cplugins.EventPlugin, "publisher")
+			tPlugin, err := ic.GetSingle(plugins.TaskPlugin)
 			if err != nil {
 				return nil, err
 			}
-			ss, err := ic.GetByID(cplugins.InternalPlugin, "shutdown")
-			if err != nil {
-				return nil, err
+
+			tm, ok := tPlugin.(taskAPI.TTRPCTaskService)
+			if !ok {
+				return nil, fmt.Errorf("unexpected task plugin implementation %T", tPlugin)
 			}
-			sb, err := ic.GetSingle(plugins.SandboxPlugin)
-			if err != nil {
-				return nil, err
-			}
-			return task.NewTaskService(ic.Context, sb.(sandbox.Sandbox), pp.(shim.Publisher), ss.(shutdown.Service))
+
+			return taskService{srv: tm}, nil
 		},
 	})
+}
 
+type taskService struct {
+	srv taskAPI.TTRPCTaskService
+}
+
+func (s taskService) RegisterTTRPC(server *ttrpc.Server) error {
+	taskAPI.RegisterTTRPCTaskService(server, s.srv)
+	return nil
 }

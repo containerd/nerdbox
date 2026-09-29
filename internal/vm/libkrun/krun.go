@@ -57,16 +57,11 @@ type vmcontext struct {
 }
 
 func newvmcontext(lib *libkrun) (*vmcontext, error) {
-	// Start VM context
-	ctxId := lib.CreateCtx()
-	if ctxId < 0 {
-		return nil, fmt.Errorf("krun_create_ctx failed: %d", ctxId)
+	ctxID := lib.CreateCtx()
+	if ctxID < 0 {
+		return nil, fmt.Errorf("krun_create_ctx failed: %d", ctxID)
 	}
-
-	return &vmcontext{
-		ctxID: uint32(ctxId),
-		lib:   lib,
-	}, nil
+	return &vmcontext{lib: lib, ctxID: uint32(ctxID)}, nil
 }
 
 func (vmc *vmcontext) SetCPUAndMemory(cpu uint8, ram uint32) error {
@@ -187,7 +182,6 @@ func (vmc *vmcontext) AddNIC(endpoint string, mac net.HardwareAddr, mode vm.Netw
 	if vmc.lib.AddNetUnixgram == nil || vmc.lib.AddNetUnixstream == nil {
 		return fmt.Errorf("libkrun not loaded")
 	}
-
 	switch mode {
 	case vm.NetworkModeUnixgram:
 		ret := vmc.lib.AddNetUnixgram(vmc.ctxID, endpoint, -1, []uint8(mac), features, flags)
@@ -202,10 +196,16 @@ func (vmc *vmcontext) AddNIC(endpoint string, mac net.HardwareAddr, mode vm.Netw
 	default:
 		return fmt.Errorf("invalid network mode: %d", mode)
 	}
-
 	return nil
 }
 
+// Start runs krun_start_enter on the calling goroutine. The caller is
+// responsible for locking this goroutine to its OS thread (and, if a pod
+// network namespace is required, entering it via setns) before calling
+// Start — see vmInstance.Start in instance.go. krun_start_enter blocks for
+// the entire VM lifetime, spawning all of the VM's worker threads (vCPU,
+// virtio backends, vsock/TSI workers) as descendants of the calling thread;
+// they inherit whatever network namespace that thread is in at the time.
 func (vmc *vmcontext) Start() error {
 	if vmc.lib.StartEnter == nil {
 		return fmt.Errorf("libkrun not loaded")
@@ -217,6 +217,10 @@ func (vmc *vmcontext) Start() error {
 	return nil
 }
 
+// Shutdown calls krun_free_ctx.  krun_free_ctx joins the VM's internal threads
+// (vCPU, virtio workers) and can be called from any goroutine once
+// krun_start_enter has returned — libkrun itself is thread-safe for this
+// cross-thread teardown.
 func (vmc *vmcontext) Shutdown() error {
 	if vmc.ctxID == 0 {
 		return nil

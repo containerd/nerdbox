@@ -1,0 +1,27 @@
+{
+  "cniVersion": "1.0.0",
+  "name": "nerdbox-critest",
+  "plugins": [
+    {
+      "type": "bridge",
+      "bridge": "nerdbox-cni0",
+      "isGateway": true,
+      "ipMasq": true,
+      "hairpinMode": true,
+      "ipam": {
+        "type": "host-local",
+        "ranges": [
+          [{"subnet": "10.89.0.0/16"}]
+        ],
+        "routes": [{"dst": "0.0.0.0/0"}]
+      }
+    },
+    {
+      "type": "portmap",
+      "capabilities": {"portMappings": true}
+    },
+    {
+      "type": "loopback"
+    }
+  ]
+}

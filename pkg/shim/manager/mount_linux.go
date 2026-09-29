@@ -23,6 +23,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // cloneMntNs configures the child command to start in a new mount
@@ -53,13 +55,38 @@ import (
 // container delete, and the VM itself performs all container-visible
 // filesystem setup.
 //
+// The UID/GID mapping maps container-side 0 to the real host UID/GID,
+// so the child appears as root *only inside its own, brand-new user
+// namespace*. This grants no additional real host privilege: every
+// interaction with a resource outside the namespace (files, sockets
+// inherited across the namespace boundary, etc.) is still translated
+// back through the mapping to the real, unprivileged host UID for
+// permission checks.
+//
+// Mapping to UID 0 (rather than mapping the host UID to itself, which
+// would leave euid non-zero inside the new namespace) matters because of
+// how Linux computes capabilities across exec: a process whose effective
+// UID is non-zero *within its own current user namespace* has its
+// capability sets cleared to empty when it execs, even though the
+// namespace's creator normally holds a full capability set in it. Since
+// this child is always exec'd into the new namespace (see above), a
+// non-zero-inside-its-own-namespace mapping would leave it with no
+// capabilities at all afterward — unable to perform the bind mounts
+// SharedFS needs, or even call getsockopt(2) on a listening-socket fd
+// inherited across the namespace boundary (reproduced standalone by
+// script/userns-check). Mapping to UID 0 keeps the child's effective UID
+// zero *inside its own namespace* across exec, so the capability set is
+// preserved and mount(2)/getsockopt(2) work as expected — with no change
+// to what the process can do to real host resources, which remain gated
+// by the real, unprivileged host UID/GID the mapping points at.
+//
 // When the calling process already has real root (euid 0), we deliberately
 // skip CLONE_NEWUSER: entering a *new* user namespace — even one that maps
-// a UID to itself — demotes the process to a non-initial user namespace,
-// and the kernel restricts mounting real block-device-backed filesystems
-// (e.g. ext4) to the initial user namespace regardless of the effective
-// capabilities held within a descendant namespace. Real root gets
-// CLONE_NEWNS alone, which still provides the mount-namespace
+// UID 0 to the real root UID — demotes the process to a non-initial user
+// namespace, and the kernel restricts mounting real block-device-backed
+// filesystems (e.g. ext4) to the initial user namespace regardless of the
+// effective capabilities held within a descendant namespace. Real root
+// gets CLONE_NEWNS alone, which still provides the mount-namespace
 // isolation/cleanup-on-exit benefit without losing the ability to mount
 // real filesystems.
 //
@@ -67,12 +94,21 @@ import (
 // unprivileged user namespaces), the shim runs without mount isolation
 // and this function returns false.
 // cloneMntNs returns true if user namespace clone flags were set.
+//
+// Whenever CLONE_NEWNS is set (every case below except the AppArmor
+// restriction), MountNSIsolatedEnv is also added to the child's
+// environment, so the child itself knows to call IsolateMountPropagation
+// early in its own startup — see that function's doc comment for why a
+// new mount namespace alone does not stop mounts from leaking to the
+// host, and MountNSIsolatedEnv's for why the child needs an explicit
+// signal to know it should.
 func cloneMntNs(_ context.Context, cmd *exec.Cmd) bool {
 	if os.Geteuid() == 0 {
 		// Already real root: a plain mount namespace is enough, and
 		// avoids demoting into a non-initial user namespace (which would
 		// break mounts of real block-device filesystems).
 		cmd.SysProcAttr.Cloneflags |= syscall.CLONE_NEWNS
+		cmd.Env = append(cmd.Env, MountNSIsolatedEnv+"=1")
 		return false
 	}
 
@@ -90,12 +126,35 @@ func cloneMntNs(_ context.Context, cmd *exec.Cmd) bool {
 	gid := os.Getgid()
 	cmd.SysProcAttr.Cloneflags |= syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS
 	cmd.SysProcAttr.UidMappings = []syscall.SysProcIDMap{
-		{ContainerID: uid, HostID: uid, Size: 1},
+		{ContainerID: 0, HostID: uid, Size: 1},
 	}
 	cmd.SysProcAttr.GidMappings = []syscall.SysProcIDMap{
-		{ContainerID: gid, HostID: gid, Size: 1},
+		{ContainerID: 0, HostID: gid, Size: 1},
 	}
+	cmd.Env = append(cmd.Env, MountNSIsolatedEnv+"=1")
 	return true
+}
+
+// IsolateMountPropagation detaches the calling process's entire mount tree
+// from whatever propagation peer group it inherited.
+//
+// CLONE_NEWNS alone is not enough to stop the mounts cloneMntNs's child
+// makes (container rootfs assembly: overlay/bind mounts under its
+// bundle-specific state directory) from leaking to the host. The new
+// namespace starts as a copy of the parent's mount table with each
+// mount's propagation setting preserved, so a mount that was "shared" in
+// the parent (the default on most systemd-managed hosts, including for
+// "/") is still shared, in the same peer group, in the copy — meaning any
+// submount made later inside the new namespace still propagates out to
+// every other member of that peer group, including the host's own
+// namespace. This must run before any such mount is made.
+//
+// MS_SLAVE (rather than MS_PRIVATE) is deliberate: it stops propagation
+// in the leak-prone direction (out to the host) while leaving the
+// process's own view still receiving mount/unmount events made by the
+// host afterward, which nothing here needs to give up.
+func IsolateMountPropagation() error {
+	return unix.Mount("", "/", "", unix.MS_REC|unix.MS_SLAVE, "")
 }
 
 // apparmorRestrictsUserns checks if the kernel sysctl

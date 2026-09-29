@@ -201,6 +201,32 @@ func withExtraMounts(mounts ...specs.Mount) func(*specs.Spec) {
 	}
 }
 
+// withHostPathNamespace returns a CreateOCISpec opt that sets (or adds)
+// a namespace entry of the given type with a host path. A non-empty Path
+// on an IPC/PID/network namespace entry is how an OCI spec requests that
+// a container join a namespace shared with others, rather than getting a
+// fresh, isolated one — for example, a host "/proc/<sandboxPid>/ns/<type>"
+// path, as containerd's WithPodNamespaces sets for pod-level namespace
+// sharing. The actual path value here is a placeholder — it only needs
+// to be non-empty, since the shim's job is to recognize that a host path
+// is present at all and substitute its own guest-side shared namespace,
+// not to interpret the path itself (which is meaningless off the host
+// that produced it).
+func withHostPathNamespace(nsType specs.LinuxNamespaceType, path string) func(*specs.Spec) {
+	return func(s *specs.Spec) {
+		if s.Linux == nil {
+			s.Linux = &specs.Linux{}
+		}
+		for i, ns := range s.Linux.Namespaces {
+			if ns.Type == nsType {
+				s.Linux.Namespaces[i].Path = path
+				return
+			}
+		}
+		s.Linux.Namespaces = append(s.Linux.Namespaces, specs.LinuxNamespace{Type: nsType, Path: path})
+	}
+}
+
 // withMemoryLimit returns a CreateOCISpec opt that sets the memory
 // limit (in bytes) on the spec, with swap clamped equal to the limit
 // so the container cannot grow via swap before the OOM killer fires.
@@ -213,6 +239,58 @@ func withMemoryLimit(bytes int64) func(*specs.Spec) {
 			Limit: &bytes,
 			Swap:  &bytes,
 		}
+	}
+}
+
+// withNewNetworkNamespace returns a CreateOCISpec opt that ensures the
+// spec requests a fresh (unshared) network namespace, appending one if
+// none is already present. createOCISpec already adds one for rootless
+// containers as part of dropping privileges; this opt exists so a
+// caller can request the same isolation for a root container too,
+// where createOCISpec otherwise leaves the container in the host's own
+// network namespace. Tests that provide their own container networking
+// (see attachContainerNetwork) need this so the namespace they attach
+// to is exclusively the container's, root or not.
+func withNewNetworkNamespace() func(*specs.Spec) {
+	return func(s *specs.Spec) {
+		if s.Linux == nil {
+			s.Linux = &specs.Linux{}
+		}
+		for _, ns := range s.Linux.Namespaces {
+			if ns.Type == specs.NetworkNamespace {
+				return
+			}
+		}
+		s.Linux.Namespaces = append(s.Linux.Namespaces, specs.LinuxNamespace{Type: specs.NetworkNamespace})
+	}
+}
+
+// withCapabilities returns a CreateOCISpec opt that grants the given
+// capabilities (e.g. "CAP_SYS_ADMIN") in the container's Bounding,
+// Effective, and Permitted sets, in addition to whatever the spec
+// already carries.
+//
+// The base spec createOCISpec builds has no Capabilities section at
+// all, which every runtime this repo has been tested against
+// (confirmed empirically with runc) treats as granting the container
+// *no* capabilities whatsoever — not even the small default set a
+// container engine like Docker or containerd/CRI would normally add —
+// regardless of the privilege level of the process driving the test
+// suite on the host. A test that needs a capability inside the
+// container must therefore request it explicitly here, on the
+// container's own spec; this is a property of the requested container,
+// not of the host, and needs no host-level privilege to ask for.
+// Whether the shim actually honors the request is exactly what a test
+// using this opt is checking.
+func withCapabilities(caps ...string) func(*specs.Spec) {
+	return func(s *specs.Spec) {
+		if s.Process.Capabilities == nil {
+			s.Process.Capabilities = &specs.LinuxCapabilities{}
+		}
+		c := s.Process.Capabilities
+		c.Bounding = append(c.Bounding, caps...)
+		c.Effective = append(c.Effective, caps...)
+		c.Permitted = append(c.Permitted, caps...)
 	}
 }
 

@@ -931,6 +931,884 @@ file: {
   }
 }
 file: {
+  name: "proto/nerdbox/services/sharedresources/v1/sharedresources.proto"
+  package: "containerd.vminitd.services.sharedresources.v1"
+  message_type: {
+    name: "SharedResource"
+    field: {
+      name: "type"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_ENUM
+      type_name: ".containerd.vminitd.services.sharedresources.v1.Type"
+      json_name: "type"
+    }
+    field: {
+      name: "path"
+      number: 2
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "path"
+    }
+  }
+  message_type: {
+    name: "CreateRequest"
+    field: {
+      name: "id"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "id"
+    }
+    field: {
+      name: "types"
+      number: 2
+      label: LABEL_REPEATED
+      type: TYPE_ENUM
+      type_name: ".containerd.vminitd.services.sharedresources.v1.Type"
+      json_name: "types"
+    }
+    field: {
+      name: "dev_shm_size_bytes"
+      number: 3
+      label: LABEL_OPTIONAL
+      type: TYPE_INT64
+      json_name: "devShmSizeBytes"
+    }
+  }
+  message_type: {
+    name: "CreateResponse"
+    field: {
+      name: "resources"
+      number: 1
+      label: LABEL_REPEATED
+      type: TYPE_MESSAGE
+      type_name: ".containerd.vminitd.services.sharedresources.v1.SharedResource"
+      json_name: "resources"
+    }
+  }
+  message_type: {
+    name: "DeleteRequest"
+    field: {
+      name: "id"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "id"
+    }
+    field: {
+      name: "types"
+      number: 2
+      label: LABEL_REPEATED
+      type: TYPE_ENUM
+      type_name: ".containerd.vminitd.services.sharedresources.v1.Type"
+      json_name: "types"
+    }
+  }
+  message_type: {
+    name: "DeleteResponse"
+  }
+  enum_type: {
+    name: "Type"
+    value: {
+      name: "TYPE_UNSPECIFIED"
+      number: 0
+    }
+    value: {
+      name: "TYPE_NAMESPACE_IPC"
+      number: 1
+    }
+    value: {
+      name: "TYPE_NAMESPACE_PID"
+      number: 2
+    }
+    value: {
+      name: "TYPE_NAMESPACE_NETWORK"
+      number: 3
+    }
+    value: {
+      name: "TYPE_DEVSHM"
+      number: 4
+    }
+    value: {
+      name: "TYPE_NAMESPACE_UTS"
+      number: 5
+    }
+  }
+  service: {
+    name: "SharedResources"
+    method: {
+      name: "Create"
+      input_type: ".containerd.vminitd.services.sharedresources.v1.CreateRequest"
+      output_type: ".containerd.vminitd.services.sharedresources.v1.CreateResponse"
+    }
+    method: {
+      name: "Delete"
+      input_type: ".containerd.vminitd.services.sharedresources.v1.DeleteRequest"
+      output_type: ".containerd.vminitd.services.sharedresources.v1.DeleteResponse"
+    }
+  }
+  options: {
+    go_package: "github.com/containerd/nerdbox/api/services/sharedresources/v1;sharedresources"
+  }
+  source_code_info: {
+    location: {
+      span: 16
+      span: 0
+      span: 123
+      span: 25
+    }
+    location: {
+      path: 12
+      span: 16
+      span: 0
+      span: 18
+      leading_detached_comments: "\nCopyright The containerd Authors.\n\nLicensed under the Apache License, Version 2.0 (the \"License\");\nyou may not use this file except in compliance with the License.\nYou may obtain a copy of the License at\n\nhttp://www.apache.org/licenses/LICENSE-2.0\n\nUnless required by applicable law or agreed to in writing, software\ndistributed under the License is distributed on an \"AS IS\" BASIS,\nWITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\nSee the License for the specific language governing permissions and\nlimitations under the License.\n"
+    }
+    location: {
+      path: 2
+      span: 18
+      span: 0
+      span: 55
+    }
+    location: {
+      path: 8
+      span: 20
+      span: 0
+      span: 100
+    }
+    location: {
+      path: 8
+      path: 11
+      span: 20
+      span: 0
+      span: 100
+    }
+    location: {
+      path: 6
+      path: 0
+      span: 45
+      span: 0
+      span: 48
+      span: 1
+      leading_comments: " SharedResources creates and deletes guest-side resources that containers\n sharing a sandbox use to share state with each other — Linux namespaces\n (IPC, PID, network) and other guest-side resources set up the same way\n (currently just a shared /dev/shm tmpfs) — and reports the guest paths at\n which they are pinned.\n\n Resources are addressed by a caller-chosen group id plus a type. A group\n is simply the set of resources sharing an id, so the caller decides\n whether resources are grouped (one id for every container of a sandbox,\n the usual case) or independent (a distinct id per container). Nothing here\n interprets the id beyond using it to key and name the resources.\n\n Creation is on demand and per type: a caller asks only for the types it\n actually needs, and only those are created. This matters because the cost\n is not uniform. A network or IPC namespace is created by unsharing it on a\n dedicated, locked OS thread and bind-mounting it to a well-known path; the\n bind mount alone keeps it alive afterwards, so it is cheap. A shared\n /dev/shm is a plain tmpfs mount, equally cheap. A PID namespace cannot\n work that way: unshare(CLONE_NEWPID) does not move the caller into the new\n namespace, only the caller's next child becomes its PID 1, and the kernel\n destroys the namespace the moment that PID 1 exits. It therefore requires\n a real, persistent anchor process, which is why asking for a PID namespace\n that is never used is worth avoiding.\n"
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 1
+      span: 45
+      span: 8
+      span: 23
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      span: 46
+      span: 4
+      span: 55
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      path: 1
+      span: 46
+      span: 8
+      span: 14
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      path: 2
+      span: 46
+      span: 15
+      span: 28
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 0
+      path: 3
+      span: 46
+      span: 39
+      span: 53
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 1
+      span: 47
+      span: 4
+      span: 55
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 1
+      path: 1
+      span: 47
+      span: 8
+      span: 14
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 1
+      path: 2
+      span: 47
+      span: 15
+      span: 28
+    }
+    location: {
+      path: 6
+      path: 0
+      path: 2
+      path: 1
+      path: 3
+      span: 47
+      span: 39
+      span: 53
+    }
+    location: {
+      path: 5
+      path: 0
+      span: 53
+      span: 0
+      span: 75
+      span: 1
+      leading_comments: " Type identifies a kind of guest-side shared resource: created once per\n (group id, type) and addressed by a guest path thereafter. Most values are\n Linux namespace types; TYPE_DEVSHM is not — see its own comment.\n"
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 1
+      span: 53
+      span: 5
+      span: 9
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 0
+      path: 1
+      span: 54
+      span: 4
+      span: 20
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 0
+      span: 54
+      span: 4
+      span: 25
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 0
+      path: 2
+      span: 54
+      span: 23
+      span: 24
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 1
+      path: 1
+      span: 55
+      span: 4
+      span: 22
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 1
+      span: 55
+      span: 4
+      span: 27
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 1
+      path: 2
+      span: 55
+      span: 25
+      span: 26
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 2
+      path: 1
+      span: 56
+      span: 4
+      span: 22
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 2
+      span: 56
+      span: 4
+      span: 27
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 2
+      path: 2
+      span: 56
+      span: 25
+      span: 26
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 3
+      path: 1
+      span: 57
+      span: 4
+      span: 26
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 3
+      span: 57
+      span: 4
+      span: 31
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 3
+      path: 2
+      span: 57
+      span: 29
+      span: 30
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 4
+      path: 1
+      span: 65
+      span: 4
+      span: 15
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 4
+      span: 65
+      span: 4
+      span: 20
+      leading_comments: " TYPE_DEVSHM is not an OCI namespace: it is a per-group tmpfs,\n mounted once and reused, that sharing containers bind-mount their\n /dev/shm onto so writes through it are real shared memory (guest\n RAM), not just a shared IPC namespace identifier. It reuses this\n same create-once/reuse/path-return mechanism because the shape of\n the problem — and the \"only pay for it if actually requested\"\n requirement — is identical to the namespace types.\n"
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 4
+      path: 2
+      span: 65
+      span: 18
+      span: 19
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 5
+      path: 1
+      span: 74
+      span: 4
+      span: 22
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 5
+      span: 74
+      span: 4
+      span: 27
+      leading_comments: " TYPE_NAMESPACE_UTS is created the same way as TYPE_NAMESPACE_IPC\n (unshare + bind-mount, no anchor process). Callers do not need to\n coordinate a hostname through this API: an OCI runtime setting\n Spec.Hostname while joining an existing (not freshly created) UTS\n namespace calls sethostname(2) after joining it, updating the\n namespace for every container sharing it, and leaves it alone when\n Hostname is empty — so ordinary per-container spec fields already\n give \"last write wins, empty means no opinion\" for free.\n"
+    }
+    location: {
+      path: 5
+      path: 0
+      path: 2
+      path: 5
+      path: 2
+      span: 74
+      span: 25
+      span: 26
+    }
+    location: {
+      path: 4
+      path: 0
+      span: 78
+      span: 0
+      span: 85
+      span: 1
+      leading_comments: " SharedResource is a created resource and the guest path it is pinned at.\n"
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 1
+      span: 78
+      span: 8
+      span: 22
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      path: 6
+      span: 79
+      span: 4
+      span: 8
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      span: 79
+      span: 4
+      span: 18
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      path: 1
+      span: 79
+      span: 9
+      span: 13
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      path: 3
+      span: 79
+      span: 16
+      span: 17
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 1
+      path: 5
+      span: 84
+      span: 4
+      span: 10
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 1
+      span: 84
+      span: 4
+      span: 20
+      leading_comments: " path is a guest-side path. For a namespace type, it is a bind-mount\n path suitable for use directly as an OCI runtime spec\n LinuxNamespace.Path. For TYPE_DEVSHM, it is a directory suitable for\n use as an OCI runtime spec Mount.Source with Type \"bind\".\n"
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 1
+      path: 1
+      span: 84
+      span: 11
+      span: 15
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 1
+      path: 3
+      span: 84
+      span: 18
+      span: 19
+    }
+    location: {
+      path: 4
+      path: 1
+      span: 87
+      span: 0
+      span: 104
+      span: 1
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 1
+      span: 87
+      span: 8
+      span: 21
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      path: 5
+      span: 91
+      span: 4
+      span: 10
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      span: 91
+      span: 4
+      span: 18
+      leading_comments: " id groups the resources being created. Resources are created once\n per (id, type) and reused, so repeating a request returns the paths\n of the resources already created rather than creating new ones.\n"
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      path: 1
+      span: 91
+      span: 11
+      span: 13
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      path: 3
+      span: 91
+      span: 16
+      span: 17
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 1
+      path: 4
+      span: 94
+      span: 4
+      span: 12
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 1
+      span: 94
+      span: 4
+      span: 28
+      leading_comments: " types are the resource types to create. Types already created for\n id are returned without being recreated.\n"
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 1
+      path: 6
+      span: 94
+      span: 13
+      span: 17
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 1
+      path: 1
+      span: 94
+      span: 18
+      span: 23
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 1
+      path: 3
+      span: 94
+      span: 26
+      span: 27
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 2
+      path: 5
+      span: 103
+      span: 4
+      span: 9
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 2
+      span: 103
+      span: 4
+      span: 33
+      leading_comments: " dev_shm_size_bytes is the tmpfs size to use when creating a\n TYPE_DEVSHM resource for id for the first time. Ignored for every\n other type, and ignored if a TYPE_DEVSHM resource for id already\n exists (the size used by whichever caller created it first wins;\n callers within one sandbox are expected to agree on it, since\n containerd sends every member container of a pod the same /dev/shm\n size). A value that is zero or absent falls back to a guest-side\n default.\n"
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 2
+      path: 1
+      span: 103
+      span: 10
+      span: 28
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 2
+      path: 3
+      span: 103
+      span: 31
+      span: 32
+    }
+    location: {
+      path: 4
+      path: 2
+      span: 106
+      span: 0
+      span: 109
+      span: 1
+    }
+    location: {
+      path: 4
+      path: 2
+      path: 1
+      span: 106
+      span: 8
+      span: 22
+    }
+    location: {
+      path: 4
+      path: 2
+      path: 2
+      path: 0
+      path: 4
+      span: 108
+      span: 4
+      span: 12
+    }
+    location: {
+      path: 4
+      path: 2
+      path: 2
+      path: 0
+      span: 108
+      span: 4
+      span: 42
+      leading_comments: " resources contains one entry per requested type.\n"
+    }
+    location: {
+      path: 4
+      path: 2
+      path: 2
+      path: 0
+      path: 6
+      span: 108
+      span: 13
+      span: 27
+    }
+    location: {
+      path: 4
+      path: 2
+      path: 2
+      path: 0
+      path: 1
+      span: 108
+      span: 28
+      span: 37
+    }
+    location: {
+      path: 4
+      path: 2
+      path: 2
+      path: 0
+      path: 3
+      span: 108
+      span: 40
+      span: 41
+    }
+    location: {
+      path: 4
+      path: 3
+      span: 111
+      span: 0
+      span: 121
+      span: 1
+    }
+    location: {
+      path: 4
+      path: 3
+      path: 1
+      span: 111
+      span: 8
+      span: 21
+    }
+    location: {
+      path: 4
+      path: 3
+      path: 2
+      path: 0
+      path: 5
+      span: 113
+      span: 4
+      span: 10
+    }
+    location: {
+      path: 4
+      path: 3
+      path: 2
+      path: 0
+      span: 113
+      span: 4
+      span: 18
+      leading_comments: " id is the group to delete resources from.\n"
+    }
+    location: {
+      path: 4
+      path: 3
+      path: 2
+      path: 0
+      path: 1
+      span: 113
+      span: 11
+      span: 13
+    }
+    location: {
+      path: 4
+      path: 3
+      path: 2
+      path: 0
+      path: 3
+      span: 113
+      span: 16
+      span: 17
+    }
+    location: {
+      path: 4
+      path: 3
+      path: 2
+      path: 1
+      path: 4
+      span: 120
+      span: 4
+      span: 12
+    }
+    location: {
+      path: 4
+      path: 3
+      path: 2
+      path: 1
+      span: 120
+      span: 4
+      span: 28
+      leading_comments: " types are the resource types to delete. An empty list deletes every\n resource belonging to id.\n\n Deleting a namespace that containers are still using is a caller\n error: for a PID namespace it kills the anchor process, which makes\n the kernel tear the namespace down and kill everything in it.\n"
+    }
+    location: {
+      path: 4
+      path: 3
+      path: 2
+      path: 1
+      path: 6
+      span: 120
+      span: 13
+      span: 17
+    }
+    location: {
+      path: 4
+      path: 3
+      path: 2
+      path: 1
+      path: 1
+      span: 120
+      span: 18
+      span: 23
+    }
+    location: {
+      path: 4
+      path: 3
+      path: 2
+      path: 1
+      path: 3
+      span: 120
+      span: 26
+      span: 27
+    }
+    location: {
+      path: 4
+      path: 4
+      span: 123
+      span: 0
+      span: 25
+    }
+    location: {
+      path: 4
+      path: 4
+      path: 1
+      span: 123
+      span: 8
+      span: 22
+    }
+  }
+  syntax: "proto3"
+  buf_extension: {
+    is_import: false
+    is_syntax_unspecified: false
+  }
+}
+file: {
   name: "proto/nerdbox/services/socketforward/v1/socketforward.proto"
   package: "nerdbox.services.socketforward.v1"
   dependency: "google/protobuf/empty.proto"
@@ -1892,6 +2770,494 @@ file: {
       span: 27
       span: 54
       span: 79
+    }
+  }
+  syntax: "proto3"
+  buf_extension: {
+    is_import: false
+    is_syntax_unspecified: false
+  }
+}
+file: {
+  name: "proto/nerdbox/types/sandbox.proto"
+  package: "nerdbox.types"
+  message_type: {
+    name: "CRIPodConfig"
+    field: {
+      name: "hostname"
+      number: 2
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "hostname"
+    }
+    field: {
+      name: "dns_config"
+      number: 4
+      label: LABEL_OPTIONAL
+      type: TYPE_MESSAGE
+      type_name: ".nerdbox.types.CRIDNSConfig"
+      json_name: "dnsConfig"
+    }
+    field: {
+      name: "linux"
+      number: 8
+      label: LABEL_OPTIONAL
+      type: TYPE_MESSAGE
+      type_name: ".nerdbox.types.CRILinuxPodSandboxConfig"
+      json_name: "linux"
+    }
+  }
+  message_type: {
+    name: "CRIDNSConfig"
+    field: {
+      name: "servers"
+      number: 1
+      label: LABEL_REPEATED
+      type: TYPE_STRING
+      json_name: "servers"
+    }
+    field: {
+      name: "searches"
+      number: 2
+      label: LABEL_REPEATED
+      type: TYPE_STRING
+      json_name: "searches"
+    }
+    field: {
+      name: "options"
+      number: 3
+      label: LABEL_REPEATED
+      type: TYPE_STRING
+      json_name: "options"
+    }
+  }
+  message_type: {
+    name: "CRILinuxPodSandboxConfig"
+    field: {
+      name: "sysctls"
+      number: 3
+      label: LABEL_REPEATED
+      type: TYPE_MESSAGE
+      type_name: ".nerdbox.types.CRILinuxPodSandboxConfig.SysctlsEntry"
+      json_name: "sysctls"
+    }
+    nested_type: {
+      name: "SysctlsEntry"
+      field: {
+        name: "key"
+        number: 1
+        label: LABEL_OPTIONAL
+        type: TYPE_STRING
+        json_name: "key"
+      }
+      field: {
+        name: "value"
+        number: 2
+        label: LABEL_OPTIONAL
+        type: TYPE_STRING
+        json_name: "value"
+      }
+      options: {
+        map_entry: true
+      }
+    }
+  }
+  options: {
+    go_package: "github.com/containerd/nerdbox/api/types;types"
+  }
+  source_code_info: {
+    location: {
+      span: 16
+      span: 0
+      span: 86
+      span: 1
+    }
+    location: {
+      path: 12
+      span: 16
+      span: 0
+      span: 18
+      leading_detached_comments: "\nCopyright The containerd Authors.\n\nLicensed under the Apache License, Version 2.0 (the \"License\");\nyou may not use this file except in compliance with the License.\nYou may obtain a copy of the License at\n\nhttp://www.apache.org/licenses/LICENSE-2.0\n\nUnless required by applicable law or agreed to in writing, software\ndistributed under the License is distributed on an \"AS IS\" BASIS,\nWITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\nSee the License for the specific language governing permissions and\nlimitations under the License.\n"
+    }
+    location: {
+      path: 2
+      span: 18
+      span: 0
+      span: 22
+    }
+    location: {
+      path: 8
+      span: 20
+      span: 0
+      span: 68
+    }
+    location: {
+      path: 8
+      path: 11
+      span: 20
+      span: 0
+      span: 68
+    }
+    location: {
+      path: 4
+      path: 0
+      span: 55
+      span: 0
+      span: 62
+      span: 1
+      leading_comments: " CRIPodConfig is a hand-maintained, wire-compatible *subset* of\n k8s.io/cri-api's runtime.v1.PodSandboxConfig (the type containerd's CRI\n plugin marshals into CreateSandboxRequest.Options — see\n internal/shim/task/podconfig.go), covering only the fields the shim\n actually reads: pod hostname, DNS config, and Linux sysctls.\n\n This intentionally does NOT import k8s.io/cri-api: that package pulls in\n gRPC unconditionally (its generated *_grpc.pb.go carries no build tag),\n which defeats the shim's \"no_grpc\" build tag for the sake of decoding\n three scalar-ish fields out of an otherwise-unused message. Protobuf's\n wire format tolerates this: an unrecognized field number is simply\n skipped on decode, so a real CRI PodSandboxConfig — which carries many\n more fields than these — decodes cleanly into this subset, silently\n dropping everything this shim doesn't need.\n\n Field numbers below (and every message's nesting level) are copied\n verbatim from the upstream message (CRI v1, github.com/kubernetes/cri-api,\n pkg/apis/runtime/v1/api.proto) and MUST continue to match it exactly:\n this only decodes correctly because the wire bytes line up field-for-field\n with upstream at every level, not just the top one. CRI v1 is a frozen,\n GA, append-only-evolution API (see kubernetes/cri-api's own compatibility\n policy), so existing field numbers are not expected to ever be reused or\n renumbered. Field numbers NOT listed here (e.g. PodSandboxConfig's own\n 1, 3, 5, 6, 7, 9, 10) are other upstream fields this shim has no use for;\n they are simply omitted rather than declared, and are skipped like any\n other unrecognized field on decode.\n\n Deliberately named and packaged differently than upstream's\n runtime.v1.PodSandboxConfig, rather than reusing that exact\n fully-qualified proto name: registering a second, different message\n under upstream's own name would panic at process init if this binary\n ever also imported the real k8s.io/cri-api (protobuf-go's global type\n registry rejects duplicate registrations for the same full name).\n"
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 1
+      span: 55
+      span: 8
+      span: 20
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      path: 5
+      span: 57
+      span: 4
+      span: 10
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      span: 57
+      span: 4
+      span: 24
+      leading_comments: " Hostname of the sandbox (upstream field 2).\n"
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      path: 1
+      span: 57
+      span: 11
+      span: 19
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 0
+      path: 3
+      span: 57
+      span: 22
+      span: 23
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 1
+      path: 6
+      span: 59
+      span: 4
+      span: 16
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 1
+      span: 59
+      span: 4
+      span: 32
+      leading_comments: " DNS config for the sandbox (upstream field 4).\n"
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 1
+      path: 1
+      span: 59
+      span: 17
+      span: 27
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 1
+      path: 3
+      span: 59
+      span: 30
+      span: 31
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 2
+      path: 6
+      span: 61
+      span: 4
+      span: 28
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 2
+      span: 61
+      span: 4
+      span: 39
+      leading_comments: " Linux-specific pod sandbox config (upstream field 8).\n"
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 2
+      path: 1
+      span: 61
+      span: 29
+      span: 34
+    }
+    location: {
+      path: 4
+      path: 0
+      path: 2
+      path: 2
+      path: 3
+      span: 61
+      span: 37
+      span: 38
+    }
+    location: {
+      path: 4
+      path: 1
+      span: 68
+      span: 0
+      span: 75
+      span: 1
+      leading_comments: " CRIDNSConfig is a wire-compatible subset of runtime.v1.DNSConfig,\n covering every field it has today (unlike CRIPodConfig, this one just\n happens to be complete). See CRIPodConfig's doc comment for why this is\n a hand-maintained copy rather than an import.\n"
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 1
+      span: 68
+      span: 8
+      span: 20
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      path: 4
+      span: 70
+      span: 4
+      span: 12
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      span: 70
+      span: 4
+      span: 32
+      leading_comments: " List of DNS servers of the cluster (upstream field 1).\n"
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      path: 5
+      span: 70
+      span: 13
+      span: 19
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      path: 1
+      span: 70
+      span: 20
+      span: 27
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 0
+      path: 3
+      span: 70
+      span: 30
+      span: 31
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 1
+      path: 4
+      span: 72
+      span: 4
+      span: 12
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 1
+      span: 72
+      span: 4
+      span: 33
+      leading_comments: " List of DNS search domains of the cluster (upstream field 2).\n"
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 1
+      path: 5
+      span: 72
+      span: 13
+      span: 19
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 1
+      path: 1
+      span: 72
+      span: 20
+      span: 28
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 1
+      path: 3
+      span: 72
+      span: 31
+      span: 32
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 2
+      path: 4
+      span: 74
+      span: 4
+      span: 12
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 2
+      span: 74
+      span: 4
+      span: 32
+      leading_comments: " List of DNS options; see resolv.conf(5) (upstream field 3).\n"
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 2
+      path: 5
+      span: 74
+      span: 13
+      span: 19
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 2
+      path: 1
+      span: 74
+      span: 20
+      span: 27
+    }
+    location: {
+      path: 4
+      path: 1
+      path: 2
+      path: 2
+      path: 3
+      span: 74
+      span: 30
+      span: 31
+    }
+    location: {
+      path: 4
+      path: 2
+      span: 81
+      span: 0
+      span: 86
+      span: 1
+      leading_comments: " CRILinuxPodSandboxConfig is a wire-compatible subset of\n runtime.v1.LinuxPodSandboxConfig, covering only the field this shim\n reads (pod-level sysctls). See CRIPodConfig's doc comment for why this\n is a hand-maintained copy rather than an import.\n"
+    }
+    location: {
+      path: 4
+      path: 2
+      path: 1
+      span: 81
+      span: 8
+      span: 32
+    }
+    location: {
+      path: 4
+      path: 2
+      path: 2
+      path: 0
+      path: 6
+      span: 85
+      span: 4
+      span: 23
+    }
+    location: {
+      path: 4
+      path: 2
+      path: 2
+      path: 0
+      span: 85
+      span: 4
+      span: 36
+      leading_comments: " Sysctls to apply within the pod's containers (upstream field 3).\n Fields NOT listed here (upstream 1, 2, 4, 5) are omitted; see\n CRIPodConfig's doc comment.\n"
+    }
+    location: {
+      path: 4
+      path: 2
+      path: 2
+      path: 0
+      path: 1
+      span: 85
+      span: 24
+      span: 31
+    }
+    location: {
+      path: 4
+      path: 2
+      path: 2
+      path: 0
+      path: 3
+      span: 85
+      span: 34
+      span: 35
     }
   }
   syntax: "proto3"

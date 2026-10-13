@@ -47,7 +47,26 @@ func generateStreamID(prefix string) string {
 	return fmt.Sprintf("%s-%d-%s", prefix, time.Now().UnixNano(), base64.RawURLEncoding.EncodeToString(b[:]))
 }
 
+// copyStreamsFunc starts the host-side goroutines that copy between the
+// stdio paths (FIFOs, named pipes or files) and the vsock streams, and
+// returns the hooks forwardIO needs to control them:
+//
+//   - stdinEOF releases the host's own stdin reference so the stdin copy can
+//     reach a real end of input (nil if there is no stdin);
+//   - stdinDone is closed once that copy has delivered the end of input;
+//   - abort, if non-nil, force-releases every copy goroutine that is parked on
+//     a stdio path (nil where closing the vsock streams is enough).
+//
+// done is closed once the stdout and stderr copies have finished.
+type copyStreamsFunc func(ctx context.Context, streams [3]io.ReadWriteCloser, stdin, stdout, stderr string, done chan struct{}) (stdinEOF func() error, stdinDone <-chan struct{}, abort func(), err error)
+
 func (s *service) forwardIO(ctx context.Context, ss streamCreator, idPrefix string, sio stdio.Stdio) (stdio.Stdio, func(ctx context.Context) error, <-chan struct{}, func() error, error) {
+	return s.forwardIOWith(ctx, ss, idPrefix, sio, startCopy)
+}
+
+// forwardIOWith is forwardIO with the copy implementation made explicit, so
+// that tests can drive every implementation through the same shutdown logic.
+func (s *service) forwardIOWith(ctx context.Context, ss streamCreator, idPrefix string, sio stdio.Stdio, start copyStreamsFunc) (stdio.Stdio, func(ctx context.Context) error, <-chan struct{}, func() error, error) {
 	pio := sio
 	if pio.IsNull() {
 		return pio, nil, nil, nil, nil
@@ -106,7 +125,7 @@ func (s *service) forwardIO(ctx context.Context, ss streamCreator, idPrefix stri
 		}
 	}()
 	ioDone := make(chan struct{})
-	stdinEOF, stdinDone, err := copyStreams(ctx, streams, sio.Stdin, sio.Stdout, sio.Stderr, ioDone)
+	stdinEOF, stdinDone, abort, err := start(ctx, streams, sio.Stdin, sio.Stdout, sio.Stderr, ioDone)
 	if err != nil {
 		return stdio.Stdio{}, nil, nil, nil, err
 	}
@@ -156,6 +175,15 @@ func (s *service) forwardIO(ctx context.Context, ss streamCreator, idPrefix stri
 					err = ctx.Err()
 				}
 			}
+		}
+		// Everything that was going to finish on its own has had its chance.
+		// Release whatever is still parked on a stdio path (a stdin reader
+		// waiting for a client that never closes its end, an output writer
+		// blocked on a client that stopped reading); closing the streams
+		// below cannot reach those. A no-op where abort is nil, and once
+		// the copies are done.
+		if abort != nil {
+			abort()
 		}
 		for i, c := range streams {
 			if c != nil && (i != 2 || c != streams[1]) {

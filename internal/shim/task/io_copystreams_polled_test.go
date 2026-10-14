@@ -562,6 +562,64 @@ func stdinRound(ctx context.Context, impl copyImpl, path string, seed int) error
 	return nil
 }
 
+// TestStdinRegularFile: a stdin that is a plain file is read once to its end,
+// then the in-band EOF follows. stdinEOF is a harmless no-op.
+func TestStdinRegularFile(t *testing.T) {
+	for _, impl := range contractImpls {
+		t.Run(impl.name, func(t *testing.T) {
+			payload := testPayload(300_000)
+			path := filepath.Join(t.TempDir(), "stdin")
+			require.NoError(t, os.WriteFile(path, payload, 0o600))
+			conn := newFakeConn()
+			stdinEOF, stdinDone, abort, err := impl.fn(t.Context(), [3]io.ReadWriteCloser{conn, nil, nil}, path, "", "", make(chan struct{}))
+			require.NoError(t, err)
+			if abort != nil {
+				defer abort()
+			}
+			require.NotNil(t, stdinEOF)
+			waitClosed(t, stdinDone, "stdinDone")
+			sent, eof, late := conn.snapshot()
+			require.True(t, bytes.Equal(payload, sent), "relayed stdin bytes differ")
+			require.True(t, eof)
+			require.False(t, late)
+			require.NoError(t, stdinEOF())
+		})
+	}
+}
+
+// failingWriteConn is a stdin stream whose writes to the guest fail.
+type failingWriteConn struct{ *fakeConn }
+
+func (failingWriteConn) Write([]byte) (int, error) { return 0, errors.New("write failed") }
+
+// TestStdinCopyFailureIsNotCleanEOF: input that could not be forwarded in full
+// must not be followed by the in-band EOF.
+func TestStdinCopyFailureIsNotCleanEOF(t *testing.T) {
+	for _, kind := range []string{"fifo", "file"} {
+		t.Run(kind, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "stdin")
+			if kind == "fifo" {
+				path = mkfifo(t, "stdin")
+			} else {
+				require.NoError(t, os.WriteFile(path, []byte("input"), 0o600))
+			}
+			conn := newFakeConn()
+			stdinEOF, stdinDone, abort, err := copyStreamsPolled(t.Context(), [3]io.ReadWriteCloser{failingWriteConn{conn}, nil, nil}, path, "", "", make(chan struct{}))
+			require.NoError(t, err)
+			defer abort()
+			if kind == "fifo" {
+				w := openClientEnd(t, path, syscall.O_WRONLY)
+				_, err := w.Write([]byte("input"))
+				require.NoError(t, err)
+			}
+			waitClosed(t, stdinDone, "stdinDone")
+			_, eof, _ := conn.snapshot()
+			require.False(t, eof, "a failed stdin copy must not look like a clean EOF")
+			require.NoError(t, stdinEOF())
+		})
+	}
+}
+
 // TestOutputCopy: output relayed from the guest reaches the client's FIFOs
 // intact and each FIFO sees its end of file when the guest closes the stream.
 func TestOutputCopy(t *testing.T) {

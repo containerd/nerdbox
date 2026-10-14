@@ -177,44 +177,77 @@ func copyStreamsPolled(ctx context.Context, streams [3]io.ReadWriteCloser, stdin
 			return nil, nil, nil, fmt.Errorf("stdin stream connection does not implement CloseWrite; vsock conn required")
 		}
 
-		// The order is the point. The non-blocking read open always succeeds
-		// and leaves a reader on the FIFO, which is what lets the
-		// non-blocking write open that follows succeed too, so neither open
-		// can sleep in the kernel or miss the other side. From here on the
-		// holder is a writer for as long as it stays open, so the reader
-		// cannot see an end of file, and the client closing its own write end
-		// is only a detach, until stdinEOF drops it.
-		rd, err := openFifoNonblock(stdin, syscall.O_RDONLY)
+		var (
+			run func(dst io.Writer, buf []byte) error
+			src io.Closer
+		)
+		isFifo, err := fifo.IsFifo(stdin)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("containerd-shim: opening %s failed: %w", stdin, err)
+			return nil, nil, nil, err
 		}
-		fifos = append(fifos, rd)
-		hold, err := openFifoNonblock(stdin, syscall.O_WRONLY)
-		if err != nil {
-			return nil, nil, nil, fmt.Errorf("containerd-shim: opening w/o stdin fifo %q failed: %w", stdin, err)
-		}
-		fifos = append(fifos, hold)
+		if isFifo {
+			// The order is the point. The non-blocking read open always
+			// succeeds and leaves a reader on the FIFO, which is what lets
+			// the non-blocking write open that follows succeed too, so
+			// neither open can sleep in the kernel or miss the other side.
+			// From here on the holder is a writer for as long as it stays
+			// open, so the reader cannot see an end of file, and the client
+			// closing its own write end is only a detach, until stdinEOF
+			// drops it.
+			rd, err := openFifoNonblock(stdin, syscall.O_RDONLY)
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("containerd-shim: opening %s failed: %w", stdin, err)
+			}
+			fifos = append(fifos, rd)
+			hold, err := openFifoNonblock(stdin, syscall.O_WRONLY)
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("containerd-shim: opening w/o stdin fifo %q failed: %w", stdin, err)
+			}
+			fifos = append(fifos, hold)
 
-		pump := &stdinPump{src: rd, holder: hold}
+			pump := &stdinPump{src: rd, holder: hold}
+			run, src = pump.run, rd
+			// Idempotent: called by CloseIO and again by container teardown
+			// as a safety net.
+			stdinEOF = pump.requestEOF
+		} else {
+			// A regular file cannot block or be detached from: read it once
+			// to its end, as the Linux implementation does. stdinEOF is a
+			// no-op.
+			f, err := os.Open(stdin)
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("containerd-shim: opening %s failed: %w", stdin, err)
+			}
+			run = func(dst io.Writer, buf []byte) error {
+				_, err := io.CopyBuffer(writerOnly{dst}, struct{ io.Reader }{f}, buf)
+				return err
+			}
+			src = f
+			stdinEOF = func() error { return nil }
+		}
+
 		stdinDoneCh := make(chan struct{})
 		stdinDone = stdinDoneCh
 		cwg.Add(1)
 		go func() {
 			cwg.Done()
 			defer close(stdinDoneCh)
+			defer src.Close()
 			p := bufPool.Get().(*[]byte)
 			defer bufPool.Put(p)
-			// Drains to a real end of file: it only returns once every
-			// writer, the holder and the client, has gone, and every byte
-			// buffered before that has been forwarded to the guest.
-			err := pump.run(sc, *p)
+			// For a FIFO this drains to a real end of file: it only returns
+			// once every writer, the holder and the client, has gone, and
+			// every byte buffered before that has been forwarded to the
+			// guest.
+			err := run(sc, *p)
 			if aborted.Load() {
 				// Forced teardown: the input is truncated, so no EOF.
-				rd.Close()
 				return
 			}
 			if err != nil {
+				// Likewise: a failed copy must not look like a clean EOF.
 				log.G(ctx).WithError(err).Warn("error copying stdin")
+				return
 			}
 			// All buffered bytes are now on the wire; deliver EOF in-band.
 			if err := sc.CloseWrite(); err != nil {
@@ -222,11 +255,7 @@ func copyStreamsPolled(ctx context.Context, streams [3]io.ReadWriteCloser, stdin
 			}
 			// Do NOT Close sc here; deferred to ioShutdown/forwardIO cleanup
 			// so the transport outlives the in-band EOF.
-			rd.Close()
 		}()
-		// Idempotent: called by CloseIO and again by container teardown as a
-		// safety net.
-		stdinEOF = pump.requestEOF
 	}
 	cwg.Wait()
 	abort = func() {

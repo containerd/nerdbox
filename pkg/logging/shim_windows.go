@@ -19,7 +19,9 @@ package logging
 import (
 	"fmt"
 	"io"
+	"net"
 	"os"
+	"sync"
 
 	"github.com/Microsoft/go-winio"
 	"golang.org/x/sys/windows"
@@ -52,17 +54,69 @@ func openShimLog(ns, id string) io.Writer {
 	os.Stderr = pw
 	windows.SetStdHandle(windows.STD_ERROR_HANDLE, windows.Handle(pw.Fd())) //nolint:errcheck
 
-	go func() {
-		conn, err := l.Accept()
-		l.Close()
-
-		var w io.Writer = oldStderr
-		if err == nil {
-			w = io.MultiWriter(oldStderr, conn)
-			defer conn.Close()
-		}
-		io.Copy(w, pr) //nolint:errcheck
-	}()
+	go serveShimLog(l, pr, oldStderr)
 
 	return pw
+}
+
+// serveShimLog copies the shim's stderr from r to stderr and to the most
+// recently accepted connection on l.
+//
+// containerd connects when it starts the shim and again when a restarted
+// containerd reloads it, so l stays open for the lifetime of the shim. A
+// failed write drops the connection but r keeps being drained: if the copy
+// stopped when containerd went away, the pipe buffer would fill and every
+// later stderr write in the shim, including logging in RPC handlers, would
+// block.
+func serveShimLog(l net.Listener, r io.Reader, stderr io.Writer) {
+	var (
+		mu   sync.Mutex
+		conn net.Conn
+	)
+
+	defer func() {
+		l.Close()
+
+		mu.Lock()
+		if conn != nil {
+			conn.Close()
+		}
+		mu.Unlock()
+	}()
+
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+
+			mu.Lock()
+			if conn != nil {
+				conn.Close()
+			}
+			conn = c
+			mu.Unlock()
+		}
+	}()
+
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			stderr.Write(buf[:n]) //nolint:errcheck
+
+			mu.Lock()
+			if conn != nil {
+				if _, werr := conn.Write(buf[:n]); werr != nil {
+					conn.Close()
+					conn = nil
+				}
+			}
+			mu.Unlock()
+		}
+		if err != nil {
+			return
+		}
+	}
 }

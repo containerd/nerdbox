@@ -24,6 +24,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -126,4 +127,95 @@ func waitForLine(t *testing.T, w io.Writer, c net.Conn, line string) {
 		}
 	}
 	t.Fatalf("did not receive %q: %v", line, s.Err())
+}
+
+// TestServeShimLogStalledReader checks that a log reader which stays
+// connected but stops reading doesn't stop a reconnecting containerd from
+// taking over the log.
+func TestServeShimLogStalledReader(t *testing.T) {
+	l := &chanListener{conns: make(chan net.Conn), closed: make(chan struct{})}
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		serveShimLog(l, pr, io.Discard)
+	}()
+	defer func() {
+		pw.Close()
+		<-done
+	}()
+
+	stalled := newStalledConn()
+	defer stalled.Close()
+	l.conns <- stalled
+	go fmt.Fprintln(pw, "first") //nolint:errcheck
+	select {
+	case <-stalled.writing:
+	case <-time.After(10 * time.Second):
+		t.Fatal("log was not written to the first connection")
+	}
+
+	// The drain is now blocked writing to the stalled connection. A new
+	// connection must replace it and receive the next line.
+	server, client := net.Pipe()
+	defer client.Close()
+	select {
+	case l.conns <- server:
+	case <-time.After(10 * time.Second):
+		t.Fatal("reconnecting log reader was not accepted")
+	}
+	waitForLine(t, pw, client, "second")
+}
+
+// chanListener is a net.Listener that accepts the connections sent on conns.
+type chanListener struct {
+	conns     chan net.Conn
+	closed    chan struct{}
+	closeOnce sync.Once
+}
+
+func (l *chanListener) Accept() (net.Conn, error) {
+	select {
+	case c := <-l.conns:
+		return c, nil
+	case <-l.closed:
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *chanListener) Close() error {
+	l.closeOnce.Do(func() { close(l.closed) })
+	return nil
+}
+
+func (l *chanListener) Addr() net.Addr { return nil }
+
+// stalledConn is a log reader that is connected but never reads: Write
+// blocks until the connection is closed.
+type stalledConn struct {
+	net.Conn
+
+	writing   chan struct{}
+	closed    chan struct{}
+	writeOnce sync.Once
+	closeOnce sync.Once
+}
+
+func newStalledConn() *stalledConn {
+	return &stalledConn{writing: make(chan struct{}), closed: make(chan struct{})}
+}
+
+func (c *stalledConn) Write([]byte) (int, error) {
+	c.writeOnce.Do(func() { close(c.writing) })
+	<-c.closed
+	return 0, net.ErrClosed
+}
+
+func (c *stalledConn) Close() error {
+	c.closeOnce.Do(func() { close(c.closed) })
+	return nil
 }

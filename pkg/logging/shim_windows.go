@@ -68,18 +68,26 @@ func openShimLog(ns, id string) io.Writer {
 // stopped when containerd went away, the pipe buffer would fill and every
 // later stderr write in the shim, including logging in RPC handlers, would
 // block.
+//
+// A reader that is connected but not reading still blocks the copy, as a
+// FIFO with a live reader does on Unix, until a new connection replaces it.
+// Writes happen outside mu so that a new connection can always be accepted,
+// and closing the old one unblocks the pending write.
 func serveShimLog(l net.Listener, r io.Reader, stderr io.Writer) {
 	var (
-		mu   sync.Mutex
-		conn net.Conn
+		mu     sync.Mutex
+		conn   net.Conn
+		closed bool
 	)
 
 	defer func() {
 		l.Close()
 
 		mu.Lock()
+		closed = true
 		if conn != nil {
 			conn.Close()
+			conn = nil
 		}
 		mu.Unlock()
 	}()
@@ -92,11 +100,18 @@ func serveShimLog(l net.Listener, r io.Reader, stderr io.Writer) {
 			}
 
 			mu.Lock()
-			if conn != nil {
-				conn.Close()
+			if closed {
+				mu.Unlock()
+				c.Close()
+				return
 			}
+			old := conn
 			conn = c
 			mu.Unlock()
+
+			if old != nil {
+				old.Close()
+			}
 		}
 	}()
 
@@ -107,13 +122,20 @@ func serveShimLog(l net.Listener, r io.Reader, stderr io.Writer) {
 			stderr.Write(buf[:n]) //nolint:errcheck
 
 			mu.Lock()
-			if conn != nil {
-				if _, werr := conn.Write(buf[:n]); werr != nil {
-					conn.Close()
-					conn = nil
+			c := conn
+			mu.Unlock()
+
+			if c != nil {
+				if _, werr := c.Write(buf[:n]); werr != nil {
+					c.Close()
+
+					mu.Lock()
+					if conn == c {
+						conn = nil
+					}
+					mu.Unlock()
 				}
 			}
-			mu.Unlock()
 		}
 		if err != nil {
 			return

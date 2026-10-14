@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows && !darwin
 
 /*
    Copyright The containerd Authors.
@@ -31,16 +31,9 @@ import (
 	"github.com/containerd/log"
 )
 
-// stdinStreamWriteCloser is the interface the host-side stdin vsock stream
-// connection must implement. CloseWrite sends OP_SHUTDOWN(SEND) in-order
-// after all data, delivering EOF to the guest without a destructive transport
-// close. Asserting at setup time ensures a future wrapper that drops
-// CloseWrite fails loudly rather than silently hanging the guest's read.
-type stdinStreamWriteCloser interface {
-	io.ReadWriteCloser
-	CloseWrite() error
-}
-
+// copyStreams is not used on darwin, which has its own implementation, see
+// copyStreamsPolled. stdinStreamWriteCloser lives there too.
+//
 // copyStreams returns a stdinEOF function and a stdinDone channel for the
 // stdin FIFO (both nil when stdin is empty).
 //

@@ -102,6 +102,12 @@ jobs:
       - name: Run unit tests
         run: task test:unit
 
+      - name: Test guest rootfs mount cleanup
+        if: runner.os == 'Linux'
+        run: |
+          go test -c -o "$RUNNER_TEMP/nerdbox-process.test" ./internal/vminit/process
+          sudo env NERDBOX_REQUIRE_MOUNT_TEST=1 "$RUNNER_TEMP/nerdbox-process.test" -test.run '^TestInitDeleteUnmountsRootfsComponents$' -test.v
+
   #
   # Protobuf checks
   #

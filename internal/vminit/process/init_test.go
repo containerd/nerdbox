@@ -46,7 +46,7 @@ func TestInitDeleteUnmountsRootfsComponents(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cmd := exec.CommandContext(t.Context(), executable, "-test.run=^TestInitDeleteUnmountsRootfsComponents$", "-test.v")
+		cmd := exec.CommandContext(t.Context(), executable, "-test.run=^"+t.Name()+"$", "-test.v")
 		cmd.Env = append(os.Environ(), child+"=1")
 		cmd.SysProcAttr = &syscall.SysProcAttr{Cloneflags: unix.CLONE_NEWNS}
 		output, err := cmd.CombinedOutput()
@@ -63,6 +63,22 @@ func TestInitDeleteUnmountsRootfsComponents(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	for _, tc := range []struct {
+		name        string
+		busy        bool
+		runtimeFail bool
+	}{
+		{name: "success"},
+		{name: "busy", busy: true},
+		{name: "busy and runtime failure", busy: true, runtimeFail: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testInitDeleteUnmountsRootfsComponents(t, tc.busy, tc.runtimeFail)
+		})
+	}
+}
+
+func testInitDeleteUnmountsRootfsComponents(t *testing.T, busy, runtimeFail bool) {
 	bundle := t.TempDir()
 	rootfs := filepath.Join(bundle, "rootfs")
 	components := filepath.Join(bundle, "mounts")
@@ -91,11 +107,39 @@ func TestInitDeleteUnmountsRootfsComponents(t *testing.T) {
 			},
 		},
 	}
+	var busyPath string
+	if busy {
+		// A longer target forces the busy sibling to be processed first,
+		// independent of UnmountRecursive's map iteration order.
+		busyPath = filepath.Join(components, "0", "busy-component")
+		if err := os.MkdirAll(busyPath, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		mounts[0].Target = "busy-component"
+		for i, option := range mounts[2].Options {
+			mounts[2].Options[i] = strings.ReplaceAll(option, "{{ mount 0 }}", "{{ mount 0 }}/busy-component")
+		}
+	}
 	if err := mountutil.All(t.Context(), rootfs, components, mounts); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(rootfs, "marker"), []byte("saved"), 0o600); err != nil {
 		t.Fatal(err)
+	}
+
+	if busy {
+		f, err := os.Open(busyPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := f.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	if runtimeFail {
+		t.Setenv("NERDBOX_TEST_RUNTIME_FAIL", "1")
 	}
 
 	executable, err := os.Executable()
@@ -108,15 +152,28 @@ func TestInitDeleteUnmountsRootfsComponents(t *testing.T) {
 		Rootfs:  rootfs,
 		runtime: &runc.Runc{Command: executable, ExtraArgs: []string{"-test.run=^TestInitDeleteRuntime$", "--"}},
 	}
-	if err := init.delete(t.Context()); err != nil {
-		t.Fatal(err)
+	deleteErr := init.delete(t.Context())
+	if busy {
+		if !errors.Is(deleteErr, unix.EBUSY) || !strings.Contains(deleteErr.Error(), busyPath) {
+			t.Fatalf("expected cleanup error naming busy component %s, got %v", busyPath, deleteErr)
+		}
+	} else if deleteErr != nil {
+		t.Fatal(deleteErr)
+	}
+	if runtimeFail && !strings.Contains(deleteErr.Error(), "failed to delete task") {
+		t.Fatalf("runtime deletion error was lost: %v", deleteErr)
 	}
 	remaining, err := mountinfo.GetMounts(mountinfo.PrefixFilter(bundle))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, entry := range remaining {
-		t.Errorf("Init.delete left rootfs component mounted: %s (%s)", entry.Mountpoint, entry.FSType)
+	if busy && (len(remaining) != 1 || remaining[0].Mountpoint != busyPath) {
+		t.Fatalf("expected only busy component %s to remain, got %+v", busyPath, remaining)
+	}
+	if !busy {
+		for _, entry := range remaining {
+			t.Errorf("Init.delete left rootfs component mounted: %s (%s)", entry.Mountpoint, entry.FSType)
+		}
 	}
 }
 
@@ -125,5 +182,8 @@ func TestInitDeleteUnmountsRootfsComponents(t *testing.T) {
 func TestInitDeleteRuntime(t *testing.T) {
 	if !strings.HasSuffix(strings.Join(os.Args, " "), "-- delete cleanup-test") {
 		t.Skip("OCI runtime subprocess only")
+	}
+	if os.Getenv("NERDBOX_TEST_RUNTIME_FAIL") == "1" {
+		t.Fatal("injected OCI runtime deletion failure")
 	}
 }

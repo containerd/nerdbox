@@ -21,6 +21,7 @@ package process
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -295,6 +296,17 @@ func (p *Init) delete(ctx context.Context) error {
 		log.G(ctx).WithError(err2).Warn("failed to cleanup rootfs mount")
 		if err == nil {
 			err = fmt.Errorf("failed rootfs umount: %w", err2)
+		}
+	}
+	// Rootfs components are mounted beside, rather than beneath, Rootfs.
+	// Unmount them after the overlay so its upper and lower filesystems can
+	// finish flushing before the VM stops. A container without component mounts
+	// has no mounts directory; UnmountRecursive treats that as a no-op.
+	if p.Bundle != "" {
+		components := filepath.Join(p.Bundle, "mounts")
+		if err2 := mount.UnmountRecursive(components, 0); err2 != nil {
+			log.G(ctx).WithError(err2).WithField("mountpoint", components).Warn("failed to cleanup rootfs component mounts")
+			err = errors.Join(err, fmt.Errorf("failed rootfs components umount: %w", err2))
 		}
 	}
 	return err

@@ -291,22 +291,30 @@ func (fwd *socketForwarder) handleConnection(ctx context.Context, sb sandbox.San
 // closes or errors. Both connections are closed when done.
 func relay(a, b io.ReadWriteCloser, closeCh <-chan struct{}) {
 	done := make(chan struct{}, 2)
+	relayDone := make(chan struct{})
 	cp := func(dst io.Writer, src io.Reader) {
 		io.Copy(dst, src)
 		done <- struct{}{}
 	}
 	go cp(a, b)
 	go cp(b, a)
+	watcherDone := make(chan struct{})
 	go func() {
-		<-closeCh
-		a.Close()
-		b.Close()
+		defer close(watcherDone)
+		select {
+		case <-closeCh:
+			a.Close()
+			b.Close()
+		case <-relayDone:
+		}
 	}()
 
 	<-done // one side finished
 	a.Close()
 	b.Close()
 	<-done // wait for the other
+	close(relayDone)
+	<-watcherDone
 }
 
 func (fwd *socketForwarder) shutdown() error {

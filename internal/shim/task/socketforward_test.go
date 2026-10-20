@@ -18,7 +18,10 @@ package task
 
 import (
 	"context"
+	"net"
+	"runtime"
 	"testing"
+	"time"
 
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/stretchr/testify/assert"
@@ -133,4 +136,33 @@ func TestSocketForwardsProviderFromBundle(t *testing.T) {
 			assert.Equal(t, tc.wantEntries, p.entries)
 		})
 	}
+}
+
+func TestRelayFinishesWithoutForwarderShutdown(t *testing.T) {
+	baseline := runtime.NumGoroutine()
+	closeCh := make(chan struct{}) // stays open until after the leak check
+	defer close(closeCh)
+	for i := 0; i < 64; i++ {
+		a, peerA := net.Pipe()
+		b, peerB := net.Pipe()
+		finished := make(chan struct{})
+		go func() {
+			relay(a, b, closeCh)
+			close(finished)
+		}()
+		require.NoError(t, peerA.Close())
+		select {
+		case <-finished:
+		case <-time.After(5 * time.Second):
+			t.Fatal("relay did not finish after normal connection close")
+		}
+		require.NoError(t, peerB.Close())
+	}
+	// The old relay returned while leaving one goroutine per completed
+	// connection waiting for closeCh. Allow some unrelated test goroutines.
+	deadline := time.Now().Add(2 * time.Second)
+	for runtime.NumGoroutine() > baseline+16 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.LessOrEqual(t, runtime.NumGoroutine(), baseline+16, "completed relays retained shutdown watchers")
 }

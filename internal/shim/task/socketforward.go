@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 
 	"github.com/containerd/log"
@@ -55,6 +56,9 @@ type socketForwardEntry struct {
 	// containerPath is the user-specified destination: where the socket
 	// appears inside the container rootfs.
 	containerPath string
+	mode          uint32
+	uid           uint32
+	gid           uint32
 }
 
 // socketForwardsProvider parses OCI mounts with type "uds" and generates the
@@ -72,7 +76,8 @@ type socketForwardsProvider struct {
 // UDS mount fields:
 //   - Source: host-side UNIX socket path (the target service)
 //   - Destination: container-side UNIX socket path
-//   - Options: none
+//   - Options: none, or uid=<numeric UID>,gid=<numeric GID> to create a
+//     private (0600) guest listener owned by that user and group
 //
 // Each UDS mount is replaced in-place with a bind mount whose source is
 // vmPath (/run/socketfwd/{id}.sock) and whose destination is the original
@@ -115,8 +120,27 @@ func parseUDSMount(containerID string, m specs.Mount) (socketForwardEntry, error
 	if m.Destination == "" {
 		return socketForwardEntry{}, fmt.Errorf("destination (container path) is required")
 	}
-	if len(m.Options) > 0 {
-		return socketForwardEntry{}, fmt.Errorf("unknown option %q", strings.Join(m.Options, ", "))
+	var mode uint32
+	var uid, gid uint32
+	if len(m.Options) != 0 {
+		if len(m.Options) != 2 || !strings.HasPrefix(m.Options[0], "uid=") || !strings.HasPrefix(m.Options[1], "gid=") {
+			return socketForwardEntry{}, fmt.Errorf("unknown option %q", strings.Join(m.Options, ", "))
+		}
+		parsedUID, err := strconv.ParseUint(strings.TrimPrefix(m.Options[0], "uid="), 10, 32)
+		if err != nil {
+			return socketForwardEntry{}, fmt.Errorf("invalid guest socket UID: %w", err)
+		}
+		if parsedUID == uint64(^uint32(0)) {
+			return socketForwardEntry{}, fmt.Errorf("invalid guest socket UID: reserved chown no-change value")
+		}
+		parsedGID, err := strconv.ParseUint(strings.TrimPrefix(m.Options[1], "gid="), 10, 32)
+		if err != nil {
+			return socketForwardEntry{}, fmt.Errorf("invalid guest socket GID: %w", err)
+		}
+		if parsedGID == uint64(^uint32(0)) {
+			return socketForwardEntry{}, fmt.Errorf("invalid guest socket GID: reserved chown no-change value")
+		}
+		mode, uid, gid = 0600, uint32(parsedUID), uint32(parsedGID)
 	}
 
 	hash := sha256.Sum256([]byte(containerID + ":" + m.Destination))
@@ -125,6 +149,9 @@ func parseUDSMount(containerID string, m specs.Mount) (socketForwardEntry, error
 		hostPath:      m.Source,
 		vmPath:        fmt.Sprintf("/run/socketfwd/%x.sock", hash),
 		containerPath: m.Destination,
+		mode:          mode,
+		uid:           uid,
+		gid:           gid,
 	}, nil
 }
 
@@ -146,13 +173,12 @@ func bindSockets(ctx context.Context, sb sandbox.Sandbox, entries []socketForwar
 		sockets = append(sockets, &socketforward.Socket{
 			ForwardID:  e.id,
 			SocketPath: e.vmPath,
+			Mode:       e.mode,
+			Uid:        e.uid,
+			Gid:        e.gid,
 		})
 	}
-
-	sfClient := socketforward.NewTTRPCSocketForwardClient(vmc)
-	if _, err := sfClient.Bind(ctx, &socketforward.BindRequest{
-		Sockets: sockets,
-	}); err != nil {
+	if _, err := socketforward.NewTTRPCSocketForwardClient(vmc).Bind(ctx, &socketforward.BindRequest{Sockets: sockets}); err != nil {
 		return fmt.Errorf("bind RPC: %w", err)
 	}
 	return nil

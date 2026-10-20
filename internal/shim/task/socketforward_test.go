@@ -71,6 +71,81 @@ func TestSocketForwardsProviderFromBundle(t *testing.T) {
 			wantErr: `unknown option "first, second"`,
 		},
 		{
+			name: "invalid guest UID",
+			cid:  "c1",
+			mounts: []specs.Mount{{
+				Type: "uds", Source: "/host/sock", Destination: "/guest/sock",
+				Options: []string{"uid=-1", "gid=1000"},
+			}},
+			wantErr: "invalid guest socket UID",
+		},
+		{
+			name: "missing guest GID",
+			cid:  "c1",
+			mounts: []specs.Mount{{Type: "uds", Source: "/host/sock", Destination: "/guest/sock",
+				Options: []string{"uid=1000"}}},
+			wantErr: "unknown option",
+		},
+		{
+			name: "reordered guest options",
+			cid:  "c1",
+			mounts: []specs.Mount{{Type: "uds", Source: "/host/sock", Destination: "/guest/sock",
+				Options: []string{"gid=1000", "uid=1000"}}},
+			wantErr: "unknown option",
+		},
+		{
+			name: "overflow guest UID",
+			cid:  "c1",
+			mounts: []specs.Mount{{Type: "uds", Source: "/host/sock", Destination: "/guest/sock",
+				Options: []string{"uid=4294967296", "gid=1000"}}},
+			wantErr: "invalid guest socket UID",
+		},
+		{
+			name: "reserved guest UID",
+			cid:  "c1",
+			mounts: []specs.Mount{{Type: "uds", Source: "/host/sock", Destination: "/guest/sock",
+				Options: []string{"uid=4294967295", "gid=1000"}}},
+			wantErr: "reserved chown no-change value",
+		},
+		{
+			name: "reserved guest GID",
+			cid:  "c1",
+			mounts: []specs.Mount{{Type: "uds", Source: "/host/sock", Destination: "/guest/sock",
+				Options: []string{"uid=1000", "gid=4294967295"}}},
+			wantErr: "reserved chown no-change value",
+		},
+		{
+			name: "invalid guest GID",
+			cid:  "c1",
+			mounts: []specs.Mount{{Type: "uds", Source: "/host/sock", Destination: "/guest/sock",
+				Options: []string{"uid=1000", "gid=-1"}}},
+			wantErr: "invalid guest socket GID",
+		},
+		{
+			name: "extra guest option",
+			cid:  "c1",
+			mounts: []specs.Mount{{Type: "uds", Source: "/host/sock", Destination: "/guest/sock",
+				Options: []string{"uid=1000", "gid=1000", "mode=0666"}}},
+			wantErr: "unknown option",
+		},
+		{
+			name: "private guest owner",
+			cid:  "container-abc",
+			mounts: []specs.Mount{{
+				Type: "uds", Source: "/host/sock", Destination: "/var/run/bar.sock",
+				Options: []string{"uid=1000", "gid=1000"},
+			}},
+			wantMounts: []specs.Mount{{
+				Type: "bind", Source: "/run/socketfwd/954a6df32e91bb55e6fcd9df9f90728e56b4f87aa92b22fe3b63df33f18a3188.sock",
+				Destination: "/var/run/bar.sock", Options: []string{"bind"},
+			}},
+			wantEntries: []socketForwardEntry{{
+				id:       "954a6df32e91bb55e6fcd9df9f90728e56b4f87aa92b22fe3b63df33f18a3188",
+				hostPath: "/host/sock", vmPath: "/run/socketfwd/954a6df32e91bb55e6fcd9df9f90728e56b4f87aa92b22fe3b63df33f18a3188.sock",
+				containerPath: "/var/run/bar.sock", mode: 0600, uid: 1000, gid: 1000,
+			}},
+		},
+		{
 			name: "uds mount rewritten to bind",
 			cid:  "container-abc",
 			mounts: []specs.Mount{

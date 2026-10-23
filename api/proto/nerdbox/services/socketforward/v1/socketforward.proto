@@ -40,7 +40,8 @@ service SocketForward {
 	// Bind sets up the socket forward entries on the VM side. The VM creates
 	// UNIX listener sockets at the paths given in socket_path. This RPC returns
 	// only after all socket files have been created, so the caller can safely
-	// proceed with container creation (crun bind mounts).
+	// proceed with container creation (crun bind mounts). The shim and guest
+	// versions are coupled, including the private socket mode contract.
 	rpc Bind(BindRequest) returns (google.protobuf.Empty);
 
 	// Accept is a bidirectional streaming RPC used to coordinate forwarded
@@ -68,6 +69,11 @@ message Socket {
 	// the shim has already rewritten the uds mount to a bind mount from
 	// this path to the user-specified destination inside the container.
 	string socket_path = 2;
+	// Zero preserves the legacy socket mode and owner. Mode 0600 requests a
+	// private listener owned by UID and GID in the VM.
+	uint32 mode = 3;
+	uint32 uid = 4;
+	uint32 gid = 5;
 }
 
 // ConnectRequest is sent by the VM on the Accept stream to notify the host of

@@ -89,16 +89,95 @@ func (s *Service) RegisterTTRPC(server *ttrpc.Server) error {
 // creates a UNIX listener socket at the given socket_path. This method
 // returns only after all socket files have been created.
 func (s *Service) Bind(ctx context.Context, req *socketforward.BindRequest) (*emptypb.Empty, error) {
+	return s.bindAll(ctx, req)
+}
+
+func (s *Service) bindAll(ctx context.Context, req *socketforward.BindRequest) (*emptypb.Empty, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Never unlink a live listener, even if the duplicate appears later in
+	// this request. Preflight before creating anything so a duplicate cannot
+	// tear down another container's forward during rollback.
+	paths := make(map[string]struct{}, len(s.listeners)+len(req.Sockets))
+	for _, l := range s.listeners {
+		path, err := canonicalSocketPath(l.Addr().String())
+		if err != nil {
+			return nil, fmt.Errorf("resolving bound socket path: %w", err)
+		}
+		paths[path] = struct{}{}
+	}
 	for _, sock := range req.Sockets {
-		if err := s.bind(ctx, sock.ForwardID, sock.SocketPath); err != nil {
+		if sock == nil {
+			return nil, fmt.Errorf("nil socket forward entry")
+		}
+		// Cleaning a path containing ".." before following a symlink can
+		// change which socket it names. Reject lexical aliases rather than
+		// trying to infer their target from the cleaned path.
+		if filepath.Clean(sock.SocketPath) != sock.SocketPath {
+			return nil, fmt.Errorf("non-canonical socket forward path %q", sock.SocketPath)
+		}
+		// Linux chown interprets UINT32_MAX as "leave unchanged". Reject it
+		// before binding any socket so the permission-aware RPC cannot report
+		// success without setting the requested owner.
+		if sock.Mode != 0 && sock.Mode != 0600 {
+			return nil, fmt.Errorf("unsupported guest socket mode %#o for %s", sock.Mode, sock.SocketPath)
+		}
+		if sock.Mode != 0 && (sock.Uid == ^uint32(0) || sock.Gid == ^uint32(0)) {
+			return nil, fmt.Errorf("reserved guest socket UID or GID for %s", sock.SocketPath)
+		}
+		path, err := canonicalSocketPath(sock.SocketPath)
+		if err != nil {
+			return nil, fmt.Errorf("resolving socket path %s: %w", sock.SocketPath, err)
+		}
+		if _, ok := paths[path]; ok {
+			return nil, fmt.Errorf("socket forward listener already bound at %s", sock.SocketPath)
+		}
+		paths[path] = struct{}{}
+	}
+
+	initial := len(s.listeners)
+	for _, sock := range req.Sockets {
+		if err := s.bind(ctx, sock); err != nil {
+			for _, l := range s.listeners[initial:] {
+				_ = l.Close()
+			}
+			s.listeners = s.listeners[:initial]
 			return nil, fmt.Errorf("binding socket forward listener at %s: %w", sock.SocketPath, err)
 		}
 	}
 
 	return &emptypb.Empty{}, nil
+}
+
+// canonicalSocketPath resolves aliases in the parent directory without
+// following the socket itself. Some parents may not exist until bind creates
+// them, so resolve the nearest existing ancestor and append the missing tail.
+func canonicalSocketPath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Dir(abs)
+	var missing []string
+	for {
+		resolved, err := filepath.EvalSymlinks(dir)
+		if err == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, missing[i])
+			}
+			return filepath.Join(resolved, filepath.Base(abs)), nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", err
+		}
+		missing = append(missing, filepath.Base(dir))
+		dir = parent
+	}
 }
 
 // Accept is a bidirectional streaming RPC used to coordinate forwarded
@@ -152,19 +231,25 @@ func (s *Service) Accept(ctx context.Context, srv socketforward.TTRPCSocketForwa
 // it generates a stream ID, sends a ConnectRequest on the notify channel
 // (for the Accept stream), then waits for the host to report the dial
 // result via a ConnectResult before proceeding with the vsock relay.
-func (s *Service) bind(ctx context.Context, forwardID, socketPath string) error {
+func (s *Service) bind(ctx context.Context, sock *socketforward.Socket) error {
+	forwardID, socketPath := sock.ForwardID, sock.SocketPath
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0755); err != nil {
 		return fmt.Errorf("creating parent directory for %s: %w", socketPath, err)
 	}
 
-	// Remove any stale socket file.
-	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("removing stale socket file %s: %w", socketPath, err)
+	var l net.Listener
+	var err error
+	if sock.Mode == 0600 {
+		l, err = listenPrivate(socketPath, sock.Uid, sock.Gid)
+	} else {
+		// Keep legacy socket behavior unchanged when no ownership is requested.
+		if err = os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("removing stale socket file %s: %w", socketPath, err)
+		}
+		l, err = net.Listen("unix", socketPath)
 	}
-
-	l, err := net.Listen("unix", socketPath)
 	if err != nil {
-		return fmt.Errorf("listening on %s: %w", socketPath, err)
+		return err
 	}
 
 	s.listeners = append(s.listeners, l)
@@ -176,6 +261,71 @@ func (s *Service) bind(ctx context.Context, forwardID, socketPath string) error 
 
 	go s.acceptLoop(context.Background(), l, forwardID)
 	return nil
+}
+
+// listenPrivate prepares the socket behind a root-owned, 0700 staging
+// directory. No unprivileged guest process can connect before its owner and
+// 0600 mode are set, even if the VM process has a permissive umask.
+func listenPrivate(socketPath string, uid, gid uint32) (net.Listener, error) {
+	stagingDir, err := os.MkdirTemp(filepath.Dir(socketPath), ".socketfwd-")
+	if err != nil {
+		return nil, fmt.Errorf("creating private socket staging directory: %w", err)
+	}
+	defer os.Remove(stagingDir) // empty after publication or closing on failure
+	stagedPath := filepath.Join(stagingDir, "socket")
+	l, err := net.Listen("unix", stagedPath)
+	if err != nil {
+		return nil, fmt.Errorf("listening on private socket: %w", err)
+	}
+	published := false
+	defer func() {
+		if !published {
+			_ = l.Close() // unlinks the unpublished socket
+		}
+	}()
+	if err := os.Chown(stagedPath, int(uid), int(gid)); err != nil {
+		return nil, fmt.Errorf("setting socket owner: %w", err)
+	}
+	if err := os.Chmod(stagedPath, 0600); err != nil {
+		return nil, fmt.Errorf("setting socket mode: %w", err)
+	}
+	identity, err := os.Stat(stagedPath)
+	if err != nil {
+		return nil, fmt.Errorf("stat private socket: %w", err)
+	}
+	if err := os.Rename(stagedPath, socketPath); err != nil {
+		return nil, fmt.Errorf("publishing private socket: %w", err)
+	}
+	l.(*net.UnixListener).SetUnlinkOnClose(false)
+	published = true
+	return &privateListener{Listener: l, path: socketPath, identity: identity}, nil
+}
+
+// privateListener owns the published path: net.UnixListener only knows the
+// staging path and must not leave the renamed socket behind on Close.
+type privateListener struct {
+	net.Listener
+	path     string
+	identity os.FileInfo
+}
+
+func (l *privateListener) Addr() net.Addr {
+	return &net.UnixAddr{Name: l.path, Net: "unix"}
+}
+
+func (l *privateListener) Close() error {
+	closeErr := l.Listener.Close()
+	info, err := os.Stat(l.path)
+	if os.IsNotExist(err) {
+		return closeErr
+	}
+	if err != nil {
+		return errors.Join(closeErr, err)
+	}
+	if os.SameFile(info, l.identity) {
+		return errors.Join(closeErr, os.Remove(l.path))
+	}
+	return closeErr
 }
 
 func (s *Service) acceptLoop(ctx context.Context, l net.Listener, forwardID string) {

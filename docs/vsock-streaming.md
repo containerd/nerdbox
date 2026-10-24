@@ -205,6 +205,18 @@ io.Stdin = fmt.Sprintf("stream://%s", sid)
 The shim then runs `io.Copy` goroutines between the host-side FIFOs and the
 vsock connections (`internal/shim/task/io_copystreams_unix.go`).
 
+On macOS the FIFOs are handled by `internal/shim/task/io_copystreams_polled.go`
+instead. Go keeps FIFOs opened with `os.OpenFile` off the runtime poller on
+darwin ([golang/go#24164](https://github.com/golang/go/issues/24164)), so a
+goroutine blocked reading or writing one pins an OS thread that neither `Close`
+nor the shim's IO shutdown can release, and macOS can also fail to wake a
+reader when the last writer closes. The macOS implementation opens every FIFO
+non-blocking and registers it with the poller, so `Close` interrupts it, and it
+polls for the end of the stdin FIFO instead of waiting for a wakeup. The
+observable contract is the same on every platform: a client closing its own
+stdin write end only detaches, and the guest sees end of input once `CloseIO`
+has dropped the shim's own reference and everything buffered was forwarded.
+
 Guest side (`internal/vminit/runc/platform.go`): `vminitd` parses the
 `stream://` URIs, calls `streams.Get(id)` to obtain the vsock connection,
 and wires it into the container process's stdin/stdout/stderr (or PTY).

@@ -113,10 +113,13 @@ func (e *execProcess) delete(ctx context.Context) error {
 	// output observed by the host. 30 seconds matches the host-side
 	// ioShutdown drain timeout.
 	waitTimeout(ctx, &e.wg, 30*time.Second)
+	for _, c := range e.closers {
+		c.Close()
+	}
+	if e.console != nil {
+		e.console.Close()
+	}
 	if e.io != nil {
-		for _, c := range e.closers {
-			c.Close()
-		}
 		e.io.Close()
 	}
 	pidfile := filepath.Join(e.path, fmt.Sprintf("%s.pid", e.id))
@@ -232,10 +235,12 @@ func (e *execProcess) start(ctx context.Context) (err error) {
 		if e.console, err = e.parent.Platform.CopyConsole(ctx, console, e.id, e.stdio.Stdin, e.stdio.Stdout, e.stdio.Stderr, &e.wg); err != nil {
 			return fmt.Errorf("failed to start console copy: %w", err)
 		}
-		if sc, ok := console.(interface{ StdinCloser() io.Closer }); ok {
+		if sc, ok := e.console.(interface{ StdinCloser() io.Closer }); ok {
 			c := sc.StdinCloser()
-			e.stdin = c
-			e.closers = append(e.closers, c)
+			if c != nil {
+				e.stdin = c
+				e.closers = append(e.closers, c)
+			}
 		}
 	} else {
 		c, err := pio.Copy(ctx, &e.wg)

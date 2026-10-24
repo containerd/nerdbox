@@ -23,11 +23,76 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/containerd/typeurl/v2"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/anypb"
 )
+
+type trackedConnection struct {
+	net.Conn
+	closed atomic.Bool
+}
+
+func (c *trackedConnection) Close() error {
+	c.closed.Store(true)
+	return c.Conn.Close()
+}
+
+func TestCompletedTransferClosesGuestConnection(t *testing.T) {
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
+	require.NoError(t, a.SetDeadline(time.Now().Add(time.Second)))
+	require.NoError(t, b.SetDeadline(time.Now().Add(time.Second)))
+	conn := &trackedConnection{Conn: a}
+	guest := &vsockStream{conn: conn}
+	host := &vsockStream{conn: b}
+	done := make(chan error, 1)
+	go func() { done <- guest.Close() }()
+	_, err := host.Recv()
+	require.ErrorIs(t, err, io.EOF)
+	require.NoError(t, <-done)
+	require.False(t, conn.closed.Load(), "send EOF must preserve the receive direction")
+	require.NoError(t, b.Close())
+	_, err = guest.Recv()
+	require.ErrorIs(t, err, io.EOF)
+	require.True(t, conn.closed.Load(), "remote close must release the guest descriptor")
+}
+
+func TestReceiveEOFDoesNotDiscardReverseDirection(t *testing.T) {
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
+	require.NoError(t, a.SetDeadline(time.Now().Add(time.Second)))
+	require.NoError(t, b.SetDeadline(time.Now().Add(time.Second)))
+	conn := &trackedConnection{Conn: a}
+	guest := &vsockStream{conn: conn}
+	host := &vsockStream{conn: b}
+	done := make(chan error, 1)
+	go func() { done <- host.Close() }()
+	_, err := guest.Recv()
+	require.ErrorIs(t, err, io.EOF)
+	require.NoError(t, <-done)
+	require.False(t, conn.closed.Load())
+	go func() {
+		if err := guest.Send(makeAny(t, []byte("reply"))); err != nil {
+			done <- err
+			return
+		}
+		done <- guest.Close()
+	}()
+	msg, err := host.Recv()
+	require.NoError(t, err)
+	require.Equal(t, "reply", string(msg.GetValue()))
+	_, err = host.Recv()
+	require.ErrorIs(t, err, io.EOF)
+	require.NoError(t, <-done)
+	require.True(t, conn.closed.Load())
+}
 
 // newTestPair returns a connected pair of vsockStreams for testing.
 func newTestPair(t *testing.T) (sender *vsockStream, receiver *vsockStream) {

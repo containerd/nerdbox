@@ -3,7 +3,7 @@ module github.com/containerd/nerdbox
 go 1.26.3
 
 require (
-	github.com/Microsoft/go-winio v0.6.3-0.20251027160822-ad3df93bed29
+	github.com/Microsoft/go-winio v0.6.4
 	github.com/containerd/cgroups/v3 v3.1.3
 	github.com/containerd/console v1.0.5
 	github.com/containerd/containerd/api v1.11.1
@@ -28,7 +28,7 @@ require (
 	github.com/vishvananda/netlink v1.3.1
 	github.com/vishvananda/netns v0.0.5
 	golang.org/x/sync v0.23.0
-	golang.org/x/sys v0.48.0
+	golang.org/x/sys v0.49.0
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.12
 )

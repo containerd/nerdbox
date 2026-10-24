@@ -21,6 +21,7 @@ package process
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -36,6 +37,7 @@ import (
 	"github.com/containerd/containerd/v2/pkg/stdio"
 	runc "github.com/containerd/go-runc"
 	"github.com/containerd/log"
+	"github.com/moby/sys/mountinfo"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"golang.org/x/sys/unix"
 
@@ -296,6 +298,38 @@ func (p *Init) delete(ctx context.Context) error {
 		if err == nil {
 			err = fmt.Errorf("failed rootfs umount: %w", err2)
 		}
+	}
+	// Rootfs components are mounted beside, rather than beneath, Rootfs.
+	// Unmount them after the overlay so its upper and lower filesystems can
+	// finish flushing before the VM stops. A container without component mounts
+	// has no mounts directory; unmountRootfsComponents treats that as a no-op.
+	if p.Bundle != "" {
+		components := filepath.Join(p.Bundle, "mounts")
+		if err2 := unmountRootfsComponents(components); err2 != nil {
+			log.G(ctx).WithError(err2).WithField("mountpoint", components).Warn("failed to cleanup rootfs component mounts")
+			err = errors.Join(err, fmt.Errorf("failed rootfs components umount: %w", err2))
+		}
+	}
+	return err
+}
+
+// unmountRootfsComponents also checks the resulting mount table because
+// UnmountRecursive can suppress an error from an earlier sibling mount.
+func unmountRootfsComponents(target string) error {
+	target, err := mount.CanonicalizePath(target)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	err = mount.UnmountRecursive(target, 0)
+	remaining, checkErr := mountinfo.GetMounts(mountinfo.PrefixFilter(target))
+	if checkErr != nil {
+		return errors.Join(err, fmt.Errorf("checking remaining rootfs component mounts: %w", checkErr))
+	}
+	for _, entry := range remaining {
+		err = errors.Join(err, fmt.Errorf("rootfs component still mounted at %s: %w", entry.Mountpoint, unix.EBUSY))
 	}
 	return err
 }

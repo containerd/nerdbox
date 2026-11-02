@@ -22,7 +22,7 @@ require (
 	github.com/ebitengine/purego v0.11.2
 	github.com/insomniacslk/dhcp v0.0.0-20260719225207-c76316d4aa82
 	github.com/mdlayher/vsock v1.3.0
-	github.com/moby/sys/mountinfo v0.7.2
+	github.com/moby/sys/mountinfo v0.7.3
 	github.com/moby/sys/userns v0.2.1
 	github.com/opencontainers/runtime-spec v1.3.0
 	github.com/stretchr/testify v1.12.1

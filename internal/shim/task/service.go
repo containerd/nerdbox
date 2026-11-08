@@ -134,6 +134,7 @@ func NewTaskService(ctx context.Context, sb sandbox.Sandbox, publisher shim.Publ
 		debug:            debug,
 		initiateShutdown: sd.Shutdown,
 		shutdownDone:     sd.Done(),
+		shutdownErr:      sd.Err,
 	}
 	sd.RegisterCallback(s.shutdown)
 
@@ -202,6 +203,10 @@ func (c *container) shutdown(ctx context.Context) error {
 // service is the shim implementation of a remote shim over GRPC
 type service struct {
 	mu sync.Mutex
+	// lifecycleMu serializes initial-task creation with Shutdown. A shim service
+	// must not admit another VM-backed initial task once it is retiring.
+	lifecycleMu sync.Mutex
+	retiring    bool
 
 	// sb is the sandbox instance used to run the container
 	sb sandbox.Sandbox
@@ -215,6 +220,7 @@ type service struct {
 	initiateShutdown     func()
 	initiateShutdownOnce sync.Once
 	shutdownDone         <-chan struct{}
+	shutdownErr          func() error
 }
 
 func (s *service) RegisterTTRPC(server *ttrpc.Server) error {
@@ -223,6 +229,10 @@ func (s *service) RegisterTTRPC(server *ttrpc.Server) error {
 }
 
 func (s *service) shutdown(ctx context.Context) error {
+	s.lifecycleMu.Lock()
+	s.retiring = true
+	s.lifecycleMu.Unlock()
+
 	// Detach all containers from tracking under the lock, then shut them down
 	// outside of it. Each container shutdown can block until its host-side
 	// copy goroutines drain and stdin reaches a real EOF (up to a 30 s ceiling
@@ -296,6 +306,12 @@ func unmountAllWithRetry(ctx context.Context, mc mountAPI.TTRPCMountService) err
 
 // Create a new initial process and container with the underlying OCI runtime
 func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *taskAPI.CreateTaskResponse, err error) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.retiring {
+		return nil, errgrpc.ToGRPC(fmt.Errorf("shim is shutting down: %w", errdefs.ErrUnavailable))
+	}
+
 	log.G(ctx).WithFields(log.Fields{
 		"container_id": r.ID,
 		"bundle":       r.Bundle,
@@ -987,10 +1003,16 @@ func (s *service) Shutdown(ctx context.Context, r *taskAPI.ShutdownRequest) (*pt
 	// tc := taskAPI.NewTTRPCTaskClient(s.vm.Client())
 	// return tc.Shutdown(ctx, r)
 
+	s.lifecycleMu.Lock()
+	s.retiring = true
+	s.lifecycleMu.Unlock()
 	s.initiateShutdownOnce.Do(s.initiateShutdown)
 
 	select {
 	case <-s.shutdownDone:
+		if err := s.shutdownErr(); err != nil && !errors.Is(err, shutdown.ErrShutdown) {
+			return nil, errgrpc.ToGRPC(fmt.Errorf("shim shutdown: %w", err))
+		}
 		return empty, nil
 	case <-ctx.Done():
 		return nil, errgrpc.ToGRPC(ctx.Err())

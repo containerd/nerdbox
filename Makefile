@@ -95,8 +95,7 @@ ifeq ($(OS),Darwin)
 endif
 
 _output/libkrun.so: FORCE
-	@echo "$(WHALE) $@"
-	$(BUILDX) bake libkrun
+	@task build:libkrun
 
 
 generate: protos
